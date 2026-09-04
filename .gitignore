@@ -1,0 +1,27 @@
+# ---- 版权材料：不要推到公开仓库 ----
+# paper/ 整个目录不推（4 篇 PDF 共 33 MB + KACP.txt 提取文本，都是出版商版权文件）。
+paper/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ---- 运行输出 ----
+results*/
+res_*/
+*.npz
+*.ckpt
+*.h5
+*.pth
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
