@@ -8,7 +8,7 @@
 
 set -u
 PY=${PY:-python}
-SCRIPT=${SCRIPT:-ProPtyNet_torch.py}
+SCRIPT=${SCRIPT:-ptychography_AD_DIP/simulations/ProPtyNet_torch.py}
 ROOT=${ROOT:-runs}
 ITERS=${ITERS:-2000}
 STAGES=${STAGES:-24}
