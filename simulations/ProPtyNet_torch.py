@@ -78,11 +78,15 @@ class Cfg:
     z_probe_init: float = 3e-3 * 1.3   # 故意差 30%
     probe_aberr: float = 0.0
     aberr_seed: int = 7
+    support_energy: float = 0.995   # 支撑域取到包住这么多能量为止。
+                                    # 0.995 会留下约 5e-2 的模型误差（域外残余能量），
+                                    # 让 --probe-mode truth 这一列自带偏差。
+                                    # 想让"探针已知"成为真正的上界就调到 0.9999。
 
     # ---- 扫描 ----
     scan_pattern: str = "raster_jitter"
     scan_npos: int = 25
-    scan_step: int = 20
+    scan_step: float = 20.0      # E5 重叠轴有 26.7 / 13.3 / 11.4 这些小数档，必须是 float
     scan_jitter: float = 0.2
     scan_seed: int = 0
 
@@ -115,6 +119,7 @@ class Cfg:
     # ---- ProPtyNet 模式 ----
     iters: int = 2000
     lr_net: float = 1e-3         # 论文: 5e-4 ~ 5e-3
+    lr_cosine: bool = False      # 两个 lr 一起余弦退火到 0。治后期的 loss 尖峰
     base_ch: int = 32            # 32/64/128/256 -> 约 2.2 M 参数（论文称 2.5 M）
     data_loss: str = "direct"    # direct(=notebook 的 ‖|U|-√I‖²) | paper(Eq.4/5 强度域)
     beta: float = 0.90           # 论文 Eq.4
@@ -291,7 +296,7 @@ def make_truth(cfg: Cfg):
     # 支撑域：二值，取到包住 99.5% 能量。必须二值（模型里有 Pr*support）
     e = np.abs(probe) ** 2
     for _R in range(int(cfg.probe_dia / 2), N // 2):
-        if (e * (rr <= _R)).sum() / e.sum() > 0.995:
+        if (e * (rr <= _R)).sum() / e.sum() > cfg.support_energy:
             break
     support = (rr <= _R).astype(np.float32)
     return obj, probe, support, pupil_true, rr, _R
@@ -317,6 +322,32 @@ def make_scan_positions(cfg: Cfg):
     else:
         raise ValueError(pat)
     return p.astype(np.float32)
+
+
+def check_scan_fits(cfg, positions, verbose=True):
+    """位置越界必须在跑之前拦住。
+
+    crop_patch_torch 用 tensor 高级索引取 patch。corner 过【大】会 IndexError，
+    但 corner 为【负】时 torch 跟 python 一样静默回绕到画布另一侧 —— 不报错，
+    重建看起来正常但完全是错的。所以这里显式检查。
+    """
+    P = np.asarray(positions, float)
+    mx = float(np.abs(P).max())
+    if mx > cfg.SCAN_LIMIT:
+        raise ValueError(
+            f"扫描位置极值 {mx:.1f} px 超过画布余量 {cfg.SCAN_LIMIT:.0f} px，patch 会越出画布。\n"
+            f"  修法: --n-obj 提到 >= {int(np.ceil(cfg.N + 2 * mx))}，"
+            f"或调小 --scan-step / --scan-npos。")
+    dd = np.sqrt(((P[:, None] - P[None]) ** 2).sum(-1)) + np.eye(len(P)) * 1e9
+    nn_ = dd.min(1)
+    lin = 1 - np.median(nn_) / cfg.probe_dia
+    ar = float(np.median([overlap_areal(d, cfg.probe_dia) for d in nn_]))
+    if verbose:
+        print(f"[scan] {len(P)} 点 step {cfg.scan_step:g} {cfg.scan_pattern}  "
+              f"线性重叠 {lin:.1%}  面积重叠 {ar:.1%}  "
+              f"位置极值 {mx:.1f}/{cfg.SCAN_LIMIT:.0f}px  "
+              f"每像素被照亮 {len(P)*np.pi*(cfg.probe_dia/2)**2/(2*mx+cfg.probe_dia)**2:.2f} 次")
+    return {"n": len(P), "linear_overlap": lin, "areal_overlap": ar, "pos_max": mx}
 
 
 def overlap_areal(d, D):
@@ -632,8 +663,7 @@ def run_check(cfg: Cfg):
           f"{math.sqrt(cfg.wlength*cfg.dz_true/cfg.N)*1e6:.2f} µm，当前 {cfg.dx*1e6:.1f} µm 已超 -> 会混叠")
     print("-" * 74)
     m = float(np.abs(positions).max())
-    print(f"扫描 {cfg.scan_pattern} {len(positions)} 点  步长 {cfg.scan_step}px  "
-          f"位置极值 {m:.1f} / 余量 {cfg.SCAN_LIMIT:.0f}px  {'OK' if m <= cfg.SCAN_LIMIT else '越界!'}")
+    check_scan_fits(cfg, positions)
     dd = np.sqrt(((positions[:, None] - positions[None]) ** 2).sum(-1)) + np.eye(len(positions)) * 1e9
     nn_ = dd.min(1)
     print(f"  最近邻中位数 {np.median(nn_):.1f}px  线性重叠 {1-np.median(nn_)/cfg.probe_dia:.1%}"
@@ -697,6 +727,7 @@ def run_ad(cfg: Cfg):
     torch.manual_seed(cfg.seed)
     obj, probe, support, _, rr, _R = make_truth(cfg)
     positions = make_scan_positions(cfg)
+    check_scan_fits(cfg, positions)
     H_true = make_H(cfg, cfg.dz_true)
     I, _ = simulate(cfg, obj, probe, positions, H_true)
 
@@ -775,6 +806,7 @@ def run_net(cfg: Cfg):
     torch.manual_seed(cfg.seed)
     obj, probe, support, _, rr, _R = make_truth(cfg)
     positions = make_scan_positions(cfg)
+    check_scan_fits(cfg, positions)
     H_true = make_H(cfg, cfg.dz_true)
     I, I_clean = simulate(cfg, obj, probe, positions, H_true)
 
@@ -865,6 +897,13 @@ def run_net(cfg: Cfg):
 
     for it in range(cfg.iters):
         gamma = cfg.gamma0 * (cfg.gamma_end / cfg.gamma0) ** (it / max(cfg.iters - 1, 1))
+        if cfg.lr_cosine:   # 余弦退火，治后期的 loss 尖峰（实测 it≈1600 有一次瞬时发散）
+            f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
+            for g in opt_net.param_groups:
+                g["lr"] = cfg.lr_net * f
+            if opt_prb is not None:
+                for g in opt_prb.param_groups:
+                    g["lr"] = cfg.lr_probe * f
         O, Pc, amp_p = decode()
         U = forward_torch(cfg, O, Pc, corners, Ht)
         Ua = cabs(U)
@@ -967,7 +1006,7 @@ def main():
     ap = argparse.ArgumentParser(description="ProPtyNet (PyTorch) —— 对齐 INNM_Ptycho 的约定")
     ap.add_argument("mode", choices=["check", "ad", "net"])
     for k, t in [("N", int), ("N_OBJ", int), ("dz_true", float), ("probe_dia", int),
-                 ("scan_pattern", str), ("scan_npos", int), ("scan_step", int),
+                 ("scan_pattern", str), ("scan_npos", int), ("scan_step", float),
                  ("stages", int), ("lr_net", float), ("lr_obj", float),
                  ("lr_prb", float), ("base_ch", int), ("beta", float), ("seed", int),
                  ("peak_photons", float), ("gauss_snr_db", float), ("eval_every", int),
@@ -976,7 +1015,11 @@ def main():
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("obj_epoch", int), ("prb_epoch", int), ("decay", float), ("iters", int),
                  ("probe_warmup", int), ("lr_probe", float), ("weight_decay", float),
-                 ("holdout_frac", float), ("holdout_seed", int)]:
+                 ("holdout_frac", float), ("holdout_seed", int),
+                 # --- 扫轴实验需要的 ---
+                 ("scan_seed", int), ("scan_jitter", float), ("noise_seed", int),
+                 ("probe_aberr", float), ("aberr_seed", int), ("support_energy", float),
+                 ("eval_size", int), ("reg_size", int), ("z_probe_init", float)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--data-loss", dest="data_loss", choices=["direct", "paper"])
     ap.add_argument("--probe-mode", dest="probe_mode", choices=["pixel", "net", "truth"])
@@ -984,6 +1027,8 @@ def main():
     ap.add_argument("--scale-mode", dest="scale_mode", choices=["ls", "frozen"])
     ap.add_argument("--poisson", dest="poisson", action="store_true", default=None)
     ap.add_argument("--noise-clip", dest="noise_clip", action="store_true", default=None)
+    ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None,
+                    help="两个 lr 一起余弦退火到 0，治后期 loss 尖峰")
     ap.add_argument("--paper", action="store_true",
                     help="复现 ProPtyNet 原配置（共享 U-Net 探针 / tanh 相位 / leaky 振幅 / "
                          "冻结标度 / AdamW 权重衰减），用于消融对照")
