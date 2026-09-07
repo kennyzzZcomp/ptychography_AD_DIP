@@ -646,20 +646,27 @@ def run(cfg: Cfg):
         print(f"[net] 尾段 real error 斜率 {k:+.3e} "
               f"({'仍在下降' if k < 0 else '已回升 → 开始拟合噪声'})"
               + ("   （noise=none 时这一项没有意义）" if cfg.noise == "none" else ""))
-    _save(cfg, rec[rs, cs], P.detach().cpu().numpy(), obj[rs, cs], probe, hist)
+    # 指标仍只在照明区计算，但保存完整物体画布；否则最终结果只剩中心 ROI。
+    _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, rs, cs)
 
 
-def _save(cfg, rec, pc, obj, probe, hist):
+def _save(cfg, rec, pc, obj, probe, hist, rs, cs):
     os.makedirs(cfg.outdir, exist_ok=True)
+    rec_roi, obj_roi = rec[rs, cs], obj[rs, cs]
+    roi = np.asarray([rs.start, rs.stop, cs.start, cs.stop], dtype=np.int64)
     np.savez_compressed(os.path.join(cfg.outdir, "paper_result.npz"),
-                        obj_rec=rec, probe_rec=pc, hist=json.dumps(hist),
+                        obj_rec=rec, obj_rec_roi=rec_roi, probe_rec=pc,
+                        illum_roi=roi, hist=json.dumps(hist),
                         cfg=json.dumps(asdict(cfg), default=str))
     try:
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         return
-    ra = align(rec, obj)
+    # 用有数据约束的照明区求全局复标定，再把同一标定应用到完整画布。
+    den = np.vdot(rec_roi, rec_roi).real
+    alpha = np.vdot(rec_roi, obj_roi) / max(den, 1e-30)
+    ra = rec * alpha
     pa = align(pc, probe)
     fig, ax = plt.subplots(2, 4, figsize=(15, 7.5))
     for a, (im, t) in zip(ax.ravel(), [
@@ -672,7 +679,21 @@ def _save(cfg, rec, pc, obj, probe, hist):
     fig.tight_layout()
     f = os.path.join(cfg.outdir, "paper_result.png")
     fig.savefig(f, dpi=140); plt.close(fig)
-    print(f"[net] 结果 -> {f}")
+
+    # 另存一张照明区细节图，便于和旧版输出及论文指标直接比较。
+    fig, ax = plt.subplots(1, 4, figsize=(15, 3.8))
+    for a, (im, t) in zip(ax.ravel(), [
+            (np.abs(ra[rs, cs]), "rec amp (illum. ROI)"),
+            (np.angle(ra[rs, cs]), "rec phase (illum. ROI)"),
+            (np.abs(obj_roi), "GT amp (illum. ROI)"),
+            (np.angle(obj_roi), "GT phase (illum. ROI)")]):
+        a.imshow(im, cmap="gray"); a.set_title(t, fontsize=9)
+        a.set_xticks([]); a.set_yticks([])
+    fig.tight_layout()
+    f_roi = os.path.join(cfg.outdir, "paper_result_roi.png")
+    fig.savefig(f_roi, dpi=140); plt.close(fig)
+    print(f"[net] 完整结果 -> {f}")
+    print(f"[net] 照明区细节 -> {f_roi}  ROI={roi.tolist()}")
 
 
 def main():
