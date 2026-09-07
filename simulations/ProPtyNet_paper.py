@@ -83,6 +83,7 @@ class Cfg:
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
     phase_span: float = PI       # 论文: exp(jπ·phs)
+    probe_mode: str = "net"      # net: 联合恢复探针; truth: 固定使用模拟 GT 探针
 
     # ---- 优化 ----
     iters: int = 2000
@@ -355,6 +356,17 @@ class ProPtyUNet(nn.Module):
         return (lr(self.amp_s(y))[0, 0], torch.tanh(self.phs_s(y))[0, 0],
                 lr(self.amp_p(y))[0, 0], torch.tanh(self.phs_p(y))[0, 0])
 
+    def forward_object(self, x):
+        """仅运行共享 U-Net 与物体输出头；GT-probe 消融时不调用探针输出头。"""
+        x1 = self.e1(x)
+        x2 = self.e2(self.pool(x1))
+        x3 = self.e3(self.pool(x2))
+        y = self.d3(torch.cat([self.u3(self.bot(self.pool(x3))), x3], 1))
+        y = self.d2(torch.cat([self.u2(y), x2], 1))
+        y = self.d1(torch.cat([self.u1(y), x1], 1))
+        return (F.leaky_relu(self.amp_s(y), 0.2)[0, 0],
+                torch.tanh(self.phs_s(y))[0, 0])
+
 
 # ============================================================================ #
 # 指标
@@ -430,6 +442,7 @@ def run_check(cfg: Cfg):
     ok = lambda c: "OK " if c else "!! "
     print("=" * 78)
     print(f"preset = {cfg.preset}   （论文第 3 节参数：512 探测器 / 15.04µm / 16.5cm / 10×10）")
+    print(f"probe mode = {cfg.probe_mode}")
     print("=" * 78)
     print(f"  λ={cfg.wlength*1e9:.1f}nm  z={cfg.z*100:.2f}cm  Δx2={cfg.det_pixel*1e6:.2f}µm  M={cfg.N}")
     print(f"  -> Δx1 = λz/(M·Δx2) = {cfg.dx1*1e6:.3f} µm            [Eq.(2) 下的采样关系]")
@@ -558,6 +571,7 @@ def run(cfg: Cfg):
         # 网络输入尺寸全程固定，benchmark 能稳定选到最快 conv 算法
         torch.backends.cudnn.benchmark = True
     _report_device(cfg, device)
+    print(f"[net] probe mode = {cfg.probe_mode}")
 
     obj, probe, S1_np, rr = make_truth(cfg)
     pos = make_positions(cfg)
@@ -570,6 +584,8 @@ def run(cfg: Cfg):
     Icl = torch.from_numpy(Icl_np).to(device)
     S1 = torch.from_numpy(S1_np).to(device)
     S2 = (Im < 1.0 - 1e-6).float()                       # Eq.(6)
+    P_truth = (torch.from_numpy(probe).to(device)
+               if cfg.probe_mode == "truth" else None)
 
     # ---- 网络输入: 零填充后的实测衍射图堆栈，全程固定 (Fig.1c) ----
     M, n, NS = cfg.obj_size, cfg.N, cfg.net_size
@@ -580,15 +596,29 @@ def run(cfg: Cfg):
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
     net = ProPtyUNet(cfg.n_pat, cfg.base_ch).to(device)
+    if cfg.probe_mode == "truth":
+        # 严格消融：探针头既不执行，也不进入优化器；共享主干仍由物体分支训练。
+        for head in (net.amp_p, net.phs_p):
+            for param in head.parameters():
+                param.requires_grad_(False)
     npar = sum(p.numel() for p in net.parameters())
+    ntrain = sum(p.numel() for p in net.parameters() if p.requires_grad)
     print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
+    if cfg.probe_mode == "truth":
+        print(f"[net] GT probe 固定，不运行/优化探针输出头 | 可训练参数 {ntrain/1e6:.2f} M")
     print(f"[net] 评价 ROI = 照明覆盖区 {rs.stop-rs.start}×{cs.stop-cs.start} "
           f"(画布 {cfg.obj_size}²)")
 
     def decode():
-        a_s, p_s, a_p, p_p = net(x)
         c = slice(pad_n, pad_n + M)
+        if cfg.probe_mode == "truth":
+            a_s, p_s = net.forward_object(x)
+            a_s, p_s = a_s[c, c], p_s[c, c]
+            O = (a_s * torch.exp(1j * cfg.phase_span * p_s)).to(torch.complex64)
+            return O, P_truth, None
+
+        a_s, p_s, a_p, p_p = net(x)
         a_s, p_s, a_p, p_p = a_s[c, c], p_s[c, c], a_p[c, c], p_p[c, c]
         O = (a_s * torch.exp(1j * cfg.phase_span * p_s)).to(torch.complex64)
         # Fig.1(c): 612 的探针裁到中心 512 再进前向；不加任何硬 support，只靠 Loss2
@@ -606,7 +636,7 @@ def run(cfg: Cfg):
             scale = (Im.mean() / I0.mean().clamp_min(1e-20)).item()
         print(f"[net] 冻结幅度标定 = {scale:.4g}")
 
-    opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr)
+    opt = torch.optim.AdamW((p for p in net.parameters() if p.requires_grad), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=cfg.iters, eta_min=cfg.lr * cfg.lr_final_frac)
     rng = np.random.default_rng(cfg.seed)
@@ -621,7 +651,15 @@ def run(cfg: Cfg):
 
         O, P, amp_p = decode()
         Ic = forward_ptycho(O, P, post[sel], Q, n, chunk=0) * scale
-        loss, l1, l2 = paper_loss(Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
+        if cfg.probe_mode == "truth":
+            residual = Ic - Im[sel]
+            l1_raw = torch.linalg.vector_norm(
+                residual * S2[sel] + gamma * residual * (1.0 - S2[sel]))
+            loss = cfg.beta * l1_raw
+            l1, l2 = l1_raw.detach(), l1_raw.new_zeros(())
+        else:
+            loss, l1, l2 = paper_loss(
+                Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -709,6 +747,8 @@ def main():
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
+    ap.add_argument("--probe-mode", choices=["net", "truth"], default="net",
+                    help="net: U-Net 联合恢复探针（默认）；truth: 固定使用模拟 GT 探针")
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
