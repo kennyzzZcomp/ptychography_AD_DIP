@@ -19,6 +19,8 @@ neural network", Optics and Lasers in Engineering 186 (2025) 108791.
     python ProPtyNet_torch.py check                       # 采样自检 + 前向与 numpy 对拍
     python ProPtyNet_torch.py ad   --stages 8             # AD 基线（论文对照列）
     python ProPtyNet_torch.py net  --iters 2000           # 默认 = 已修复的配置
+    python ProPtyNet_torch.py net  --probe-mode truth --amp-output softplus --phase-output cossin
+    python ProPtyNet_torch.py net  --probe-mode truth --amp-output leaky --phase-output tanh
     python ProPtyNet_torch.py net  --paper                # 复现论文原配置（用于消融）
     python ProPtyNet_torch.py net  --probe-mode truth     # 诊断: 探针=真值，只解物体
     python ProPtyNet_torch.py net  --holdout-frac 0.05 --poisson --peak-photons 1e3
@@ -837,6 +839,7 @@ def run_net(cfg: Cfg):
     print(f"[net] U-Net {sum(p.numel() for p in net.parameters())/1e6:.2f} M 参数  "
           f"输入 {tuple(x_in.shape)}  相位表示 {cfg.phase_repr}  振幅激活 {cfg.amp_act}  "
           f"标度 {cfg.scale_mode}")
+    print(f"[net] output parameterization: amplitude={cfg.amp_act}, phase={cfg.phase_repr}")
 
     # ---- 探针 ----
     prb_params, Ptruth = [], None
@@ -971,9 +974,13 @@ def run_net(cfg: Cfg):
 
 def _save(cfg, tag, rec, pc, obj, probe, support, hist):
     os.makedirs(cfg.outdir, exist_ok=True)
+    cfg_out = asdict(cfg)
+    # 同时用消融 CLI 的名称保存，便于四组结果直接汇总；旧字段继续保留兼容性。
+    cfg_out["amp_output"] = cfg.amp_act
+    cfg_out["phase_output"] = cfg.phase_repr
     np.savez_compressed(os.path.join(cfg.outdir, f"{tag}_result.npz"),
                         obj_rec=rec, probe_rec=pc, hist=json.dumps(hist),
-                        cfg=json.dumps(asdict(cfg), default=str))
+                        cfg=json.dumps(cfg_out, default=str))
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -1010,7 +1017,7 @@ def main():
                  ("stages", int), ("lr_net", float), ("lr_obj", float),
                  ("lr_prb", float), ("base_ch", int), ("beta", float), ("seed", int),
                  ("peak_photons", float), ("gauss_snr_db", float), ("eval_every", int),
-                 ("device", str), ("outdir", str), ("assets", str), ("amp_act", str),
+                 ("device", str), ("outdir", str), ("assets", str),
                  ("tv1", float), ("tv2", float), ("opt_mode", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("obj_epoch", int), ("prb_epoch", int), ("decay", float), ("iters", int),
@@ -1023,7 +1030,16 @@ def main():
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--data-loss", dest="data_loss", choices=["direct", "paper"])
     ap.add_argument("--probe-mode", dest="probe_mode", choices=["pixel", "net", "truth"])
-    ap.add_argument("--phase-repr", dest="phase_repr", choices=["cossin", "tanh"])
+    amp_group = ap.add_mutually_exclusive_group()
+    amp_group.add_argument("--amp-output", dest="amp_output", choices=["softplus", "leaky"],
+                           help="消融：最终振幅输出激活（不改变隐藏层）")
+    amp_group.add_argument("--amp-act", dest="amp_act", choices=["softplus", "relu", "leaky"],
+                           help=argparse.SUPPRESS)  # 兼容旧脚本
+    phase_group = ap.add_mutually_exclusive_group()
+    phase_group.add_argument("--phase-output", dest="phase_output", choices=["cossin", "tanh"],
+                             help="消融：最终相位输出表示；tanh 严格使用 π*tanh(raw)")
+    phase_group.add_argument("--phase-repr", dest="phase_repr", choices=["cossin", "tanh"],
+                             help=argparse.SUPPRESS)  # 兼容旧脚本
     ap.add_argument("--scale-mode", dest="scale_mode", choices=["ls", "frozen"])
     ap.add_argument("--poisson", dest="poisson", action="store_true", default=None)
     ap.add_argument("--noise-clip", dest="noise_clip", action="store_true", default=None)
@@ -1035,7 +1051,14 @@ def main():
     a = ap.parse_args()
 
     kw = {k: v for k, v in vars(a).items()
-          if k not in ("mode", "paper") and v is not None}
+          if k not in ("mode", "paper", "amp_output", "phase_output") and v is not None}
+    if a.amp_output is not None:
+        kw["amp_act"] = a.amp_output
+    if a.phase_output is not None:
+        kw["phase_repr"] = a.phase_output
+        if a.phase_output == "tanh":
+            # 本消融的 Tanh 定义固定为论文式 phi=pi*tanh(raw)，明确禁止 2pi。
+            kw["phase_span_obj"] = PI
     if a.paper:   # 显式给出的旋钮优先于 --paper 预设
         for k, v in dict(probe_mode="net", phase_repr="tanh", amp_act="leaky",
                          scale_mode="frozen", weight_decay=1e-2).items():
