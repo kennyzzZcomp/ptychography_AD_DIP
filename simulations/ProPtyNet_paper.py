@@ -83,7 +83,6 @@ class Cfg:
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
     phase_span: float = PI       # 论文: exp(jπ·phs)
-    probe_mode: str = "net"      # net: 联合恢复探针; truth: 固定使用模拟 GT 探针
 
     # ---- 优化 ----
     iters: int = 2000
@@ -356,17 +355,6 @@ class ProPtyUNet(nn.Module):
         return (lr(self.amp_s(y))[0, 0], torch.tanh(self.phs_s(y))[0, 0],
                 lr(self.amp_p(y))[0, 0], torch.tanh(self.phs_p(y))[0, 0])
 
-    def forward_object(self, x):
-        """仅运行共享 U-Net 与物体输出头；GT-probe 消融时不调用探针输出头。"""
-        x1 = self.e1(x)
-        x2 = self.e2(self.pool(x1))
-        x3 = self.e3(self.pool(x2))
-        y = self.d3(torch.cat([self.u3(self.bot(self.pool(x3))), x3], 1))
-        y = self.d2(torch.cat([self.u2(y), x2], 1))
-        y = self.d1(torch.cat([self.u1(y), x1], 1))
-        return (F.leaky_relu(self.amp_s(y), 0.2)[0, 0],
-                torch.tanh(self.phs_s(y))[0, 0])
-
 
 # ============================================================================ #
 # 指标
@@ -442,7 +430,6 @@ def run_check(cfg: Cfg):
     ok = lambda c: "OK " if c else "!! "
     print("=" * 78)
     print(f"preset = {cfg.preset}   （论文第 3 节参数：512 探测器 / 15.04µm / 16.5cm / 10×10）")
-    print(f"probe mode = {cfg.probe_mode}")
     print("=" * 78)
     print(f"  λ={cfg.wlength*1e9:.1f}nm  z={cfg.z*100:.2f}cm  Δx2={cfg.det_pixel*1e6:.2f}µm  M={cfg.N}")
     print(f"  -> Δx1 = λz/(M·Δx2) = {cfg.dx1*1e6:.3f} µm            [Eq.(2) 下的采样关系]")
@@ -571,7 +558,6 @@ def run(cfg: Cfg):
         # 网络输入尺寸全程固定，benchmark 能稳定选到最快 conv 算法
         torch.backends.cudnn.benchmark = True
     _report_device(cfg, device)
-    print(f"[net] probe mode = {cfg.probe_mode}")
 
     obj, probe, S1_np, rr = make_truth(cfg)
     pos = make_positions(cfg)
@@ -584,8 +570,6 @@ def run(cfg: Cfg):
     Icl = torch.from_numpy(Icl_np).to(device)
     S1 = torch.from_numpy(S1_np).to(device)
     S2 = (Im < 1.0 - 1e-6).float()                       # Eq.(6)
-    P_truth = (torch.from_numpy(probe).to(device)
-               if cfg.probe_mode == "truth" else None)
 
     # ---- 网络输入: 零填充后的实测衍射图堆栈，全程固定 (Fig.1c) ----
     M, n, NS = cfg.obj_size, cfg.N, cfg.net_size
@@ -596,29 +580,15 @@ def run(cfg: Cfg):
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
     net = ProPtyUNet(cfg.n_pat, cfg.base_ch).to(device)
-    if cfg.probe_mode == "truth":
-        # 严格消融：探针头既不执行，也不进入优化器；共享主干仍由物体分支训练。
-        for head in (net.amp_p, net.phs_p):
-            for param in head.parameters():
-                param.requires_grad_(False)
     npar = sum(p.numel() for p in net.parameters())
-    ntrain = sum(p.numel() for p in net.parameters() if p.requires_grad)
     print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
-    if cfg.probe_mode == "truth":
-        print(f"[net] GT probe 固定，不运行/优化探针输出头 | 可训练参数 {ntrain/1e6:.2f} M")
     print(f"[net] 评价 ROI = 照明覆盖区 {rs.stop-rs.start}×{cs.stop-cs.start} "
           f"(画布 {cfg.obj_size}²)")
 
     def decode():
-        c = slice(pad_n, pad_n + M)
-        if cfg.probe_mode == "truth":
-            a_s, p_s = net.forward_object(x)
-            a_s, p_s = a_s[c, c], p_s[c, c]
-            O = (a_s * torch.exp(1j * cfg.phase_span * p_s)).to(torch.complex64)
-            return O, P_truth, None
-
         a_s, p_s, a_p, p_p = net(x)
+        c = slice(pad_n, pad_n + M)
         a_s, p_s, a_p, p_p = a_s[c, c], p_s[c, c], a_p[c, c], p_p[c, c]
         O = (a_s * torch.exp(1j * cfg.phase_span * p_s)).to(torch.complex64)
         # Fig.1(c): 612 的探针裁到中心 512 再进前向；不加任何硬 support，只靠 Loss2
@@ -636,7 +606,7 @@ def run(cfg: Cfg):
             scale = (Im.mean() / I0.mean().clamp_min(1e-20)).item()
         print(f"[net] 冻结幅度标定 = {scale:.4g}")
 
-    opt = torch.optim.AdamW((p for p in net.parameters() if p.requires_grad), lr=cfg.lr)
+    opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=cfg.iters, eta_min=cfg.lr * cfg.lr_final_frac)
     rng = np.random.default_rng(cfg.seed)
@@ -651,15 +621,7 @@ def run(cfg: Cfg):
 
         O, P, amp_p = decode()
         Ic = forward_ptycho(O, P, post[sel], Q, n, chunk=0) * scale
-        if cfg.probe_mode == "truth":
-            residual = Ic - Im[sel]
-            l1_raw = torch.linalg.vector_norm(
-                residual * S2[sel] + gamma * residual * (1.0 - S2[sel]))
-            loss = cfg.beta * l1_raw
-            l1, l2 = l1_raw.detach(), l1_raw.new_zeros(())
-        else:
-            loss, l1, l2 = paper_loss(
-                Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
+        loss, l1, l2 = paper_loss(Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -684,54 +646,92 @@ def run(cfg: Cfg):
         print(f"[net] 尾段 real error 斜率 {k:+.3e} "
               f"({'仍在下降' if k < 0 else '已回升 → 开始拟合噪声'})"
               + ("   （noise=none 时这一项没有意义）" if cfg.noise == "none" else ""))
-    # 指标仍只在照明区计算，但保存完整物体画布；否则最终结果只剩中心 ROI。
-    _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, rs, cs)
+    _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, (rs, cs), pos)
 
 
-def _save(cfg, rec, pc, obj, probe, hist, rs, cs):
+def _save(cfg, rec, pc, obj, probe, hist, roi, positions):
+    """全量存盘 + 三个尺度的对照图。
+
+    rec / obj 是【完整 612² 画布】，roi 是照明覆盖区。npz 存全量，图上三行分别是
+    全画布 / 照明 ROI / 探针放大 —— 只看 ROI 会漏掉画布外围的发散和扫描 footprint。
+    """
+    rs, cs = roi
     os.makedirs(cfg.outdir, exist_ok=True)
-    rec_roi, obj_roi = rec[rs, cs], obj[rs, cs]
-    roi = np.asarray([rs.start, rs.stop, cs.start, cs.stop], dtype=np.int64)
     np.savez_compressed(os.path.join(cfg.outdir, "paper_result.npz"),
-                        obj_rec=rec, obj_rec_roi=rec_roi, probe_rec=pc,
-                        illum_roi=roi, hist=json.dumps(hist),
+                        obj_rec=rec, obj_gt=obj, probe_rec=pc, probe_gt=probe,
+                        roi=np.array([rs.start, rs.stop, cs.start, cs.stop]),
+                        positions=positions, hist=json.dumps(hist),
                         cfg=json.dumps(asdict(cfg), default=str))
     try:
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         return
-    # 用有数据约束的照明区求全局复标定，再把同一标定应用到完整画布。
-    den = np.vdot(rec_roi, rec_roi).real
-    alpha = np.vdot(rec_roi, obj_roi) / max(den, 1e-30)
-    ra = rec * alpha
+
+    # 全局复因子必须在 ROI 上定：画布外围没有数据约束，拿它定因子会把结果整个带偏
+    c = np.vdot(rec[rs, cs], obj[rs, cs]) / max(np.vdot(rec[rs, cs], rec[rs, cs]).real, 1e-30)
+    ra = rec * c
     pa = align(pc, probe)
-    fig, ax = plt.subplots(2, 4, figsize=(15, 7.5))
-    for a, (im, t) in zip(ax.ravel(), [
-            (np.abs(ra), "rec amp"), (np.angle(ra), "rec phase"),
-            (np.abs(pa), "rec probe amp"), (np.angle(pa), "rec probe phase"),
-            (np.abs(obj), "GT amp"), (np.angle(obj), "GT phase"),
-            (np.abs(probe), "GT probe amp"), (np.angle(probe), "GT probe phase")]):
-        a.imshow(im, cmap="gray"); a.set_title(t, fontsize=9)
+
+    # 探针放大框
+    n = cfg.N
+    h = int(max(cfg.probe_diam_px, 20))
+    ps = slice(max(n // 2 - h, 0), min(n // 2 + h, n))
+
+    fig, ax = plt.subplots(4, 4, figsize=(16, 16.5))
+    rows = [
+        ("full canvas %d²" % cfg.obj_size,
+         [(np.abs(ra), "rec amp"), (np.angle(ra), "rec phase"),
+          (np.abs(obj), "GT amp"), (np.angle(obj), "GT phase")]),
+        ("illuminated ROI %d×%d" % (rs.stop - rs.start, cs.stop - cs.start),
+         [(np.abs(ra[rs, cs]), "rec amp"), (np.angle(ra[rs, cs]), "rec phase"),
+          (np.abs(obj[rs, cs]), "GT amp"), (np.angle(obj[rs, cs]), "GT phase")]),
+        ("probe (zoom)",
+         [(np.abs(pa[ps, ps]), "rec probe amp"), (np.angle(pa[ps, ps]), "rec probe phase"),
+          (np.abs(probe[ps, ps]), "GT probe amp"), (np.angle(probe[ps, ps]), "GT probe phase")]),
+    ]
+    for r, (tag, items) in enumerate(rows):
+        for k, (im, t) in enumerate(items):
+            a = ax[r, k]
+            a.imshow(im, cmap="gray")
+            a.set_title(f"{t}\n[{tag}]" if k == 0 else t, fontsize=9)
+            a.set_xticks([]); a.set_yticks([])
+            if r == 0:      # 在全画布上标出 ROI
+                a.add_patch(plt.Rectangle((cs.start, rs.start), cs.stop - cs.start,
+                                          rs.stop - rs.start, fill=False,
+                                          ec="red", lw=1.2))
+
+    # 第 4 行: 照明覆盖 / 振幅残差 / 两条曲线
+    cov = np.zeros_like(obj, dtype=np.float64)
+    w = np.abs(probe) ** 2
+    for (py, px) in positions:
+        cov[py:py + cfg.N, px:px + cfg.N] += w
+    ax[3, 0].imshow(cov, cmap="magma"); ax[3, 0].set_title("illumination coverage", fontsize=9)
+    ax[3, 0].add_patch(plt.Rectangle((cs.start, rs.start), cs.stop - cs.start,
+                                     rs.stop - rs.start, fill=False, ec="cyan", lw=1.2))
+    d = np.abs(np.abs(ra[rs, cs]) - np.abs(obj[rs, cs]))
+    ax[3, 1].imshow(d, cmap="inferno")
+    ax[3, 1].set_title(f"|amp error| (ROI), max {d.max():.2f}", fontsize=9)
+    for a in ax[3, :2]:
         a.set_xticks([]); a.set_yticks([])
+    if hist:
+        it = [h["it"] for h in hist]
+        ax[3, 2].plot(it, [h["ssim_amp"] for h in hist], label="amp SSIM")
+        ax[3, 2].plot(it, [h["ssim_phs"] for h in hist], label="phase SSIM")
+        ax[3, 2].plot(it, [h["relerr"] for h in hist], label="relerr")
+        ax[3, 2].set_xlabel("iteration"); ax[3, 2].legend(fontsize=8)
+        ax[3, 2].set_title("object metrics", fontsize=9); ax[3, 2].grid(alpha=.3)
+        ax[3, 3].semilogy(it, [h["loss"] for h in hist], label="loss")
+        ax[3, 3].semilogy(it, [h["real"] for h in hist], "--", label="real error")
+        ax[3, 3].set_xlabel("iteration"); ax[3, 3].legend(fontsize=8)
+        ax[3, 3].set_title("convergence", fontsize=9); ax[3, 3].grid(alpha=.3)
+    else:
+        ax[3, 2].axis("off"); ax[3, 3].axis("off")
+
     fig.tight_layout()
     f = os.path.join(cfg.outdir, "paper_result.png")
-    fig.savefig(f, dpi=140); plt.close(fig)
-
-    # 另存一张照明区细节图，便于和旧版输出及论文指标直接比较。
-    fig, ax = plt.subplots(1, 4, figsize=(15, 3.8))
-    for a, (im, t) in zip(ax.ravel(), [
-            (np.abs(ra[rs, cs]), "rec amp (illum. ROI)"),
-            (np.angle(ra[rs, cs]), "rec phase (illum. ROI)"),
-            (np.abs(obj_roi), "GT amp (illum. ROI)"),
-            (np.angle(obj_roi), "GT phase (illum. ROI)")]):
-        a.imshow(im, cmap="gray"); a.set_title(t, fontsize=9)
-        a.set_xticks([]); a.set_yticks([])
-    fig.tight_layout()
-    f_roi = os.path.join(cfg.outdir, "paper_result_roi.png")
-    fig.savefig(f_roi, dpi=140); plt.close(fig)
-    print(f"[net] 完整结果 -> {f}")
-    print(f"[net] 照明区细节 -> {f_roi}  ROI={roi.tolist()}")
+    fig.savefig(f, dpi=130); plt.close(fig)
+    print(f"[net] 结果 -> {f}   (npz 里存的是【全画布】未裁剪的 obj_rec/obj_gt)")
 
 
 def main():
@@ -747,8 +747,6 @@ def main():
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
-    ap.add_argument("--probe-mode", choices=["net", "truth"], default="net",
-                    help="net: U-Net 联合恢复探针（默认）；truth: 固定使用模拟 GT 探针")
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
