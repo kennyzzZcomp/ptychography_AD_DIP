@@ -10,7 +10,7 @@
 import sys, os, json, glob, argparse
 import numpy as np
 
-CFG_KEYS = ["probe_mode", "phase_repr", "amp_act", "scale_mode", "weight_decay",
+CFG_KEYS = ["obj_amp_img", "obj_phase_img", "probe_mode", "phase_repr", "amp_act", "scale_mode", "weight_decay",
             "lr_cosine", "support_energy", "iters", "stages", "lr_net", "lr_probe",
             "probe_warmup", "holdout_frac", "poisson", "peak_photons", "noise_seed",
             "scan_npos", "scan_step", "scan_seed", "base_ch", "data_loss", "seed",
@@ -85,9 +85,13 @@ def main():
         for r in rows:
             fh.write(",".join("" if k not in r else str(r[k]) for k in cols) + "\n")
     print(f"{len(rows)} 次跑 -> {out}")
-    key = [c for c in ["run", "mode", "peak_photons", "scan_npos", "noise_seed", "scan_seed",
-                       "ssim_o_amp_final", "ssim_o_amp_best", "best_at",
-                       "relerr_o_complex_final", "relerr_p_complex_final", "drift_frac"] if c in seen]
+    # 相位列必须打出来: SSIM 只看振幅，只看 SSIM 会漏掉纯相位的失败
+    key = [c for c in ["run", "mode", "scan_npos", "peak_photons", "noise_seed", "scan_seed",
+                       "ssim_o_amp_final", "psnr_o_amp_final",
+                       "rmse_o_phi_rad_final", "ssim_o_phi_final",
+                       "relerr_o_complex_final", "relerr_o_complex_best",
+                       "relerr_p_complex_final",
+                       "best_at", "last_at", "loss_final", "drift_frac"] if c in seen]
     w = [max(len(k), *(len(f'{r.get(k,"")}'[:12]) for r in rows)) for k in key]
     print("  ".join(k.ljust(x) for k, x in zip(key, w)))
     for r in rows:

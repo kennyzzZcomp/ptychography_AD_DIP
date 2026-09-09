@@ -179,10 +179,6 @@ class Cfg:
     # ---- 其它 ----
     seed: int = 0
     device: str = "auto"
-    # 样品图。可以是 assets 目录下的文件名，也可以是绝对/相对路径。
-    # 换样品会让所有历史结果失去可比性 —— 请换一棵 runs/ 目录树。
-    obj_amp_img: str = "cameraman.bmp"              # -> 物体振幅
-    obj_phase_img: str = "westconcordorthophoto.bmp"  # -> 物体相位
     assets: str = ""             # 空 = 自动找 ../cameraman.bmp
     outdir: str = "results_proptynet"
 
@@ -286,52 +282,25 @@ def crop_patch_torch(canvas: torch.Tensor, corners: torch.Tensor, n: int):
 # 真值物体 / 探针 / 扫描 —— 移植自 notebook CELL 4
 # ============================================================================ #
 
-def _center_crop_square(a):
-    """居中裁成正方形。原来直接 resize 到 (n,n) 不保持宽高比，非正方形图会被拉扁 ——
-    对 USAF 这种分辨率靶尤其致命（线对不再是方的，横竖分辨率不一致）。
-    对已有的 256x256 素材这是 no-op，不影响历史结果。"""
-    h, w = a.shape[:2]
-    if h == w:
-        return a
-    m = min(h, w)
-    return a[(h - m) // 2:(h - m) // 2 + m, (w - m) // 2:(w - m) // 2 + m]
-
-
 def _imread_resize(path: Path, n: int):
-    """读灰度 -> 居中裁方 -> 缩放到 n x n。
-
-    下采样超过 2 倍时改用 INTER_AREA（面积平均）。INTER_CUBIC 在大倍率下采样时
-    不做抗混叠预滤波，会把高频折叠成摩尔纹 —— 例如 2498px 的 USAF 靶直接 cubic
-    降到 224px，细线对会变成一团假条纹，等于给了个假的样品。
-    已有素材 256->224 只有 1.14 倍，仍走 cubic，历史结果逐位不变。
-    """
     try:
         import cv2
         a = cv2.imread(str(path), 0)
         if a is None:
             raise IOError(path)
-        a = _center_crop_square(a)
-        interp = cv2.INTER_AREA if a.shape[0] > 2 * n else cv2.INTER_CUBIC
-        return cv2.resize(a, (n, n), interpolation=interp).astype(float)
+        return cv2.resize(a, (n, n), interpolation=cv2.INTER_CUBIC).astype(float)
     except ImportError:
         from PIL import Image
-        a = np.asarray(Image.open(path).convert("L"), dtype=float)
-        a = _center_crop_square(a)
-        rs = Image.BOX if a.shape[0] > 2 * n else Image.BICUBIC
-        return np.asarray(Image.fromarray(a).resize((n, n), rs), dtype=float)
+        return np.asarray(Image.open(path).convert("L").resize((n, n), Image.BICUBIC),
+                          dtype=float)
 
 
 def make_truth(cfg: Cfg):
     """返回 obj(复), probe(复), support(float), pupil_true, H_true —— 与 notebook 逐位一致。"""
     d = asset_dir(cfg)
-
-    def _resolve(name):
-        p = Path(name)
-        return p if (p.is_absolute() or p.exists()) else (d / name)
-
-    _a = _imread_resize(_resolve(cfg.obj_amp_img), cfg.N_OBJ)
+    _a = _imread_resize(d / "cameraman.bmp", cfg.N_OBJ)
     _a = 0.4 + 0.6 * _a / _a.max()
-    _p = _imread_resize(_resolve(cfg.obj_phase_img), cfg.N_OBJ)
+    _p = _imread_resize(d / "westconcordorthophoto.bmp", cfg.N_OBJ)
     _p = -1.0 + 2.0 * (_p - _p.min()) / max(_p.max() - _p.min(), 1e-12)   # = cv2.normalize(-1,1)
     obj = (_a * np.exp(1j * 0.8 * _p)).astype(np.complex64)
 
@@ -1333,8 +1302,7 @@ def main():
                  # --- 扫轴实验需要的 ---
                  ("scan_seed", int), ("scan_jitter", float), ("noise_seed", int),
                  ("probe_aberr", float), ("aberr_seed", int), ("support_energy", float),
-                 ("eval_size", int), ("reg_size", int), ("z_probe_init", float),
-                 ("obj_amp_img", str), ("obj_phase_img", str)]:
+                 ("eval_size", int), ("reg_size", int), ("z_probe_init", float)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--data-loss", dest="data_loss", choices=["direct", "paper"])
     ap.add_argument("--probe-mode", dest="probe_mode",
