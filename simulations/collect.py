@@ -92,10 +92,17 @@ def main():
                        "relerr_o_complex_final", "relerr_o_complex_best",
                        "relerr_p_complex_final",
                        "best_at", "last_at", "loss_final", "drift_frac"] if c in seen]
-    w = [max(len(k), *(len(f'{r.get(k,"")}'[:12]) for r in rows)) for k in key]
+    def fmt(v):
+        """【不能用 str(v)[:12]】那样会把 '2.3366e-05' 截成 '2.3366288587'，
+        指数被悄悄吃掉，loss 会被误读成大 10^5 倍。数值一律走 %g。"""
+        if isinstance(v, float):
+            return f"{v:.6g}"
+        return str(v)[:24]
+
+    w = [max(len(k), *(len(fmt(r.get(k, ""))) for r in rows)) for k in key]
     print("  ".join(k.ljust(x) for k, x in zip(key, w)))
     for r in rows:
-        print("  ".join(f'{r.get(k,"")}'[:12].ljust(x) for k, x in zip(key, w)))
+        print("  ".join(fmt(r.get(k, "")).ljust(x) for k, x in zip(key, w)))
 
 
 if __name__ == "__main__":
