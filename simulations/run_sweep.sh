@@ -4,6 +4,8 @@
 #   bash run_sweep.sh dose      剂量轴
 #   bash run_sweep.sh overlap   重叠轴
 #   bash run_sweep.sh all       两条轴都跑
+# AD 调度: AD_OPT=plain 用标准 AD ptychography（默认 alternating = INNM/Keras 移植）
+#   例: AD_OPT=plain AD_ITERS=2000 SUP=0.995 SEEDS=1 PY=python3 bash run_sweep.sh overlap
 # 已经有 *_result.npz 的目录会被跳过，所以中断了直接重跑同一条命令即可续上。
 
 set -u
@@ -17,6 +19,15 @@ SUP=${SUP:-0.9999}          # 支撑域能量阈值，全程固定，否则各�
 DOSES=${DOSES:-"1e2 3e2 1e3 3e3 1e4"}
 OVERLAPS=${OVERLAPS:-"16:26.7 25:20 36:16 49:13.3 64:11.4"}
 RUN_AD=${RUN_AD:-1}         # RUN_AD=0 则只跑 net
+# AD 的优化调度: alternating(=INNM/Keras 移植, 默认) | joint | plain(标准 AD ptychography)
+#   plain 用 --ad-iters 计步(全批量), 与 stages 不是同一个刻度, 所以单独放 adplain_* 目录
+AD_OPT=${AD_OPT:-alternating}
+AD_ITERS=${AD_ITERS:-2000}
+if [ "$AD_OPT" = "plain" ]; then
+  AD_ARGS="--opt-mode plain --ad-iters $AD_ITERS"; AD_TAG="adplain"
+else
+  AD_ARGS="--opt-mode $AD_OPT --stages $STAGES";   AD_TAG="ad"
+fi
 
 COMMON="--support-energy $SUP --lr-cosine"
 mkdir -p "$ROOT"
@@ -49,11 +60,11 @@ do_dose () {
   echo "=== 剂量轴 ==="
   for P in $DOSES; do for S in $SEEDS; do
     run "dose/net_p${P}_s${S}" net --iters $ITERS --poisson --peak-photons $P --noise-seed $S
-    [ "$RUN_AD" = "1" ] && run "dose/ad_p${P}_s${S}" ad --stages $STAGES --poisson --peak-photons $P --noise-seed $S
+    [ "$RUN_AD" = "1" ] && run "dose/${AD_TAG}_p${P}_s${S}" ad $AD_ARGS --poisson --peak-photons $P --noise-seed $S
   done; done
   echo "--- 无噪声参照 ---"
   run "dose/net_clean" net --iters $ITERS
-  [ "$RUN_AD" = "1" ] && run "dose/ad_clean" ad --stages $STAGES
+  [ "$RUN_AD" = "1" ] && run "dose/${AD_TAG}_clean" ad $AD_ARGS
 }
 
 do_overlap () {
@@ -62,7 +73,7 @@ do_overlap () {
     NP=${C%%:*}; ST=${C##*:}
     for S in $SEEDS; do
       run "overlap/net_n${NP}_s${S}" net --iters $ITERS --scan-npos $NP --scan-step $ST --scan-seed $S
-      [ "$RUN_AD" = "1" ] && run "overlap/ad_n${NP}_s${S}" ad --stages $STAGES --scan-npos $NP --scan-step $ST --scan-seed $S
+      [ "$RUN_AD" = "1" ] && run "overlap/${AD_TAG}_n${NP}_s${S}" ad $AD_ARGS --scan-npos $NP --scan-step $ST --scan-seed $S
     done
   done
 }

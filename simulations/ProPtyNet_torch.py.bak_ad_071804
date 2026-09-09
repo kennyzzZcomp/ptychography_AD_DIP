@@ -17,8 +17,7 @@ neural network", Optics and Lasers in Engineering 186 (2025) 108791.
 
 用法:
     python ProPtyNet_torch.py check                       # 采样自检 + 前向与 numpy 对拍
-    python ProPtyNet_torch.py ad   --stages 8             # AD 基线（INNM/Keras 调度）
-    python ProPtyNet_torch.py ad   --opt-mode plain --ad-iters 2000   # 标准 AD ptychography
+    python ProPtyNet_torch.py ad   --stages 8             # AD 基线（论文对照列）
     python ProPtyNet_torch.py net  --iters 2000           # 默认 = 已修复的配置
     python ProPtyNet_torch.py net  --probe-mode truth --amp-output softplus --phase-output cossin
     python ProPtyNet_torch.py net  --probe-mode truth --amp-output leaky --phase-output tanh
@@ -115,14 +114,7 @@ class Cfg:
     gauss_snr_db: float = 0.0    # >0 时按论文 Table 1 追加高斯噪声
 
     # ---- AD 模式（移植校验）----
-    # alternating / joint = INNM notebook(Keras/TF) 的逐行移植，含四处 Keras 训练循环
-    #   伪影: 每 stage 重建优化器(状态清零) / batch_size=1 顺序遍历 / 每 stage lr*decay /
-    #   amsgrad=True。它们是【调度】伪影，不改变 AD ptychography 这个方法本身。
-    # plain = 标准 AD ptychography(Kandel et al. 2019): 联合更新 + 全程单个 Adam +
-    #   全批量 + 无 lr 调度 + amsgrad=False。前向模型/损失/初值与上面完全相同，
-    #   差别只在优化调度 -> plain vs alternating 直接量出"Keras 调度影响多大"。
-    opt_mode: str = "alternating"   # alternating | joint | plain(标准 AD)
-    ad_iters: int = 2000            # 仅 opt_mode='plain': 全批量梯度步数（与 net 的 iters 对齐）
+    opt_mode: str = "alternating"
     stages: int = 8
     obj_epoch: int = 8
     prb_epoch: int = 8
@@ -904,54 +896,6 @@ def run_ad(cfg: Cfg):
     hist = []
     t0 = time.time()
 
-    if cfg.opt_mode == "plain":
-        # ---------------- 标准 AD ptychography ----------------
-        # 与 alternating 的差别【只在优化调度】: 前向模型、损失、物体/探针初值完全相同。
-        # 两个 param group 保留 lr_obj / lr_prb 两个旋钮，但全程只有一个 Adam，不重建。
-        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
-                                {"params": [Pr, Pi], "lr": cfg.lr_prb}])
-        _upd_alt = cfg.stages * (cfg.obj_epoch + cfg.prb_epoch) * len(positions)
-        _pass_alt = cfg.stages * (cfg.obj_epoch + cfg.prb_epoch)
-        print(f"[ad] opt_mode=plain（标准 AD）: 全批量 {len(positions)} 位置/步，"
-              f"{cfg.ad_iters} 步 -> 参数更新 {cfg.ad_iters} 次 / 数据遍历 {cfg.ad_iters} 遍")
-        print(f"[ad] 刻度对照: 同配置 alternating(--stages {cfg.stages}) -> 参数更新 "
-              f"{_upd_alt} 次 / 数据遍历 {_pass_alt} 遍 —— 按 stage 数直接比两者是错的")
-        print(f"[ad] lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减） amsgrad=False "
-              f"正则 tv1={cfg.tv1:g} tv2={cfg.tv2:g}")
-        rec = pc = None
-        for it in range(cfg.ad_iters):
-            O = torch.complex(Or, Oi)
-            P = torch.complex(Pr * sup, Pi * sup)
-            U = forward_torch(cfg, O, P, corners, Ht)        # 全部位置一次前向
-            loss = data_loss_direct(U, y0)
-            if cfg.tv1 > 0 or cfg.tv2 > 0:
-                Oreg = O[c:-c, c:-c] if c > 0 else O
-                if cfg.tv1 > 0:
-                    loss = loss + cfg.tv1 * tgv_loss(Oreg.abs(), beta=1.0) * 1e-2
-                if cfg.tv2 > 0:
-                    loss = loss + cfg.tv2 * tgv_loss(safe_angle(Oreg), beta=1.0) * 1e-2
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-            if (it + 1) % cfg.eval_every == 0 or it == cfg.ad_iters - 1:
-                rec = torch.complex(Or, Oi).detach().cpu().numpy()
-                pc = torch.complex(Pr * sup, Pi * sup).detach().cpu().numpy()
-                mo = evaluate_object_roi(cfg, rec, obj)
-                mp = evaluate_probe(pc, probe, support)
-                hist.append({"it": it + 1, "loss": loss.item(), **mo, **mp})
-                if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.ad_iters - 1:
-                    print(f"  it {it+1:5d} | loss {loss.item():.4e} | "
-                          f"amplitude PSNR {mo['psnr_o_amp']:6.2f} dB | "
-                          f"SSIM {mo['ssim_o_amp']:.4f} | "
-                          f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex error "
-                          f"{mo['relerr_o_complex']:.4f} | probe error "
-                          f"{mp['relerr_p_complex']:.4f}", flush=True)
-        print(f"[ad] 用时 {time.time()-t0:.1f}s / {cfg.ad_iters} it")
-        _save(cfg, "ad", rec, pc, obj, probe, support, hist)
-        return hist
-
-    print(f"[ad] opt_mode={cfg.opt_mode}（INNM/Keras 移植调度: 每 stage 重建优化器 + "
-          f"batch_size=1 顺序 + lr*{cfg.decay:g}/stage + amsgrad）")
     for st in range(cfg.stages):
         for which in (("obj", "prb") if cfg.opt_mode != "joint" else ("both",)):
             if which == "obj":
@@ -1284,7 +1228,6 @@ def main():
                  ("tv1", float), ("tv2", float), ("opt_mode", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("obj_epoch", int), ("prb_epoch", int), ("decay", float), ("iters", int),
-                 ("ad_iters", int),
                  ("probe_warmup", int), ("lr_probe", float), ("weight_decay", float),
                  # --- 探针 = 坐标 SIREN ---
                  ("probe_inr_hidden", int), ("probe_inr_layers", int),
