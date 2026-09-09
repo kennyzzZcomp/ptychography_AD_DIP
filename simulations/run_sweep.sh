@@ -6,6 +6,7 @@
 #   bash run_sweep.sh all       两条轴都跑
 # AD 调度: AD_OPT=plain 用标准 AD ptychography（默认 alternating = INNM/Keras 移植）
 #   例: AD_OPT=plain AD_ITERS=2000 SUP=0.995 SEEDS=1 PY=python3 bash run_sweep.sh overlap
+#   plain 的学习率用 AD_LR 覆盖(默认 1e-2); alternating 不受影响, 仍用 Cfg 默认 3e-2
 # 已经有 *_result.npz 的目录会被跳过，所以中断了直接重跑同一条命令即可续上。
 
 set -u
@@ -23,8 +24,14 @@ RUN_AD=${RUN_AD:-1}         # RUN_AD=0 则只跑 net
 #   plain 用 --ad-iters 计步(全批量), 与 stages 不是同一个刻度, 所以单独放 adplain_* 目录
 AD_OPT=${AD_OPT:-alternating}
 AD_ITERS=${AD_ITERS:-2000}
+# plain 的学习率。500 步扫描: 3e-3/1e-2 欠训练, 3e-2 最快但 loss 已接近地板,
+# 1e-1 的 loss 反而更高(越过稳定边界)。选 1e-2 作为稳定档。
+# 【只作用于 plain】不改 Cfg 的 lr_obj/lr_prb 默认值(3e-2) —— 改了会连带改掉
+# alternating 基线, 让已有的 ad_* 结果全部失去可比性。
+AD_LR=${AD_LR:-1e-2}
 if [ "$AD_OPT" = "plain" ]; then
-  AD_ARGS="--opt-mode plain --ad-iters $AD_ITERS"; AD_TAG="adplain"
+  AD_ARGS="--opt-mode plain --ad-iters $AD_ITERS --lr-obj $AD_LR --lr-prb $AD_LR"
+  AD_TAG="adplain"
 else
   AD_ARGS="--opt-mode $AD_OPT --stages $STAGES";   AD_TAG="ad"
 fi
