@@ -22,7 +22,8 @@ network", Optics and Lasers in Engineering 186 (2025) 108791.
     python ProPtyNet_paper.py run    --preset paper --iters 2000       # 需要 GPU
     python ProPtyNet_paper.py run    --preset paper --noise mixed --snr 30
 
-资源: cameraman.bmp / westconcordorthophoto.bmp (自动在上级目录找)
+资源: 默认 USAF.jpg (振幅) + 内置合成辐条靶 (相位)，对应论文 Fig.2(a)。
+      换回自然图像做串扰诊断: --amp-image cameraman.bmp --phs-image westconcordorthophoto.bmp
 """
 
 from __future__ import annotations
@@ -69,6 +70,13 @@ class Cfg:
     step_px: int = 10            # 步长（重建面像素 Δx1）
     probe_diam_um: float = 800.0 # 针孔直径
     obj_size: int = 612          # 论文写的物体画布
+    # 物体的振幅图 / 相位图。论文: "synthesized from two kinds of resolution test targets"
+    #   USAF.jpg  -> 与论文 Fig.2(a) 的 Object Amplitude 同款 USAF 1951 靶
+    #   "siemens" -> 内置合成的辐条靶，对应论文 Fig.2(a) 的 Object Phase（不需要额外素材）
+    #   也可以填任意文件名，例如换回自然图像做串扰诊断：
+    #     --amp-image cameraman.bmp --phs-image westconcordorthophoto.bmp
+    amp_image: str = "USAF.jpg"
+    phs_image: str = "siemens"
     obj_phase_rad: float = 0.8   # 物体相位幅度 (±rad)。论文没规定样品相位多大，
                                  # 取 0.8 rad 与 INNM_Ptycho.ipynb / ProPtyNet_torch.py 一致，
                                  # 这样两条线的物体是同一个，指标才可比。
@@ -200,17 +208,58 @@ def forward_ptycho(obj, probe, positions, Q, n, chunk=0):
 # 真值物体 / 探针 —— 论文第 3 节
 # ============================================================================ #
 
+def _resolve(d: Path, name: str) -> Path:
+    """大小写兜底：Windows 上 usaf.jpg == USAF.jpg，Linux 服务器上不是。"""
+    p = d / name
+    if p.is_file():
+        return p
+    for q in d.iterdir():
+        if q.is_file() and q.name.lower() == name.lower():
+            return q
+    raise FileNotFoundError(f"{name} 不在 {d}（注意大小写；实际文件名可能是 USAF.jpg）")
+
+
+def _siemens_star(n: int, spokes: int = 16, r_out: float = 0.46, min_bar_px: float = 2.0):
+    """合成辐条靶，对应论文 Fig.2(a) 的 Object Phase。返回 0..255。
+
+    中心的平坦盘半径【自动】定在"最细辐条恰好 min_bar_px 像素宽"处:
+        辐条宽(r) = π·r / spokes  =>  r_in = spokes·min_bar_px/π
+    再往里就会混叠。默认 16 条而不是论文那种密辐条，是因为评价区只有画布中心
+    约 100×100 —— 辐条太密的话中心平坦盘会吃掉评价区一大块，指标就虚了。
+    """
+    y, x = np.mgrid[0:n, 0:n] - n / 2.0
+    rr = np.sqrt(x * x + y * y)
+    r_in = spokes * min_bar_px / PI
+    v = (np.cos(spokes * np.arctan2(y, x)) > 0).astype(np.float64)
+    v[(rr < r_in) | (rr / n > r_out)] = 0.5
+    return v * 255.0
+
+
 def _imread(path: Path, n: int):
+    """读灰度图 -> (n,n) float64 0..255。非方图先【中心裁成方形】再缩放，
+    否则 USAF.jpg (1931x2498) 会被横向压扁，靶条的线宽比就不对了。"""
     try:
         import cv2
         a = cv2.imread(str(path), 0)
         if a is None:
             raise FileNotFoundError(path)
+        h, w = a.shape
+        k = min(h, w)
+        a = a[(h - k) // 2:(h - k) // 2 + k, (w - k) // 2:(w - k) // 2 + k]
         return cv2.resize(a, (n, n), interpolation=cv2.INTER_CUBIC).astype(np.float64)
     except ImportError:
         from PIL import Image
-        return np.asarray(Image.open(path).convert("L").resize((n, n), Image.BICUBIC),
-                          dtype=np.float64)
+        im = Image.open(path).convert("L")
+        w, h = im.size
+        k = min(h, w)
+        im = im.crop(((w - k) // 2, (h - k) // 2, (w - k) // 2 + k, (h - k) // 2 + k))
+        return np.asarray(im.resize((n, n), Image.BICUBIC), dtype=np.float64)
+
+
+def _object_map(cfg: Cfg, spec: str, n: int):
+    if spec.lower() in ("siemens", "star", "spoke"):
+        return _siemens_star(n)
+    return _imread(_resolve(asset_dir(cfg), spec), n)
 
 
 def _lowpass_noise(n, sigma_px, rng):
@@ -228,10 +277,9 @@ def make_truth(cfg: Cfg):
           "mandrill" 振幅纹理。手上没有 mandrill，用低通随机场代替 —— 论文的重点是
           探针振幅不是平的，纹理来源不影响结论，但这是一处替代，报数据时要说明。
     """
-    d = asset_dir(cfg)
     M = cfg.obj_size
-    a = _imread(d / "cameraman.bmp", M)
-    p = _imread(d / "westconcordorthophoto.bmp", M)
+    a = _object_map(cfg, cfg.amp_image, M)
+    p = _object_map(cfg, cfg.phs_image, M)
     amp = 0.2 + 0.8 * a / a.max()
     phs = (-1 + 2 * (p - p.min()) / max(p.max() - p.min(), 1e-12)) * cfg.obj_phase_rad
     obj = (amp * np.exp(1j * phs)).astype(np.complex64)
@@ -306,11 +354,14 @@ def seam_diag(rec, gt, amp_s):
     要么让振幅穿过 0 —— 两条路都是高成本区，走过去就会在相位图上留下人为的 π 跳变。
 
     wrap_frac : 对齐后相位残差 |Δφ| > 0.9π 的像素占比（π 跳变的直接证据）
-    negamp_frac : 物体振幅为负的像素占比（走了符号翻转支路）
+    signmix   : 振幅符号的【少数派】占比。整幅统一取负是规范选择（等价于全局相位 π，
+                对齐时就消掉了），不是问题；只有符号在空间上混着才会在相位图上留缝。
+                0 = 全图同号（干净），0.5 = 一半一半（最糟）。
     """
     r = align(rec, gt)
     d = np.angle(np.exp(1j * (np.angle(r) - np.angle(gt))))
-    return float((np.abs(d) > 0.9 * PI).mean()), float((amp_s < 0).mean())
+    neg = float((amp_s < 0).mean())
+    return float((np.abs(d) > 0.9 * PI).mean()), min(neg, 1.0 - neg)
 
 
 def paper_loss(Ic, Im, S2, gamma, amp_p, S1, beta):
@@ -670,14 +721,14 @@ def run(cfg: Cfg):
                 a_s_roi = amp_s[rs, cs].cpu().numpy()
             m = evaluate(rec[rs, cs], obj[rs, cs])
             wrap, negamp = seam_diag(rec[rs, cs], obj[rs, cs], a_s_roi)
-            m["wrap_frac"], m["negamp_frac"] = wrap, negamp
+            m["wrap_frac"], m["signmix"] = wrap, negamp
             hist.append({"it": it + 1, "loss": loss.item(), "real": real, **m})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 print(f"  it {it+1:5d} | loss {loss.item():.4e} (L1 {l1:.3e} L2 {l2:.3e}) | "
                       f"real {real:.4e} | γ {gamma:.3f} | amp SSIM {m['ssim_amp']:.4f} "
                       f"PSNR {m['psnr_amp']:5.2f} | phs SSIM {m['ssim_phs']:.4f} | "
                       f"relerr {m['relerr']:.4f} | wrap {100*wrap:.1f}% "
-                      f"negamp {100*negamp:.1f}%", flush=True)
+                      f"signmix {100*negamp:.1f}%", flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     if len(hist) > 8:
@@ -783,6 +834,7 @@ def main():
                  ("iters", int), ("lr", float), ("lr_final_frac", float),
                  ("base_ch", int), ("beta", float), ("gamma0", float),
                  ("gamma_end", float), ("s1_margin", float), ("obj_phase_rad", float),
+                 ("amp_image", str), ("phs_image", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str)]:
