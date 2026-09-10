@@ -181,6 +181,12 @@ class Cfg:
     device: str = "auto"
     # 样品图。可以是 assets 目录下的文件名，也可以是绝对/相对路径。
     # 换样品会让所有历史结果失去可比性 —— 请换一棵 runs/ 目录树。
+    # 真值物体的振幅/相位跨度。振幅 = [obj_amp_min, 1.0]; 相位 = ±obj_phase_span 弧度。
+    # 本文件用 cossin 单位圆参数化, 没有 tanh 箱、不会饱和也不会缠绕, 所以相位跨度
+    # 可以自由调。默认 0.8 rad 是【弱相位物体】(Born 近似量级), 任务偏简单 ——
+    # 把它变成可扫的轴, 用来测"相位强度 vs 先验收益"。
+    obj_amp_min: float = 0.4
+    obj_phase_span: float = 0.8
     obj_amp_img: str = "cameraman.bmp"              # -> 物体振幅
     obj_phase_img: str = "westconcordorthophoto.bmp"  # -> 物体相位
     assets: str = ""             # 空 = 自动找 ../cameraman.bmp
@@ -330,10 +336,10 @@ def make_truth(cfg: Cfg):
         return p if (p.is_absolute() or p.exists()) else (d / name)
 
     _a = _imread_resize(_resolve(cfg.obj_amp_img), cfg.N_OBJ)
-    _a = 0.4 + 0.6 * _a / _a.max()
+    _a = cfg.obj_amp_min + (1.0 - cfg.obj_amp_min) * _a / _a.max()
     _p = _imread_resize(_resolve(cfg.obj_phase_img), cfg.N_OBJ)
     _p = -1.0 + 2.0 * (_p - _p.min()) / max(_p.max() - _p.min(), 1e-12)   # = cv2.normalize(-1,1)
-    obj = (_a * np.exp(1j * 0.8 * _p)).astype(np.complex64)
+    obj = (_a * np.exp(1j * cfg.obj_phase_span * _p)).astype(np.complex64)
 
     N = cfg.N
     yy, xx = np.mgrid[0:N, 0:N] - N / 2
@@ -1334,7 +1340,8 @@ def main():
                  ("scan_seed", int), ("scan_jitter", float), ("noise_seed", int),
                  ("probe_aberr", float), ("aberr_seed", int), ("support_energy", float),
                  ("eval_size", int), ("reg_size", int), ("z_probe_init", float),
-                 ("obj_amp_img", str), ("obj_phase_img", str)]:
+                 ("obj_amp_img", str), ("obj_phase_img", str),
+                 ("obj_amp_min", float), ("obj_phase_span", float)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--data-loss", dest="data_loss", choices=["direct", "paper"])
     ap.add_argument("--probe-mode", dest="probe_mode",

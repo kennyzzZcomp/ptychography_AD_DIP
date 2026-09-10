@@ -10,6 +10,7 @@ network", Optics and Lasers in Engineering 186 (2025) 108791.
 
     前向    Eq.(2)  Fresnel 单次 FFT,  Δx1·Δx2 = λz/M       (那份是角谱 Δx1=Δx2)
     输出    Fig.1   S = amp_s·exp(jπ·phs_s), P = amp_p·exp(jπ·phs_p)   相位跨度 ±π
+            振幅 Conv2d+LeakyReLU / 相位 Conv2d+tanh —— 这是原版基线，不要改
     损失    Eq.(4)(5)  β·Loss1 + (1-β)·Loss2, 双掩膜 S1/S2 + γ 衰减
     探针    只有 Loss2 的软约束, 【没有】二值 support 硬掩膜
     噪声    Table 1  全局归一化 -> 加噪 -> clip[0,1] (clip 产生过曝, 才有 S2)
@@ -68,6 +69,10 @@ class Cfg:
     step_px: int = 10            # 步长（重建面像素 Δx1）
     probe_diam_um: float = 800.0 # 针孔直径
     obj_size: int = 612          # 论文写的物体画布
+    obj_phase_rad: float = 0.8   # 物体相位幅度 (±rad)。论文没规定样品相位多大，
+                                 # 取 0.8 rad 与 INNM_Ptycho.ipynb / ProPtyNet_torch.py 一致，
+                                 # 这样两条线的物体是同一个，指标才可比。
+                                 # (曾误写成 0.8*PI = 2.513 rad，把全局相位歧义的余量压到 20%)
 
     # ---- 噪声 (Table 1) ----
     noise: str = "none"          # none | gaussian | poisson | mixed
@@ -82,7 +87,11 @@ class Cfg:
 
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
-    phase_span: float = PI       # 论文: exp(jπ·phs)
+    # 论文 Fig.1: S = amp_s·exp(jπ·phs_s), P = amp_p·exp(jπ·phs_p)
+    # 两个都默认 π = 论文原版基线（振幅 Conv2d+LeakyReLU，相位 Conv2d+tanh，输出头不动）。
+    # 拆成两个只是为了做消融时能单独放宽样品那一路（论文正文建议样品放到 2π）。
+    phase_span_obj: float = PI
+    phase_span_prb: float = PI
 
     # ---- 优化 ----
     iters: int = 2000
@@ -224,7 +233,7 @@ def make_truth(cfg: Cfg):
     a = _imread(d / "cameraman.bmp", M)
     p = _imread(d / "westconcordorthophoto.bmp", M)
     amp = 0.2 + 0.8 * a / a.max()
-    phs = (-1 + 2 * (p - p.min()) / max(p.max() - p.min(), 1e-12)) * (0.8 * PI)
+    phs = (-1 + 2 * (p - p.min()) / max(p.max() - p.min(), 1e-12)) * cfg.obj_phase_rad
     obj = (amp * np.exp(1j * phs)).astype(np.complex64)
 
     n = cfg.N
@@ -288,6 +297,21 @@ def simulate(cfg: Cfg, obj, probe, positions, Q, device):
 # ============================================================================ #
 # 损失 —— 论文 Eq.(4)(5)
 # ============================================================================ #
+
+def seam_diag(rec, gt, amp_s):
+    """参数化接缝诊断。
+
+    论文的输出头是 amp=LeakyReLU（可为负）+ phase=π·tanh。二者组合表达能力没有缺口
+    （amp<0 等价于相位 +π），但要从 φ 走到 φ+π，优化器要么把 tanh 横跨整个值域，
+    要么让振幅穿过 0 —— 两条路都是高成本区，走过去就会在相位图上留下人为的 π 跳变。
+
+    wrap_frac : 对齐后相位残差 |Δφ| > 0.9π 的像素占比（π 跳变的直接证据）
+    negamp_frac : 物体振幅为负的像素占比（走了符号翻转支路）
+    """
+    r = align(rec, gt)
+    d = np.angle(np.exp(1j * (np.angle(r) - np.angle(gt))))
+    return float((np.abs(d) > 0.9 * PI).mean()), float((amp_s < 0).mean())
+
 
 def paper_loss(Ic, Im, S2, gamma, amp_p, S1, beta):
     """Loss  = β·Loss1 + (1-β)·Loss2                                    Eq.(4)
@@ -454,6 +478,18 @@ def run_check(cfg: Cfg):
         print("  3) 正文说 zero-pad 到 612 是「网络结构要求」，但 612/8 = 76.5 不是整数，"
               "612 恰恰不满足三次池化")
     print("-" * 78)
+    _o, _p, _s1, _rr = make_truth(cfg)
+    for name, fld, span in (("物体", _o, cfg.phase_span_obj),
+                            ("探针", _p, cfg.phase_span_prb)):
+        m = np.abs(fld) > 1e-9
+        ph = np.angle(fld)[m]
+        rngspan = ph.max() - ph.min()
+        need = max(abs(ph.max()), abs(ph.min())) / span
+        head = (2 * span - rngspan) / 2
+        print(f"  {name}相位: GT 跨度 {rngspan:.3f} rad = {rngspan/PI:.2f}π"
+              f" | 网络窗口 ±{span/PI:.2f}π | 需要 |tanh| ≤ {need:.2f}"
+              f" | 全局相位余量 ±{head:.2f} rad ({ok(head > 0.5*PI)}宽松)")
+    print("-" * 78)
 
     device = cfg.dev()
     cfg.quad_sign = getattr(cfg, "quad_sign", -1.0)
@@ -590,18 +626,18 @@ def run(cfg: Cfg):
         a_s, p_s, a_p, p_p = net(x)
         c = slice(pad_n, pad_n + M)
         a_s, p_s, a_p, p_p = a_s[c, c], p_s[c, c], a_p[c, c], p_p[c, c]
-        O = (a_s * torch.exp(1j * cfg.phase_span * p_s)).to(torch.complex64)
+        O = (a_s * torch.exp(1j * cfg.phase_span_obj * p_s)).to(torch.complex64)
         # Fig.1(c): 612 的探针裁到中心 512 再进前向；不加任何硬 support，只靠 Loss2
         d = slice(pad_o, pad_o + n)
-        P = (a_p[d, d] * torch.exp(1j * cfg.phase_span * p_p[d, d])).to(torch.complex64)
-        return O, P, a_p[d, d]
+        P = (a_p[d, d] * torch.exp(1j * cfg.phase_span_prb * p_p[d, d])).to(torch.complex64)
+        return O, P, a_p[d, d], a_s
 
     scale = 1.0
     if cfg.scale_cal:
         # 论文没写网络输出的绝对幅度怎么锚定。这里在第一次前向后算一个常数并冻结，
         # 纯数值辅助，不改物理；--no-scale-cal 可关掉看差别。
         with torch.no_grad():
-            O, P, _ = decode()
+            O, P, _, _ = decode()
             I0 = forward_ptycho(O, P, post, Q, n, chunk=8)
             scale = (Im.mean() / I0.mean().clamp_min(1e-20)).item()
         print(f"[net] 冻结幅度标定 = {scale:.4g}")
@@ -619,7 +655,7 @@ def run(cfg: Cfg):
         else:
             sel = torch.arange(cfg.n_pat, device=device)
 
-        O, P, amp_p = decode()
+        O, P, amp_p, amp_s = decode()
         Ic = forward_ptycho(O, P, post[sel], Q, n, chunk=0) * scale
         loss, l1, l2 = paper_loss(Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
         opt.zero_grad(set_to_none=True)
@@ -631,13 +667,17 @@ def run(cfg: Cfg):
             with torch.no_grad():
                 real = torch.linalg.vector_norm(Ic - Icl[sel]).item()   # 论文判据(2)
                 rec = O.cpu().numpy()
+                a_s_roi = amp_s[rs, cs].cpu().numpy()
             m = evaluate(rec[rs, cs], obj[rs, cs])
+            wrap, negamp = seam_diag(rec[rs, cs], obj[rs, cs], a_s_roi)
+            m["wrap_frac"], m["negamp_frac"] = wrap, negamp
             hist.append({"it": it + 1, "loss": loss.item(), "real": real, **m})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 print(f"  it {it+1:5d} | loss {loss.item():.4e} (L1 {l1:.3e} L2 {l2:.3e}) | "
                       f"real {real:.4e} | γ {gamma:.3f} | amp SSIM {m['ssim_amp']:.4f} "
                       f"PSNR {m['psnr_amp']:5.2f} | phs SSIM {m['ssim_phs']:.4f} | "
-                      f"relerr {m['relerr']:.4f}", flush=True)
+                      f"relerr {m['relerr']:.4f} | wrap {100*wrap:.1f}% "
+                      f"negamp {100*negamp:.1f}%", flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     if len(hist) > 8:
@@ -742,7 +782,8 @@ def main():
                  ("grid", int), ("step_px", int), ("probe_diam_um", float),
                  ("iters", int), ("lr", float), ("lr_final_frac", float),
                  ("base_ch", int), ("beta", float), ("gamma0", float),
-                 ("gamma_end", float), ("s1_margin", float), ("phase_span", float),
+                 ("gamma_end", float), ("s1_margin", float), ("obj_phase_rad", float),
+                 ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
