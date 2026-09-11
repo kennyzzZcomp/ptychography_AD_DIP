@@ -96,7 +96,7 @@ class Cfg:
     scan_pattern: str = "raster_jitter"
     scan_npos: int = 25
     scan_step: float = 20.0      # E5 重叠轴有 26.7 / 13.3 / 11.4 这些小数档，必须是 float
-    scan_jitter: float = 0.2
+    scan_jitter: float = 0.0
     scan_seed: int = 0
 
     # ---- 区域 ----
