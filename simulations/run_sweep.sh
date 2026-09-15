@@ -46,9 +46,12 @@ AD_LR=${AD_LR:-1e-2}
 # 样品图。换样品会让所有历史结果失去可比性 -> 同时改 ROOT 换一棵目录树。
 IMG_AMP=${IMG_AMP:-}        # 空 = 用 Cfg 默认 cameraman.bmp
 IMG_PHASE=${IMG_PHASE:-}    # 空 = 用 Cfg 默认 westconcordorthophoto.bmp
+# 物体相位幅度(rad)。空 = 用 Cfg 默认 0.8。改这个等于换样品 -> 同时改 ROOT。
+PHASE=${PHASE:-}
 COMMON="--support-energy $SUP --lr-cosine"
 [ -n "$IMG_AMP" ]   && COMMON="$COMMON --obj-amp-img $IMG_AMP"
 [ -n "$IMG_PHASE" ] && COMMON="$COMMON --obj-phase-img $IMG_PHASE"
+[ -n "$PHASE" ]     && COMMON="$COMMON --obj-phase-span $PHASE"
 mkdir -p "$ROOT"
 
 run () {           # run <outdir> <mode> <额外参数...>
