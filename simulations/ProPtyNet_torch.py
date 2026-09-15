@@ -161,6 +161,16 @@ class Cfg:
     #   下的数，这里单位已换成光子，所以默认值改成 1.0；要复现原值就 --sigma-read 0.01)
     sigma_read: float = 1.0      # 单位: 光子
     photon_scale: float = -1.0   # -1 = 自动 (poisson 时 peak_photons/Im.max()，否则 1)
+    # 【坑4】异方差 NLL 的系统偏置。d/dD[0.5*log(2pi*var)] = 1/(2var) 恒为正，
+    #   在【真解】处梯度也不为 0 —— 实测它比数据项还大(5000光子档 3.2e-3 vs 2.4e-3)，
+    #   方向是把 D 往小压，且越暗的像素压得越狠(D=0 时是亮像素的 5000 倍)。
+    #   ls 标度能吸收掉均匀的那部分(所以振幅没事)，吸收不掉空间变化的那部分：
+    #   它把每张衍射图的暗区相对压暗，而相消干涉条纹=相位信息正住在暗区 -> 相位崩。
+    #   detach 方差后 log 项变常数(梯度 0)、偏置消失，1/(2var) 作为逐步冻结的权重
+    #   保留下来 = 泊松加权的强度最小二乘，正是想要的东西。
+    #   (Seitzer et al. 2022, On the Pitfalls of Heteroscedastic Uncertainty Estimation)
+    #   消融对照: --pg-no-detach-var 切回有偏的原始 NLL。
+    pg_detach_var: bool = True
     eval_every: int = 25
 
     # ---- 未知量的参数化（默认 = 修复后；--paper 切回原版）----
@@ -667,12 +677,15 @@ def data_loss_paper(Ic, Im, S2, gamma, probe_amp=None, S1=None, beta=0.9, M=None
 
 
 def data_loss_censor_pg(D, Im, S=1.0, sigma_read=1.0, M=None, eps=1e-8,
-                        photon_scale=1.0):
+                        photon_scale=1.0, detach_var=True):
     """删失复合泊松-高斯负对数似然 (Censored Poisson-Gaussian NLL)。
 
     D  : 预测光强 |U|^2（与 Im 同尺寸同量纲）   Im : 实测光强
     S  : 探测器饱和阈值，与 Im 同量纲
     sigma_read   : 读出底噪标准差，【单位 = 光子数】
+    detach_var   : True(默认) = 方差不回传梯度。去掉 log 项那个"把 D 往小压"的
+                   系统偏置，只保留 1/(2var) 作为逐步冻结的异方差权重。
+                   False = 原始有偏 NLL，只用来做消融。见 Cfg.pg_detach_var 的注释。
     photon_scale : I -> 光子数的换算系数 s。simulate() 里 I = poisson(I*s)/s，
                    所以 Var(I) = D/s，必须先换算到光子域再套 sigma^2 = D + sr^2。
                    传 1.0 = 直接把 I 当光子数（只在 I 本身就是计数时才对）。
@@ -694,7 +707,7 @@ def data_loss_censor_pg(D, Im, S=1.0, sigma_read=1.0, M=None, eps=1e-8,
     d = D.clamp_min(0.0) * photon_scale
     y = Im * photon_scale
     s = S * photon_scale
-    var = (d + sigma_read ** 2).clamp_min(eps)
+    var = ((d.detach() if detach_var else d) + sigma_read ** 2).clamp_min(eps)
     sat = y >= s
     nll_unsat = 0.5 * torch.log(2 * PI * var) + (y - d) ** 2 / (2 * var)
     # 未删失像素在删失支上代 d=s（-> arg=0, log_ndtr(0)=log0.5, 有限且梯度有限）；
@@ -1240,6 +1253,8 @@ def run_net(cfg: Cfg):
               f"删失像素 {100*_fsat:.4f}%  光子标度 {_ps:.4g}  "
               f"读出噪声 {cfg.sigma_read:g} 光子  "
               f"(峰值 {_ps*float(Im.max()):.0f} 光子, 中位 {_ps*float(Im.median()):.2f} 光子)")
+        print(f"[net]   方差 {'detach(无偏)' if cfg.pg_detach_var else 'NOT detach(有偏, 消融用)'}"
+              f"  低于 1 光子的像素占比 {100*float((Im*_ps < 1).float().mean()):.1f}%")
         if _fsat < 1e-6:
             print("[net]   <- 没有像素触发删失分支，等价于纯 PG 似然。"
                   "要测删失请把 --sat-threshold 压到 Im.max() 以下")
@@ -1304,8 +1319,9 @@ def run_net(cfg: Cfg):
             loss = data_loss_paper(Ua ** 2, Im, S2, gamma, amp_p, sup, cfg.beta, Mtr)
         elif cfg.data_loss == "censor_pg":
             loss = data_loss_censor_pg(Ua ** 2, Im, S=_pg["S"],
-                                       sigma_read=cfg.sigma_read,
-                                       M=Mtr, photon_scale=_pg["ps"])
+                                       sigma_read=cfg.sigma_read, M=Mtr,
+                                       photon_scale=_pg["ps"],
+                                       detach_var=cfg.pg_detach_var)
         else:
             loss = masked_mse(Ua, sqrtIm, Mtr)
 
@@ -1461,6 +1477,9 @@ def main():
     ap.add_argument("--scale-mode", dest="scale_mode", choices=["ls", "frozen"])
     ap.add_argument("--poisson", dest="poisson", action="store_true", default=None)
     ap.add_argument("--noise-clip", dest="noise_clip", action="store_true", default=None)
+    ap.add_argument("--pg-no-detach-var", dest="pg_detach_var", action="store_false",
+                    default=None,
+                    help="消融: censor_pg 的方差回传梯度（= 原始有偏 NLL）")
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None,
                     help="两个 lr 一起余弦退火到 0，治后期 loss 尖峰")
     ap.add_argument("--paper", action="store_true",

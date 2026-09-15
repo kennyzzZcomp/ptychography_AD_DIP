@@ -96,6 +96,20 @@ LOSS_ARGS = {
 LOSS_SHORT = {"direct": "", "paper": "paper", "censor_pg": "PG"}
 
 
+# 似然类损失在【无噪声档】上没有意义, 而且是有害的:
+# photon_scale 的自动逻辑在 poisson 关闭时退化成 1.0(见 ProPtyNet_torch.py 【量纲坑2】),
+# 于是中位数 1e-4 的 I 被当成光子数, 整幅图 100% 落在 sigma_read 地板下 ->
+# var 处处相同、异方差加权全失效、残差 ~1e-3, 损失几乎是平的, 网络收不到信号。
+# 实测这一档 relerr=0.9999(等于什么都没重建)。直接不跑, 免得它以"效果很差"的形式
+# 混进表和图里 —— 那不是损失函数的性质, 是档位本身不成立。
+NEEDS_NOISE = ("censor_pg",)
+
+
+def skip_clean(extra_args):
+    """这次跑用的是需要噪声模型的损失吗（extra_args 是 build_plan 拼好的参数列表）"""
+    return any(name in extra_args for name in NEEDS_NOISE)
+
+
 def build_plan(methods, losses):
     """methods × losses -> {标签: (mode, 该次跑的全部专属参数)}，保持顺序。
 
@@ -380,14 +394,18 @@ def main():
     print()
 
     if not a.collect_only:
-        total = len(levels) * len(plan)
-        k = 0
+        # 先把作业单排定, 再跑 —— 这样 [k/total] 的计数是对的, 跳过的也一目了然
+        jobs, skipped = [], []
         for lv in levels:
-            for m in plan:
-                k += 1
-                print(f"[{k}/{total}] {m} @ {level_tag(a.axis, lv)}")
-                run_one(script, m, plan, a.axis, lv, root, common, a.iters,
-                        a.noise_clip, a.force, a.dry_run)
+            for m, (_mode, extra) in plan.items():
+                (skipped if (lv is None and skip_clean(extra)) else jobs).append((lv, m))
+        for _lv, m in skipped:
+            print(f"[跳过] {m} @ clean —— 似然损失需要噪声模型, 无噪声档不成立")
+        total = len(jobs)
+        for k, (lv, m) in enumerate(jobs, 1):
+            print(f"[{k}/{total}] {m} @ {level_tag(a.axis, lv)}")
+            run_one(script, m, plan, a.axis, lv, root, common, a.iters,
+                    a.noise_clip, a.force, a.dry_run)
         if a.dry_run:
             print("\n（--dry-run，什么都没跑）")
             return
