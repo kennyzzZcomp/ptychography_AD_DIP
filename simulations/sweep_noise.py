@@ -35,6 +35,12 @@ ProPtyNet_torch.py。
     # 跑完只重新汇总（不重跑）
     python sweep_noise.py --collect-only
 
+    # ★ 损失函数轴: 同一条噪声轴上并排比 direct 与 censor_pg（删失泊松-高斯似然）
+    python sweep_noise.py --losses direct,censor_pg --iters 2000
+    # censor_pg 的旋钮走 --extra 透传（ad 那条腿会忽略它们，无害）:
+    python sweep_noise.py --losses direct,censor_pg --noise-clip \
+        --extra "--sat-threshold 0.3 --sigma-read 1.0"
+
 断点续跑: 某个组合的 npz 已经存在就跳过，加 --force 才重跑。
 """
 
@@ -73,6 +79,41 @@ METHODS = {
     "ProPtyNet":  ("net", ["--probe-mode", "pixel"]),
 }
 
+# ---- 损失函数轴 ----------------------------------------------------------- #
+# 与噪声轴【正交】: 噪声档位仍然是 x 轴，不同损失是同一张图上的不同曲线。
+# 这才是想看的东西 —— "换了似然之后，抗噪曲线整条抬高了多少"。
+#
+# 【只作用于 net】ad 分支恒用 data_loss_direct（ProPtyNet_torch.py 的 run_ad 里
+# 写死的），所以 AD 那条腿不跟损失轴做叉乘，只跑一次，避免拿同一份结果画三条
+# 一模一样的曲线还以为是对照。
+LOSS_ARGS = {
+    "direct":    [],                              # = Cfg 默认，不传参数
+    "paper":     ["--data-loss", "paper"],
+    "censor_pg": ["--data-loss", "censor_pg"],
+}
+# 目录名/图例用的短名。direct 故意是空串 —— 这样 --losses 不写时标签仍然是
+# "ProPtyNet" / "AD"，和你【已有的 sweep_out/ 目录完全同名】，续跑不会全部重算。
+LOSS_SHORT = {"direct": "", "paper": "paper", "censor_pg": "PG"}
+
+
+def build_plan(methods, losses):
+    """methods × losses -> {标签: (mode, 该次跑的全部专属参数)}，保持顺序。
+
+    返回的标签就是输出子目录名的前缀，也是表头和图例。
+    """
+    plan = {}
+    for m in methods:
+        mode, extra = METHODS[m]
+        # ad 不参与损失叉乘（见上）
+        use = ["direct"] if mode == "ad" else losses
+        for ls in use:
+            short = LOSS_SHORT[ls]
+            label = m if not short else f"{m}-{short}"
+            if label in plan:
+                continue
+            plan[label] = (mode, extra + LOSS_ARGS[ls])
+    return plan
+
 
 # --------------------------------------------------------------------------- #
 # 单次运行
@@ -99,11 +140,11 @@ def level_tag(axis: str, level):
     return f"{axis}{level:g}"
 
 
-def run_one(script, method, axis, level, root, common, iters, clip, force, dry):
-    mode, extra = METHODS[method]
+def run_one(script, label, plan, axis, level, root, common, iters, clip, force, dry):
+    mode, extra = plan[label]
     # 步数旗标两边不同名: AD 用 --ad-iters（plain 分支读它），net 用 --iters
     extra = extra + (["--ad-iters", str(iters)] if mode == "ad" else ["--iters", str(iters)])
-    outdir = Path(root) / f"{method}_{level_tag(axis, level)}"
+    outdir = Path(root) / f"{label}_{level_tag(axis, level)}"
     npz = outdir / f"{mode}_result.npz"
 
     if npz.is_file() and not force:
@@ -120,7 +161,7 @@ def run_one(script, method, axis, level, root, common, iters, clip, force, dry):
 
     outdir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    print(f"  [运行] {method} / {level_tag(axis, level)}")
+    print(f"  [运行] {label} / {level_tag(axis, level)}")
     with open(outdir / "log.txt", "w", encoding="utf-8") as fh:
         p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
     dt = time.time() - t0
@@ -153,11 +194,10 @@ def read_result(npz: Path):
     return row
 
 
-def collect(root, axis, levels, methods):
+def collect(root, axis, levels, plan):
     rows = []
     for lv in levels:
-        for m in methods:
-            mode, _ = METHODS[m]
+        for m, (mode, _) in plan.items():
             npz = Path(root) / f"{m}_{level_tag(axis, lv)}" / f"{mode}_result.npz"
             r = read_result(npz)
             if r is None:
@@ -181,35 +221,45 @@ def write_csv(rows, path):
     print(f"[汇总] CSV -> {path}")
 
 
-def print_table(rows, axis, levels, methods):
+def print_table(rows, axis, levels, labels):
     if not rows:
         print("[汇总] 没有可读的结果")
         return
     idx = {(r["method"], r["level"]): r for r in rows}
+    w = max(14, max(len(m) for m in labels) + 2)
+    two = len(labels) == 2          # 两列时保留原来的"差值"列
     for key, label, better, _ in METRICS:
-        print("\n" + "=" * 74)
+        print("\n" + "=" * (18 + w * len(labels) + (w if two else 0)))
         print(f"{label}   ({'越大越好' if better == 'high' else '越小越好'})")
-        print("=" * 74)
-        head = f"  {'噪声档':<14}" + "".join(f"{m:>14}" for m in methods) + f"{'差值':>14}"
+        print("=" * (18 + w * len(labels) + (w if two else 0)))
+        head = f"  {'噪声档':<14}" + "".join(f"{m:>{w}}" for m in labels)
+        if two:
+            head += f"{'差值':>{w}}"
         print(head)
         for lv in levels:
             tag = "clean" if lv is None else lv
-            vals = []
-            for m in methods:
-                r = idx.get((m, tag))
-                vals.append(float("nan") if r is None else float(r[key]))
-            cell = "".join("        --    " if np.isnan(v) else f"{v:14.4f}" for v in vals)
-            if len(vals) == 2 and not any(np.isnan(vals)):
+            vals = [float("nan") if idx.get((m, tag)) is None
+                    else float(idx[(m, tag)][key]) for m in labels]
+            ok = [v for v in vals if not np.isnan(v)]
+            # 最优的那一格打 * ——  >2 列时这是唯一还看得懂的标记方式
+            bestv = (max(ok) if better == "high" else min(ok)) if ok else None
+            cell = ""
+            for v in vals:
+                if np.isnan(v):
+                    cell += f"{'--':>{w}}"
+                else:
+                    mark = "*" if bestv is not None and v == bestv else " "
+                    cell += f"{f'{v:.4f}{mark}':>{w}}"
+            if two and not any(np.isnan(vals)):
                 dv = vals[1] - vals[0]
-                win = (dv > 0) if better == "high" else (dv < 0)
-                diff = f"{dv:+14.4f}" + ("  <-" if win else "")
-            else:
-                diff = ""
-            print(f"  {str(tag):<14}{cell}{diff}")
-    print("\n  （差值 = ProPtyNet − AD；箭头标出 ProPtyNet 占优的档位）")
+                cell += f"{f'{dv:+.4f}':>{w}}"
+            print(f"  {str(tag):<14}{cell}")
+    print("\n  （* = 该档位最优" + ("；差值 = 第2列 − 第1列" if two else "") + "）")
+    print("  注意: CSV 里的 loss 列在【不同损失函数之间不可比】(NLL 可以是负数，"
+          "与 MSE 不同量纲)，跨损失只能比上面这些重建指标。")
 
 
-def plot(rows, axis, levels, methods, path):
+def plot(rows, axis, levels, labels, path):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -225,7 +275,7 @@ def plot(rows, axis, levels, methods, path):
     fig, ax = plt.subplots(2, 3, figsize=(16, 8))
     for k, (key, _cn, better, label) in enumerate(METRICS):
         a = ax[k // 3, k % 3]
-        for m in methods:
+        for m in labels:
             xs, ys = [], []
             for lv in fin:
                 r = idx.get((m, lv))
@@ -244,8 +294,8 @@ def plot(rows, axis, levels, methods, path):
         a.set_title(f"{label}  ({'higher better' if better=='high' else 'lower better'})",
                     fontsize=9)
         a.grid(alpha=.3); a.legend(fontsize=8)
-    fig.suptitle("ProPtyNet (pixel probe) vs AD  —  noise robustness"
-                 "   (dotted = each method's noise-free baseline)")
+    fig.suptitle("noise robustness:  " + "  vs  ".join(labels)
+                 + "   (dotted = each curve's noise-free baseline)")
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     print(f"[汇总] 图 -> {path}")
@@ -266,6 +316,10 @@ def main():
     ap.add_argument("--noise-clip", action="store_true", help="加论文的 clip 过曝")
     ap.add_argument("--methods", default="AD,ProPtyNet",
                     help=f"逗号分隔，可选 {list(METHODS)}")
+    ap.add_argument("--losses", default="direct",
+                    help=f"损失函数轴，逗号分隔，可选 {list(LOSS_ARGS)}。"
+                         "与噪声轴正交(每个噪声档都跑一遍)。默认 direct = 维持原行为，"
+                         "目录名也和已有结果同名。ad 腿不参与叉乘(run_ad 恒用 direct)")
     ap.add_argument("--iters", type=int, default=2000,
                     help="两边共用的梯度步数（AD 走 --ad-iters，net 走 --iters）")
     ap.add_argument("--seed", type=int, default=0)
@@ -287,6 +341,15 @@ def main():
     for m in methods:
         if m not in METHODS:
             sys.exit(f"未知方法 {m}，可选 {list(METHODS)}")
+    losses = [x.strip() for x in a.losses.split(",") if x.strip()]
+    for x in losses:
+        if x not in LOSS_ARGS:
+            sys.exit(f"未知损失 {x}，可选 {list(LOSS_ARGS)}")
+    # --extra 是原样透传给每一次跑的，里面再塞 --data-loss 会和损失轴打架:
+    # argparse 后面的覆盖前面的，结果是整条轴悄悄跑成同一个损失。直接拦住。
+    if "--data-loss" in a.extra:
+        sys.exit("--extra 里不要写 --data-loss，会覆盖掉损失轴。请用 --losses")
+    plan = build_plan(methods, losses)
 
     if a.levels.strip():
         levels = [float(x) for x in a.levels.split(",")]
@@ -307,6 +370,9 @@ def main():
     print(f"输出根   {root.resolve()}")
     print(f"噪声轴   {a.axis}   档位 {[('clean' if l is None else l) for l in levels]}")
     print(f"方法     {methods}")
+    print(f"损失轴   {losses}" + ("" if len(losses) == 1 else
+          "   (ad 腿不叉乘: run_ad 恒用 data_loss_direct)"))
+    print(f"实际跑   {list(plan)}")
     print(f"AD 基线  --opt-mode plain = 标准 AD ptychography"
           f"（单 Adam / 全批量 / 联合更新 / 无 stage 无衰减无正则）")
     print(f"步数     两边都 {a.iters} 步（AD:--ad-iters, net:--iters）")
@@ -314,22 +380,23 @@ def main():
     print()
 
     if not a.collect_only:
-        total = len(levels) * len(methods)
+        total = len(levels) * len(plan)
         k = 0
         for lv in levels:
-            for m in methods:
+            for m in plan:
                 k += 1
                 print(f"[{k}/{total}] {m} @ {level_tag(a.axis, lv)}")
-                run_one(script, m, a.axis, lv, root, common, a.iters,
+                run_one(script, m, plan, a.axis, lv, root, common, a.iters,
                         a.noise_clip, a.force, a.dry_run)
         if a.dry_run:
             print("\n（--dry-run，什么都没跑）")
             return
 
-    rows = collect(root, a.axis, levels, methods)
+    labels = list(plan)
+    rows = collect(root, a.axis, levels, plan)
     write_csv(rows, root / "summary.csv")
-    print_table(rows, a.axis, levels, methods)
-    plot(rows, a.axis, levels, methods, root / "summary.png")
+    print_table(rows, a.axis, levels, labels)
+    plot(rows, a.axis, levels, labels, root / "summary.png")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ neural network", Optics and Lasers in Engineering 186 (2025) 108791.
     python ProPtyNet_torch.py net  --holdout-frac 0.05 --poisson --peak-photons 1e3
     python ProPtyNet_torch.py net  --probe-mode inr --probe-prefit-only --probe-inr-w0 30
     python ProPtyNet_torch.py net  --probe-mode inr --probe-warmup 300   # 阶段1+2 全流程
+    python ProPtyNet_torch.py net  --data-loss censor_pg --poisson --peak-photons 1e3
+    python ProPtyNet_torch.py net  --data-loss censor_pg --noise-clip --sat-threshold 0.3
 
 【默认值已改为修复后的配置】原论文/原实现的配置用 --paper 复现，逐项对照:
 
@@ -141,6 +143,24 @@ class Cfg:
     beta: float = 0.90           # 论文 Eq.4
     gamma0: float = 1.0          # 论文 Eq.5，随迭代衰减
     gamma_end: float = 0.05
+    # ---- data_loss='censor_pg' 专用（删失复合泊松-高斯似然）----
+    # 【量纲坑1】本文件的 I 不是归一化到 [0,1] 的: simulate() 里 clip 之后又乘回
+    #   g=I.max()，所以 I.max() 是 1.15 这种数。sat_threshold 写死 1.0 会 censor 到
+    #   莫名其妙的像素上。-1 = 自动取 Im.max()（等于不删失，退化成纯 PG 似然，安全默认）。
+    #   想真正测删失分支，要把它压到 Im.max() 以下，例如 --sat-threshold 0.3。
+    sat_threshold: float = -1.0
+    # 【量纲坑2】泊松方差 = 光子数，不是 I。simulate() 里 I = poisson(I*s)/s，
+    #   s = peak_photons/I.max() ≈ 4400。所以 sigma_read 必须以【光子】为单位，
+    #   并且 sigma^2 = D + sigma_read^2 要在光子域算，否则读出噪声与散粒噪声的
+    #   相对权重会差三个数量级，异方差加权整个失效、退化成普通强度域 MSE。
+    # 【坑3】sigma_read 不能给太小。方差 sigma^2 = D + sr^2 在 D->0 时塌到 sr^2，
+    #   权重 1/(2 sigma^2) 就爆掉 —— 实测 sr=0.01 时 D=0.01 光子的像素梯度是亮像素
+    #   的 100 倍，而本仿真的衍射图【中位数就是 0 光子】，等于让网络被暗区绑架把
+    #   整幅图往 0 压（异方差 NLL 的 variance-collapse）。sr=1 光子起梯度才平。
+    #   1~2 e- 也正好是真实 sCMOS 的读出噪声量级。(你给的 0.01 是归一化强度单位
+    #   下的数，这里单位已换成光子，所以默认值改成 1.0；要复现原值就 --sigma-read 0.01)
+    sigma_read: float = 1.0      # 单位: 光子
+    photon_scale: float = -1.0   # -1 = 自动 (poisson 时 peak_photons/Im.max()，否则 1)
     eval_every: int = 25
 
     # ---- 未知量的参数化（默认 = 修复后；--paper 切回原版）----
@@ -644,6 +664,50 @@ def data_loss_paper(Ic, Im, S2, gamma, probe_amp=None, S1=None, beta=0.9, M=None
         return loss1
     loss2 = torch.linalg.vector_norm(probe_amp * (1.0 - S1))
     return beta * loss1 + (1.0 - beta) * loss2
+
+
+def data_loss_censor_pg(D, Im, S=1.0, sigma_read=1.0, M=None, eps=1e-8,
+                        photon_scale=1.0):
+    """删失复合泊松-高斯负对数似然 (Censored Poisson-Gaussian NLL)。
+
+    D  : 预测光强 |U|^2（与 Im 同尺寸同量纲）   Im : 实测光强
+    S  : 探测器饱和阈值，与 Im 同量纲
+    sigma_read   : 读出底噪标准差，【单位 = 光子数】
+    photon_scale : I -> 光子数的换算系数 s。simulate() 里 I = poisson(I*s)/s，
+                   所以 Var(I) = D/s，必须先换算到光子域再套 sigma^2 = D + sr^2。
+                   传 1.0 = 直接把 I 当光子数（只在 I 本身就是计数时才对）。
+    M  : 留出掩膜，1=进 loss，0=留出；None = 全用。
+
+    未过曝 (Im <  S): 0.5*log(2*pi*var) + (y-d)^2/(2*var),   var = d + sigma_read^2
+    过曝   (Im >= S): -log P(Y >= S) = -log Phi((d-S)/sigma)   <- 右删失
+        d >= S 时该项梯度自发趋 0，峰值不会被数据往下拽 -> 不再削顶。
+
+    【数值】原始写法 -log(0.5*erfc(z)+eps) 在 z 稍大时 erfc 下溢到 0，log 被 eps
+    夹成常数 -> 梯度归零，删失分支等于没写。这里用 torch.special.log_ndtr，
+    极远尾部仍按 -x^2/2 正确外推，且数学上完全等价:
+        0.5*erfc((S-d)/(sqrt2*sigma)) == Phi((d-S)/sigma)
+    【坑】torch.where 会把【两支都算出来】再选，反向时未选中的那支要乘 0。
+    若它是 ±inf，0*inf = NaN，整个 loss 就废了 —— 而 -log_ndtr(x) ~ x^2/2，
+    S 给大一点（比如不小心传了 1e30）就会溢出 float32。所以这里不能指望
+    "反正它不会被选中"，必须先把未选中像素的【输入】换成安全值再算。
+    """
+    d = D.clamp_min(0.0) * photon_scale
+    y = Im * photon_scale
+    s = S * photon_scale
+    var = (d + sigma_read ** 2).clamp_min(eps)
+    sat = y >= s
+    nll_unsat = 0.5 * torch.log(2 * PI * var) + (y - d) ** 2 / (2 * var)
+    # 未删失像素在删失支上代 d=s（-> arg=0, log_ndtr(0)=log0.5, 有限且梯度有限）；
+    # clamp 只是兜底防 float32 溢出，正常量纲下永远够不着。
+    # 注意写成 where(sat, d-s, 0) 而不是 where(sat, d, s)-s ——
+    # 后者在 S=inf 时是 inf-inf = NaN。
+    arg = (torch.where(sat, d - s, torch.zeros_like(d))
+           / var.sqrt()).clamp(-1e9, 1e9)
+    nll_sat = -torch.special.log_ndtr(arg)
+    nll = torch.where(sat, nll_sat, nll_unsat)
+    if M is None:
+        return nll.mean()
+    return (nll * M).sum() / M.sum().clamp_min(1.0)
 
 
 # ============================================================================ #
@@ -1159,6 +1223,27 @@ def run_net(cfg: Cfg):
         print(f"[net] 论文损失: 过曝像素占比 {float((1-S2).mean())*100:.4f} %"
               + ("" if cfg.noise_clip else "   <- noise_clip=False，S2 全 1"))
 
+    # Censor-PG 的量纲解析。S 和 photon_scale 都依赖实测数据的量纲，只能在这里定。
+    _pg = None
+    if cfg.data_loss == "censor_pg":
+        _S = float(Im.max()) if cfg.sat_threshold < 0 else float(cfg.sat_threshold)
+        if cfg.photon_scale > 0:
+            _ps = float(cfg.photon_scale)
+        elif cfg.poisson:
+            _ps = float(cfg.peak_photons) / max(float(Im.max()), 1e-12)
+        else:
+            _ps = 1.0
+        _pg = {"S": _S, "ps": _ps}
+        _fsat = float((Im >= _S).float().mean())
+        print(f"[net] Censor-PG: S={_S:.4g}"
+              f"{'(自动=Im.max)' if cfg.sat_threshold < 0 else ''}  "
+              f"删失像素 {100*_fsat:.4f}%  光子标度 {_ps:.4g}  "
+              f"读出噪声 {cfg.sigma_read:g} 光子  "
+              f"(峰值 {_ps*float(Im.max()):.0f} 光子, 中位 {_ps*float(Im.median()):.2f} 光子)")
+        if _fsat < 1e-6:
+            print("[net]   <- 没有像素触发删失分支，等价于纯 PG 似然。"
+                  "要测删失请把 --sat-threshold 压到 Im.max() 以下")
+
     def decode():
         a_raw, p_raw = net(x_in)
         O = make_field(a_raw[0], p_raw[0:cfg.ph_ch], cfg.phase_span_obj, cfg)
@@ -1217,6 +1302,10 @@ def run_net(cfg: Cfg):
 
         if cfg.data_loss == "paper":
             loss = data_loss_paper(Ua ** 2, Im, S2, gamma, amp_p, sup, cfg.beta, Mtr)
+        elif cfg.data_loss == "censor_pg":
+            loss = data_loss_censor_pg(Ua ** 2, Im, S=_pg["S"],
+                                       sigma_read=cfg.sigma_read,
+                                       M=Mtr, photon_scale=_pg["ps"])
         else:
             loss = masked_mse(Ua, sqrtIm, Mtr)
 
@@ -1341,9 +1430,13 @@ def main():
                  ("probe_aberr", float), ("aberr_seed", int), ("support_energy", float),
                  ("eval_size", int), ("reg_size", int), ("z_probe_init", float),
                  ("obj_amp_img", str), ("obj_phase_img", str),
-                 ("obj_amp_min", float), ("obj_phase_span", float)]:
+                 ("obj_amp_min", float), ("obj_phase_span", float),
+                 ("sat_threshold", float), ("sigma_read", float),
+                 ("photon_scale", float)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
-    ap.add_argument("--data-loss", dest="data_loss", choices=["direct", "paper"])
+    ap.add_argument("--data-loss", dest="data_loss",
+                    choices=["direct", "paper", "censor_pg"],
+                    help="censor_pg = 删失复合泊松-高斯似然；只在 net 模式生效")
     ap.add_argument("--probe-mode", dest="probe_mode",
                     choices=["pixel", "net", "inr", "truth"])
     ap.add_argument("--probe-inr-coord", dest="probe_inr_coord",
@@ -1388,6 +1481,9 @@ def main():
         for k, v in dict(probe_mode="net", phase_repr="tanh", amp_act="leaky",
                          scale_mode="frozen", weight_decay=1e-2).items():
             kw.setdefault(k, v)
+    if a.mode == "ad" and kw.get("data_loss") == "censor_pg":
+        print("[warn] ad 模式恒用 data_loss_direct，--data-loss censor_pg 不生效 —— "
+              "要和 net 比损失函数，两边都得是 net。")
     cfg = Cfg(**kw)
     {"check": run_check, "ad": run_ad, "net": run_net}[a.mode](cfg)
 
