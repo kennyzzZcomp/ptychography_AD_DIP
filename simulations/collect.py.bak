@@ -86,8 +86,7 @@ def main():
             fh.write(",".join("" if k not in r else str(r[k]) for k in cols) + "\n")
     print(f"{len(rows)} 次跑 -> {out}")
     # 相位列必须打出来: SSIM 只看振幅，只看 SSIM 会漏掉纯相位的失败
-    key = [c for c in ["run", "mode", "scan_npos", "peak_photons",
-                       "seed", "noise_seed", "scan_seed",
+    key = [c for c in ["run", "mode", "scan_npos", "peak_photons", "noise_seed", "scan_seed",
                        "ssim_o_amp_final", "psnr_o_amp_final",
                        "rmse_o_phi_rad_final", "ssim_o_phi_final",
                        "relerr_o_complex_final", "relerr_o_complex_best",

@@ -10,18 +10,6 @@
 # 换样品: IMG_AMP=USAF.jpg ROOT=runs_usaf ... bash run_sweep.sh overlap
 #   两种调度一次跑完: AD_OPT="alternating plain" ... bash run_sweep.sh overlap
 #   每个配置的执行顺序: net -> ad(alternating) -> adplain，三者共用同一份仿真数据
-# 随机种子: SEEDS 是"重复索引"列表，同时驱动网络初值与该轴上的随机源。
-#   overlap 轴 -> --seed(网络初值 torch.manual_seed) + --scan-seed(位置抖动)
-#   dose    轴 -> --seed(网络初值)                   + --noise-seed(泊松实现)
-#   例: SEEDS="0 1 2" 跑三个重复。含 0 是有意的 —— seed 0 = Cfg 默认，
-#       那一档能和改这个脚本之前的历史结果逐比特对上，等于白送一个校验点。
-#   【注意】scan_jitter 默认 0，--scan-seed 此时是空转（rng.uniform(-0,0)=0）。
-#   要让位置抖动真的随 seed 变，得另外传 --scan-jitter 0.2，但那会改变重叠率，
-#   与 jitter=0 的历史结果不可比 -> 同时换 ROOT。
-#   【注意】AD 侧没有任何随机初始化（物体初值全 1、探针初值 P0 都是确定性的），
-#   run_ad 里那句 torch.manual_seed 是空转 -> --seed 对 ad/adplain 完全无效。
-#   所以 overlap 轴上 AD 每档只跑 SEEDS 的第一个值；要强制全跑用 AD_REPEAT=1。
-#   dose 轴上 AD 随 --noise-seed 真的会变，每个 seed 都跑。
 # 已经有 *_result.npz 的目录会被跳过，所以中断了直接重跑同一条命令即可续上。
 
 set -u
@@ -30,9 +18,7 @@ SCRIPT=${SCRIPT:-ptychography_AD_DIP/simulations/ProPtyNet_torch.py}
 ROOT=${ROOT:-runs}
 ITERS=${ITERS:-2000}
 STAGES=${STAGES:-24}
-SEEDS=${SEEDS:-"0 1 2"}     # 重复索引列表，见文件头。空格分隔 —— SEEDS=3 是"一个值3"，不是"3个"
-AD_S0=${SEEDS%% *}          # SEEDS 的第一个值，AD 在 overlap 轴上只跑这一档
-AD_REPEAT=${AD_REPEAT:-0}   # 1 = overlap/clean 上 AD 也按 SEEDS 全跑（结果会逐比特相同）
+SEEDS=${SEEDS:-"1 2 3"}
 SUP=${SUP:-0.9999}          # 支撑域能量阈值，全程固定，否则各档探针自由度不同
 DOSES=${DOSES:-"1e2 3e2 1e3 3e3 1e4"}
 # 重叠轴 "点数:步长"。线性/面积重叠(3 seed 均值)与评估区零照明像素占比:
@@ -110,20 +96,13 @@ do_smoke () {
 
 do_dose () {
   echo "=== 剂量轴 ==="
-  # 有噪声时 AD 也随 --noise-seed 变，所以每个 seed 都跑。
-  # --seed 对 AD 无效，传给它只是为了 npz 里记录的 seed 与目录后缀 _s${S} 一致。
   for P in $DOSES; do for S in $SEEDS; do
-    run "dose/net_p${P}_s${S}" net --iters $ITERS --poisson --peak-photons $P --noise-seed $S --seed $S
-    run_ad_all dose "_p${P}_s${S}" --poisson --peak-photons $P --noise-seed $S --seed $S
+    run "dose/net_p${P}_s${S}" net --iters $ITERS --poisson --peak-photons $P --noise-seed $S
+    run_ad_all dose "_p${P}_s${S}" --poisson --peak-photons $P --noise-seed $S
   done; done
   echo "--- 无噪声参照 ---"
-  # 无噪声 -> 唯一的随机源是网络初值。AD 在这里逐比特相同，只跑第一个。
-  for S in $SEEDS; do
-    run "dose/net_clean_s${S}" net --iters $ITERS --seed $S
-    if [ "$AD_REPEAT" = "1" ] || [ "$S" = "$AD_S0" ]; then
-      run_ad_all dose "_clean_s${S}" --seed $S
-    fi
-  done
+  run "dose/net_clean" net --iters $ITERS
+  run_ad_all dose "_clean" 
 }
 
 do_overlap () {
@@ -131,12 +110,8 @@ do_overlap () {
   for C in $OVERLAPS; do
     NP=${C%%:*}; ST=${C##*:}
     for S in $SEEDS; do
-      run "overlap/net_n${NP}_s${S}" net --iters $ITERS \
-          --scan-npos $NP --scan-step $ST --scan-seed $S --seed $S
-      # AD 无随机初始化；jitter=0 时扫描位置也与 seed 无关 -> 各 seed 逐比特相同，只跑第一个
-      if [ "$AD_REPEAT" = "1" ] || [ "$S" = "$AD_S0" ]; then
-        run_ad_all overlap "_n${NP}_s${S}" --scan-npos $NP --scan-step $ST --scan-seed $S --seed $S
-      fi
+      run "overlap/net_n${NP}_s${S}" net --iters $ITERS --scan-npos $NP --scan-step $ST --scan-seed $S
+      run_ad_all overlap "_n${NP}_s${S}" --scan-npos $NP --scan-step $ST --scan-seed $S
     done
   done
 }
