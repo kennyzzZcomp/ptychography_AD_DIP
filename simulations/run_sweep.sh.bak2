@@ -10,26 +10,18 @@
 # 换样品: IMG_AMP=USAF.jpg ROOT=runs_usaf ... bash run_sweep.sh overlap
 #   两种调度一次跑完: AD_OPT="alternating plain" ... bash run_sweep.sh overlap
 #   每个配置的执行顺序: net -> ad(alternating) -> adplain，三者共用同一份仿真数据
-# 扫描图案: JITTER=0.1 SCAN_PATTERN=fermat ... bash run_sweep.sh overlap
-#   JITTER 默认 0 = 纯周期光栅，会触发 raster grid pathology（物体↔探针的周期性简并）。
-#   非零 jitter 或 fermat 都会改变实测重叠率 -> 与 JITTER=0 的历史结果不可比，换 ROOT。
-#
-# 【随机种子：三条独立的轴，互不锁定】
-#   SEEDS       -> --seed        网络初值 (torch.manual_seed)。只影响 net。
-#   SCAN_SEEDS  -> --scan-seed   扫描位置抖动。JITTER>0 时才有效；影响 net 和 AD。
-#   NOISE_SEEDS -> --noise-seed  泊松噪声实现。只在 dose 轴；影响 net 和 AD。
-#   overlap 轴跑 SCAN_SEEDS × SEEDS 的全交叉；dose 轴跑 NOISE_SEEDS × SEEDS，
-#   扫描实现固定在 SCAN_SEEDS 的第一个值（否则四重循环组合爆炸）。
-#   默认 SCAN_SEEDS="0" / NOISE_SEEDS="0" -> 只扫网络初值这一条轴。
-#
-#   为什么必须解耦: 早先的版本让一个索引同时驱动 --seed 和 --scan-seed。JITTER=0 时
-#   无害（--scan-seed 空转），但 JITTER>0 之后两个随机源被锁死，任何一次失败都分不清
-#   是网络初值还是扫描实现造成的。要做归因就用 SEEDS=1 SCAN_SEEDS=0 这类不对角的组合。
-#
-#   AD 没有任何随机初始化（物体初值全 1、探针初值 P0 都是确定性的），run_ad 里那句
-#   torch.manual_seed 是空转 -> --seed 对 ad/adplain 完全无效，所以 AD 不进 SEEDS 循环。
-#   但 AD 会随 --scan-seed(JITTER>0 时) 和 --noise-seed 变，所以那两条轴上每格都跑。
-#   （旧的 AD_REPEAT 开关已删除：它假设"AD 各 seed 逐比特相同"，那在 JITTER>0 时不成立。）
+# 随机种子: SEEDS 是"重复索引"列表，同时驱动网络初值与该轴上的随机源。
+#   overlap 轴 -> --seed(网络初值 torch.manual_seed) + --scan-seed(位置抖动)
+#   dose    轴 -> --seed(网络初值)                   + --noise-seed(泊松实现)
+#   例: SEEDS="0 1 2" 跑三个重复。含 0 是有意的 —— seed 0 = Cfg 默认，
+#       那一档能和改这个脚本之前的历史结果逐比特对上，等于白送一个校验点。
+#   【注意】scan_jitter 默认 0，--scan-seed 此时是空转（rng.uniform(-0,0)=0）。
+#   要让位置抖动真的随 seed 变，得另外传 --scan-jitter 0.2，但那会改变重叠率，
+#   与 jitter=0 的历史结果不可比 -> 同时换 ROOT。
+#   【注意】AD 侧没有任何随机初始化（物体初值全 1、探针初值 P0 都是确定性的），
+#   run_ad 里那句 torch.manual_seed 是空转 -> --seed 对 ad/adplain 完全无效。
+#   所以 overlap 轴上 AD 每档只跑 SEEDS 的第一个值；要强制全跑用 AD_REPEAT=1。
+#   dose 轴上 AD 随 --noise-seed 真的会变，每个 seed 都跑。
 # 已经有 *_result.npz 的目录会被跳过，所以中断了直接重跑同一条命令即可续上。
 
 set -u
@@ -38,11 +30,9 @@ SCRIPT=${SCRIPT:-ptychography_AD_DIP/simulations/ProPtyNet_torch.py}
 ROOT=${ROOT:-runs}
 ITERS=${ITERS:-2000}
 STAGES=${STAGES:-24}
-# 三条种子轴，见文件头。全部是空格分隔的列表 —— SEEDS=3 是"一个值 3"，不是"3 个"。
-SEEDS=${SEEDS:-"0 1 2"}           # --seed        网络初值（只影响 net）
-SCAN_SEEDS=${SCAN_SEEDS:-"0"}     # --scan-seed   扫描抖动实现（JITTER>0 时才有效）
-NOISE_SEEDS=${NOISE_SEEDS:-"0"}   # --noise-seed  泊松实现（只在 dose 轴）
-SCAN_S0=${SCAN_SEEDS%% *}         # dose 轴把扫描实现固定在这个值
+SEEDS=${SEEDS:-"0 1 2"}     # 重复索引列表，见文件头。空格分隔 —— SEEDS=3 是"一个值3"，不是"3个"
+AD_S0=${SEEDS%% *}          # SEEDS 的第一个值，AD 在 overlap 轴上只跑这一档
+AD_REPEAT=${AD_REPEAT:-0}   # 1 = overlap/clean 上 AD 也按 SEEDS 全跑（结果会逐比特相同）
 SUP=${SUP:-0.9999}          # 支撑域能量阈值，全程固定，否则各档探针自由度不同
 DOSES=${DOSES:-"1e2 3e2 1e3 3e3 1e4"}
 # 重叠轴 "点数:步长"。线性/面积重叠(3 seed 均值)与评估区零照明像素占比:
@@ -72,24 +62,11 @@ IMG_AMP=${IMG_AMP:-}        # 空 = 用 Cfg 默认 cameraman.bmp
 IMG_PHASE=${IMG_PHASE:-}    # 空 = 用 Cfg 默认 westconcordorthophoto.bmp
 # 物体相位幅度(rad)。空 = 用 Cfg 默认 0.8。改这个等于换样品 -> 同时改 ROOT。
 PHASE=${PHASE:-}
-# 扫描图案。改这两个等于换了扫描几何 -> 同时改 ROOT。
-JITTER=${JITTER:-0}         # --scan-jitter，单位是 step 的比例。0 = 纯周期光栅
-SCAN_PATTERN=${SCAN_PATTERN:-}   # 空 = Cfg 默认 raster_jitter；可填 fermat
-COMMON="--support-energy $SUP --lr-cosine --scan-jitter $JITTER"
-[ -n "$SCAN_PATTERN" ] && COMMON="$COMMON --scan-pattern $SCAN_PATTERN"
+COMMON="--support-energy $SUP --lr-cosine"
 [ -n "$IMG_AMP" ]   && COMMON="$COMMON --obj-amp-img $IMG_AMP"
 [ -n "$IMG_PHASE" ] && COMMON="$COMMON --obj-phase-img $IMG_PHASE"
 [ -n "$PHASE" ]     && COMMON="$COMMON --obj-phase-span $PHASE"
 mkdir -p "$ROOT"
-
-echo "=== run_sweep $(date '+%F %T') ==="
-echo "  ROOT=$ROOT  ITERS=$ITERS  SUP=$SUP  AD_OPT='$AD_OPT'  AD_ITERS=$AD_ITERS"
-echo "  JITTER=$JITTER  SCAN_PATTERN='${SCAN_PATTERN:-raster_jitter(默认)}'  PHASE='${PHASE:-0.8(默认)}'"
-echo "  SEEDS='$SEEDS'  SCAN_SEEDS='$SCAN_SEEDS'  NOISE_SEEDS='$NOISE_SEEDS'"
-if [ "$JITTER" = "0" ] || [ "$JITTER" = "0.0" ]; then
-  echo "  ⚠ JITTER=0：纯周期光栅，存在 raster grid pathology；--scan-seed 此时完全空转。"
-  case "$SCAN_SEEDS" in *\ *) echo "  ⚠ JITTER=0 却给了多个 SCAN_SEEDS —— 这些跑会逐比特相同，纯浪费。";; esac
-fi
 
 run () {           # run <outdir> <mode> <额外参数...>
   local out="$ROOT/$1"; shift
@@ -133,36 +110,33 @@ do_smoke () {
 
 do_dose () {
   echo "=== 剂量轴 ==="
-  # 扫描实现固定在 SCAN_S0，只让 NOISE_SEEDS × SEEDS 变。
-  local SCAN="--scan-seed $SCAN_S0"
-  for P in $DOSES; do for W in $NOISE_SEEDS; do
-    # AD 随 --noise-seed 变、与 --seed 无关 -> 每个 (剂量, 噪声实现) 跑一次
-    run_ad_all dose "_p${P}_w${W}" --poisson --peak-photons $P --noise-seed $W $SCAN
-    for S in $SEEDS; do
-      run "dose/net_p${P}_w${W}_s${S}" net --iters $ITERS \
-          --poisson --peak-photons $P --noise-seed $W $SCAN --seed $S
-    done
+  # 有噪声时 AD 也随 --noise-seed 变，所以每个 seed 都跑。
+  # --seed 对 AD 无效，传给它只是为了 npz 里记录的 seed 与目录后缀 _s${S} 一致。
+  for P in $DOSES; do for S in $SEEDS; do
+    run "dose/net_p${P}_s${S}" net --iters $ITERS --poisson --peak-photons $P --noise-seed $S --seed $S
+    run_ad_all dose "_p${P}_s${S}" --poisson --peak-photons $P --noise-seed $S --seed $S
   done; done
   echo "--- 无噪声参照 ---"
-  # 无噪声且扫描固定 -> AD 完全确定性，跑一次即可。
-  run_ad_all dose "_clean" $SCAN
+  # 无噪声 -> 唯一的随机源是网络初值。AD 在这里逐比特相同，只跑第一个。
   for S in $SEEDS; do
-    run "dose/net_clean_s${S}" net --iters $ITERS $SCAN --seed $S
+    run "dose/net_clean_s${S}" net --iters $ITERS --seed $S
+    if [ "$AD_REPEAT" = "1" ] || [ "$S" = "$AD_S0" ]; then
+      run_ad_all dose "_clean_s${S}" --seed $S
+    fi
   done
 }
 
 do_overlap () {
   echo "=== 重叠轴 ==="
-  local NP ST C S SCAN
-  for OV in $OVERLAPS; do
-    NP=${OV%%:*}; ST=${OV##*:}
-    for C in $SCAN_SEEDS; do
-      SCAN="--scan-npos $NP --scan-step $ST --scan-seed $C"
-      # AD 无随机初始化，只随扫描实现变 -> 每个 (重叠档, 扫描实现) 跑一次，不进 SEEDS 循环
-      run_ad_all overlap "_n${NP}_c${C}" $SCAN
-      for S in $SEEDS; do
-        run "overlap/net_n${NP}_c${C}_s${S}" net --iters $ITERS $SCAN --seed $S
-      done
+  for C in $OVERLAPS; do
+    NP=${C%%:*}; ST=${C##*:}
+    for S in $SEEDS; do
+      run "overlap/net_n${NP}_s${S}" net --iters $ITERS \
+          --scan-npos $NP --scan-step $ST --scan-seed $S --seed $S
+      # AD 无随机初始化；jitter=0 时扫描位置也与 seed 无关 -> 各 seed 逐比特相同，只跑第一个
+      if [ "$AD_REPEAT" = "1" ] || [ "$S" = "$AD_S0" ]; then
+        run_ad_all overlap "_n${NP}_s${S}" --scan-npos $NP --scan-step $ST --scan-seed $S --seed $S
+      fi
     done
   done
 }
