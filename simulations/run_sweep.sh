@@ -81,9 +81,19 @@ SCAN_PATTERN=${SCAN_PATTERN:-}   # 空 = Cfg 默认 raster_jitter；可填 ferma
 #   INIT_ALPHA=0.3  部分随机；INIT_ALPHA=1 只把 bias 设成中性点、权重保持默认
 # 这等于换了初始点 -> 同时改 ROOT，否则会和已有结果混在一棵树里。
 INIT_ALPHA=${INIT_ALPHA:-}
+# 探针支撑（模型口径；评估口径恒为二值，不受影响）。改这个 -> 同时改 ROOT。
+#   hard(默认,历史) | soft | none
+# 【注意】hard 时 simulate() 用完整探针、模型用截断探针，SUP=0.995 下有 6.11%
+# 的幅度失配，低重叠时会被补偿进物体 -> 环纹。论文主结果建议 none。
+PROBE_SUPPORT=${PROBE_SUPPORT:-hard}
+SUPPORT_SOFT=${SUPPORT_SOFT:-6}     # 仅 soft 档有效，过渡带宽度(px)
+# 仿真数据用哪个探针: full(默认,物理正确) | model(与模型一致, inverse crime, 只当诊断)
+SIM_PROBE=${SIM_PROBE:-full}
 COMMON="--support-energy $SUP --lr-cosine --scan-jitter $JITTER"
 [ -n "$SCAN_PATTERN" ] && COMMON="$COMMON --scan-pattern $SCAN_PATTERN"
 [ -n "$INIT_ALPHA" ]   && COMMON="$COMMON --obj-init neutral --obj-init-alpha $INIT_ALPHA"
+COMMON="$COMMON --probe-support $PROBE_SUPPORT --sim-probe $SIM_PROBE"
+[ "$PROBE_SUPPORT" = "soft" ] && COMMON="$COMMON --support-soft $SUPPORT_SOFT"
 [ -n "$IMG_AMP" ]   && COMMON="$COMMON --obj-amp-img $IMG_AMP"
 [ -n "$IMG_PHASE" ] && COMMON="$COMMON --obj-phase-img $IMG_PHASE"
 [ -n "$PHASE" ]     && COMMON="$COMMON --obj-phase-span $PHASE"
@@ -95,6 +105,10 @@ echo "  JITTER=$JITTER  SCAN_PATTERN='${SCAN_PATTERN:-raster_jitter(默认)}'  P
 echo "  SEEDS='$SEEDS'  SCAN_SEEDS='$SCAN_SEEDS'  NOISE_SEEDS='$NOISE_SEEDS'"
 if [ -n "$INIT_ALPHA" ]; then echo "  物体初值: 相位中性 alpha=$INIT_ALPHA"
 else echo "  物体初值: 默认（初始相位是 U(-pi,pi) 白噪声）"; fi
+echo "  探针支撑: 模型=$PROBE_SUPPORT$([ "$PROBE_SUPPORT" = soft ] && echo "(过渡带 ${SUPPORT_SOFT}px)")  仿真探针=$SIM_PROBE"
+[ "$SIM_PROBE" = "model" ] && echo "  ⚠ SIM_PROBE=model 是 inverse crime，只当诊断用"
+[ "$PROBE_SUPPORT" = "hard" ] && [ "$SIM_PROBE" = "full" ] && \
+  echo "  ⚠ hard + full: 数据用完整探针、模型用截断探针，SUP=$SUP 下存在幅度失配"
 if [ "$JITTER" = "0" ] || [ "$JITTER" = "0.0" ]; then
   echo "  ⚠ JITTER=0：纯周期光栅，存在 raster grid pathology；--scan-seed 此时完全空转。"
   case "$SCAN_SEEDS" in *\ *) echo "  ⚠ JITTER=0 却给了多个 SCAN_SEEDS —— 这些跑会逐比特相同，纯浪费。";; esac

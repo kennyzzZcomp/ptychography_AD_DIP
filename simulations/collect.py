@@ -18,10 +18,11 @@ CFG_KEYS = ["obj_amp_img", "obj_phase_img", "probe_mode", "phase_repr", "amp_act
             # 【必须记录】没有这四项，jitter/相位跨度不同的几棵目录树在 CSV 里
             # 的配置列会一模一样，只剩目录名可以区分 —— 半年后没人复现得出来。
             "scan_pattern", "scan_jitter", "obj_phase_span", "obj_amp_min",
-            "obj_init", "obj_init_alpha"]
+            "obj_init", "obj_init_alpha",
+            "probe_support", "support_soft", "sim_probe", "z_probe_init"]
 
 MET = ["ssim_o_amp", "psnr_o_amp", "relerr_o_complex", "rmse_o_phi_rad",
-       "ssim_o_phi", "relerr_p_complex"]
+       "ssim_o_phi", "relerr_p_complex", "p_far_frac"]
 
 
 def one(path):
@@ -96,7 +97,7 @@ def main():
                        "ssim_o_amp_final", "psnr_o_amp_final",
                        "rmse_o_phi_rad_final", "ssim_o_phi_final",
                        "relerr_o_complex_final", "relerr_o_complex_best",
-                       "relerr_p_complex_final",
+                       "relerr_p_complex_final", "p_far_frac_final",
                        "best_at", "last_at", "loss_final", "drift_frac"] if c in seen]
     def fmt(v):
         """【不能用 str(v)[:12]】那样会把 '2.3366e-05' 截成 '2.3366288587'，
