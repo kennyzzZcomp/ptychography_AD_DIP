@@ -75,8 +75,15 @@ PHASE=${PHASE:-}
 # 扫描图案。改这两个等于换了扫描几何 -> 同时改 ROOT。
 JITTER=${JITTER:-0}         # --scan-jitter，单位是 step 的比例。0 = 纯周期光栅
 SCAN_PATTERN=${SCAN_PATTERN:-}   # 空 = Cfg 默认 raster_jitter；可填 fermat
+# 物体输出头初始化。空 = Cfg 默认（初始相位是 U(-pi,pi) 白噪声，实测 RMS 1.80 rad）。
+# 给一个数 = 用相位中性初始化，该数是物体头权重的缩放系数：
+#   INIT_ALPHA=0    严格中性（第 0 步 O ≡ 1·exp(i0)，与 AD 的初值完全相同）
+#   INIT_ALPHA=0.3  部分随机；INIT_ALPHA=1 只把 bias 设成中性点、权重保持默认
+# 这等于换了初始点 -> 同时改 ROOT，否则会和已有结果混在一棵树里。
+INIT_ALPHA=${INIT_ALPHA:-}
 COMMON="--support-energy $SUP --lr-cosine --scan-jitter $JITTER"
 [ -n "$SCAN_PATTERN" ] && COMMON="$COMMON --scan-pattern $SCAN_PATTERN"
+[ -n "$INIT_ALPHA" ]   && COMMON="$COMMON --obj-init neutral --obj-init-alpha $INIT_ALPHA"
 [ -n "$IMG_AMP" ]   && COMMON="$COMMON --obj-amp-img $IMG_AMP"
 [ -n "$IMG_PHASE" ] && COMMON="$COMMON --obj-phase-img $IMG_PHASE"
 [ -n "$PHASE" ]     && COMMON="$COMMON --obj-phase-span $PHASE"
@@ -86,6 +93,8 @@ echo "=== run_sweep $(date '+%F %T') ==="
 echo "  ROOT=$ROOT  ITERS=$ITERS  SUP=$SUP  AD_OPT='$AD_OPT'  AD_ITERS=$AD_ITERS"
 echo "  JITTER=$JITTER  SCAN_PATTERN='${SCAN_PATTERN:-raster_jitter(默认)}'  PHASE='${PHASE:-0.8(默认)}'"
 echo "  SEEDS='$SEEDS'  SCAN_SEEDS='$SCAN_SEEDS'  NOISE_SEEDS='$NOISE_SEEDS'"
+if [ -n "$INIT_ALPHA" ]; then echo "  物体初值: 相位中性 alpha=$INIT_ALPHA"
+else echo "  物体初值: 默认（初始相位是 U(-pi,pi) 白噪声）"; fi
 if [ "$JITTER" = "0" ] || [ "$JITTER" = "0.0" ]; then
   echo "  ⚠ JITTER=0：纯周期光栅，存在 raster grid pathology；--scan-seed 此时完全空转。"
   case "$SCAN_SEEDS" in *\ *) echo "  ⚠ JITTER=0 却给了多个 SCAN_SEEDS —— 这些跑会逐比特相同，纯浪费。";; esac

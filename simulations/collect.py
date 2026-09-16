@@ -17,7 +17,8 @@ CFG_KEYS = ["obj_amp_img", "obj_phase_img", "probe_mode", "phase_repr", "amp_act
             "N", "N_OBJ", "eval_size", "reg_size",
             # 【必须记录】没有这四项，jitter/相位跨度不同的几棵目录树在 CSV 里
             # 的配置列会一模一样，只剩目录名可以区分 —— 半年后没人复现得出来。
-            "scan_pattern", "scan_jitter", "obj_phase_span", "obj_amp_min"]
+            "scan_pattern", "scan_jitter", "obj_phase_span", "obj_amp_min",
+            "obj_init", "obj_init_alpha"]
 
 MET = ["ssim_o_amp", "psnr_o_amp", "relerr_o_complex", "rmse_o_phi_rad",
        "ssim_o_phi", "relerr_p_complex"]

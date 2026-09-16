@@ -86,7 +86,7 @@ class Cfg:
     dz_true: float = 8e-3        # 样品-探测器
     probe_dia: int = 48
     z_probe: float = 3e-3        # 孔径->样品，合成真值探针
-    z_probe_init: float = 3e-3   # 故意差 30%
+    z_probe_init: float = 3e-3 * 1.3   # 故意差 30%
     probe_aberr: float = 0.0
     aberr_seed: int = 7
     support_energy: float = 0.995   # 支撑域取到包住这么多能量为止。
@@ -182,17 +182,6 @@ class Cfg:
     phase_span_obj: float = 2 * PI   # 仅 phase_repr='tanh' 时生效
     phase_span_prb: float = PI       # 仅 phase_repr='tanh' 时生效
     scale_mode: str = "ls"       # ls(每步闭式最小二乘, VarPro) | frozen(论文)
-
-    # ---- 物体输出头的初始化 ----
-    # default = PyTorch 缺省。cossin 的两个通道零均值同方差 -> atan2 出来的初始物体
-    # 相位是 U(-pi,pi) 的白噪声(蒙特卡洛 RMS 1.80 rad), 而真值 span=0.8 时只有
-    # 0.46 rad —— 比真值粗 4 倍, 且每个 seed 换一张。AD 的初值是 O = 1 (相位恒 0),
-    # 所以 net 与 AD 的对比里"先验"和"初始点"是混在一起的。
-    # neutral = 把物体头改成 A=1, phi=0, 与 AD 的初值完全相同。
-    # obj_init_alpha 缩放物体头的权重: 1 = 保持默认随机, 0 = 严格中性,
-    # 中间值给出一条"初始相位粗糙度"的连续轴。
-    obj_init: str = "default"      # default | neutral
-    obj_init_alpha: float = 0.0
     weight_decay: float = 0.0    # DIP 不该有权重衰减；原实现用 AdamW 默认 1e-2
 
     # ---- 探针 = 坐标 SIREN（probe_mode='inr'）----
@@ -986,7 +975,7 @@ def run_check(cfg: Cfg):
           f"= {cfg.N + int(np.ceil(2*np.abs(positions).max()))}，边缘个别像素梯度恰为 0 属正常")
 
     # E) 真值代入的数据残差（模型探针 = probe×support，支撑域外还剩能量）
-    I, _ = simulate(cfg, obj, probe * support, positions, H_true)
+    I, _ = simulate(cfg, obj, probe, positions, H_true)
     Ps = torch.from_numpy(probe * support).to(dev)
     with torch.no_grad():
         Um = forward_torch(cfg, Ot, Ps, corners, Ht)
@@ -1008,7 +997,7 @@ def run_ad(cfg: Cfg):
     positions = make_scan_positions(cfg)
     check_scan_fits(cfg, positions)
     H_true = make_H(cfg, cfg.dz_true)
-    I, _ = simulate(cfg, obj, probe * support, positions, H_true)
+    I, _ = simulate(cfg, obj, probe, positions, H_true)
 
     Ht = torch.from_numpy(H_true).to(dev)
     corners = torch.from_numpy(cfg.PATCH_C0 - positions).to(dev)
@@ -1165,25 +1154,6 @@ def run_net(cfg: Cfg):
           f"输入 {tuple(x_in.shape)}  相位表示 {cfg.phase_repr}  振幅激活 {cfg.amp_act}  "
           f"标度 {cfg.scale_mode}")
     print(f"[net] output parameterization: amplitude={cfg.amp_act}, phase={cfg.phase_repr}")
-
-    # ---- 物体输出头的相位中性初始化 ----
-    # 只动 field 0(物体)。probe_mode='net' 时探针共享这个 U-Net 的第 2 组通道，
-    # 那一路保持默认 —— 把探针振幅也按成 1 是错的(它应该是个紧凑亮盘)。
-    # alpha=0 不会造成死梯度: cossin 在 (c,sn)=(1,0) 处 d(phi)/d(sn)=1,
-    # softplus 在 b=ln(e-1) 处导数 sigmoid(0.5413)=0.632, 且权重梯度 = upstream ⊗ y
-    # 随像素变化，第一步就破对称。此处不消耗 RNG，探针 SIREN 的 seed+10000 流不受影响。
-    if cfg.obj_init == "neutral":
-        _a = float(cfg.obj_init_alpha)
-        with torch.no_grad():
-            net.head_amp.weight[0].mul_(_a)
-            net.head_phs.weight[0:cfg.ph_ch].mul_(_a)
-            net.head_amp.bias[0] = (math.log(math.e - 1.0)
-                                    if cfg.amp_act == "softplus" else 1.0)
-            net.head_phs.bias[0:cfg.ph_ch] = 0.0
-            if cfg.phase_repr == "cossin":
-                net.head_phs.bias[0] = 1.0      # (c, sn) = (1, 0) -> phi = 0
-        print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
-              f"（alpha=0 时第 0 步的物体恒等于 1·exp(i0)，与 AD 的初值相同）")
 
     # ---- 探针 ----
     # 【顺序要求】物体 U-Net 必须在上面先建完，才能在这里建探针网络。torch.manual_seed
@@ -1465,7 +1435,6 @@ def main():
                  ("obj_epoch", int), ("prb_epoch", int), ("decay", float), ("iters", int),
                  ("ad_iters", int),
                  ("probe_warmup", int), ("lr_probe", float), ("weight_decay", float),
-                 ("obj_init", str), ("obj_init_alpha", float),
                  # --- 探针 = 坐标 SIREN ---
                  ("probe_inr_hidden", int), ("probe_inr_layers", int),
                  ("probe_inr_w0", float), ("probe_inr_prefit", int),
