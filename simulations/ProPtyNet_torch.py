@@ -99,6 +99,17 @@ class Cfg:
     #   soft: 余弦过渡带，去掉硬边阶跃与 P=0 处的硬零梯度。
     #   none: 全 1。模型能表示完整探针。ProPtyNet 原文用的是软惩罚(Eq.5 的 beta)
     #         而不是硬掩膜 —— 硬掩膜会让 Loss2 恒等于 0。论文主结果建议用这一档。
+    # ---- 结果 PNG 的显示范围（只影响出图，不影响任何指标）----
+    # 固定常数，跨方法 / 跨 seed / 跨配置一致，且必须【足够宽以覆盖所有方法的数值】。
+    #   * 掺进 rec 的 min/max -> 每张 PNG 色标不同，两张图没法并排比。
+    #   * 只用 GT 的范围     -> 超出真值范围的偏差被【显示饱和】吃掉:
+    #     GT=0.400 而重建 0.170，范围取 [0.4,1.0] 时两者同为纯黑，0.23 的误差看不见。
+    # 超出范围时标题标 ⚠clip 并打印提示 —— 那时把这几项调宽，不要去动数据。
+    disp_amp_lo: float = 0.15
+    disp_amp_hi: float = 1.15
+    disp_phase_lim: float = 1.0      # 物体相位，对称 ±
+    disp_err_amp: float = 0.3        # 误差图振幅，对称 ±
+    disp_err_phase: float = 0.3      # 误差图相位(rad)，对称 ±
     probe_support: str = "hard"     # hard | soft | none
     support_soft: float = 6.0       # soft 模式的过渡带宽度(px)
     # 仿真数据用哪个探针。full = 完整真值探针(物理正确)；model = probe*sup_model,
@@ -1508,26 +1519,53 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
     c = cfg.EVAL_CROP
     ra, _ = align_global_factor(rec[c:-c, c:-c], obj[c:-c, c:-c])
     ga = obj[c:-c, c:-c]
-    pa, _ = align_global_factor(pc * (support > 0), probe * (support > 0))
-    fig, ax = plt.subplots(2, 4, figsize=(15, 7.5))
-    ims = [(np.abs(ra), "rec amp"), (np.angle(ra), "rec phase"),
-           (np.abs(pa), "rec probe amp"), (np.angle(pa), "rec probe phase"),
-           (np.abs(ga), "GT amp"), (np.angle(ga), "GT phase"),
-           (np.abs(probe), "GT probe amp"), (np.angle(probe), "GT probe phase")]
-    # 【关键】rec 与 GT 必须共用同一个 vmin/vmax。imshow 默认逐图自动拉伸，会把
-    # 全局尺度误差和 DC 偏置完全抹掉 —— 那正是 relerr_o_complex 会抓到、而 SSIM
-    # 和肉眼都抓不到的分量。共用色标后，图才能用来判断幅度是否偏了。
-    lim = [(min(np.min(ims[i][0]), np.min(ims[i + 4][0])),
-            max(np.max(ims[i][0]), np.max(ims[i + 4][0]))) for i in range(4)]
-    for k, (a, (im, t)) in enumerate(zip(ax.ravel(), ims)):
-        vmin, vmax = lim[k % 4]
-        a.imshow(im, cmap="gray", vmin=vmin, vmax=vmax)
-        a.set_title(f"{t}  [{im.min():.3f}, {im.max():.3f}]", fontsize=8)
+    _m = (support > 0)
+    pa, _ = align_global_factor(pc * _m, probe * _m)
+    pg = probe * _m                 # GT 探针也用同一块区域，两张探针图口径一致
+
+    def _dphi(a, b):                # 缠绕相位差，不会在 ±pi 边界炸掉
+        return np.angle(np.exp(1j * (np.angle(a) - np.angle(b))))
+
+    AMP = (cfg.disp_amp_lo, cfg.disp_amp_hi)
+    PHS = (-cfg.disp_phase_lim, cfg.disp_phase_lim)
+    EA = (-cfg.disp_err_amp, cfg.disp_err_amp)
+    EP = (-cfg.disp_err_phase, cfg.disp_err_phase)
+    PAMP, PPHS = (0.0, 1.1), (-PI, PI)   # 真值探针恒归一化到峰值 1，这两个不用调
+    panels = [
+        (np.abs(ra), "rec amp", AMP, "gray"),
+        (np.angle(ra), "rec phase", PHS, "gray"),
+        (np.abs(pa), "rec probe amp", PAMP, "gray"),
+        (np.angle(pa), "rec probe phase", PPHS, "gray"),
+        (np.abs(ga), "GT amp", AMP, "gray"),
+        (np.angle(ga), "GT phase", PHS, "gray"),
+        (np.abs(pg), "GT probe amp", PAMP, "gray"),
+        (np.angle(pg), "GT probe phase", PPHS, "gray"),
+        (np.abs(ra) - np.abs(ga), "err amp (rec-GT)", EA, "RdBu_r"),
+        (_dphi(ra, ga), "err phase (rad)", EP, "RdBu_r"),
+        (np.abs(pa) - np.abs(pg), "err probe amp", EA, "RdBu_r"),
+        (_dphi(pa, pg) * _m, "err probe phase (rad)", EP, "RdBu_r"),
+    ]
+    fig, ax = plt.subplots(3, 4, figsize=(15, 11.4))
+    over = []
+    for a, (im, t, (vmin, vmax), cm) in zip(ax.ravel(), panels):
+        a.imshow(im, cmap=cm, vmin=vmin, vmax=vmax)
+        lo, hi = float(np.min(im)), float(np.max(im))
+        clip = lo < vmin - 1e-9 or hi > vmax + 1e-9
+        if clip:
+            over.append(f"{t}: 实际 [{lo:.3f}, {hi:.3f}] 超出显示范围 [{vmin:.3f}, {vmax:.3f}]")
+        a.set_title(f"{t}  [{lo:.3f}, {hi:.3f}]" + ("  ⚠clip" if clip else ""), fontsize=8)
         a.set_xticks([]); a.set_yticks([])
     fig.tight_layout()
     f = os.path.join(cfg.outdir, f"{tag}_result.png")
     fig.savefig(f, dpi=140); plt.close(fig)
     print(f"[{tag}] 结果 -> {f}")
+    if over:
+        print(f"[{tag}] ⚠ 显示范围没覆盖住（只影响出图，指标用的是未截断的原始数组）:")
+        for o in over:
+            print(f"        {o}")
+        print(f"        -> 把 --disp-amp-lo/-hi、--disp-phase-lim、--disp-err-amp/"
+              f"--disp-err-phase 调宽后重出图，不要去截断数据。")
+    return
 
 
 # ============================================================================ #
@@ -1549,6 +1587,8 @@ def main():
                  ("ad_iters", int),
                  ("probe_warmup", int), ("lr_probe", float), ("weight_decay", float),
                  ("obj_init", str), ("obj_init_alpha", float), ("support_soft", float),
+                 ("disp_amp_lo", float), ("disp_amp_hi", float), ("disp_phase_lim", float),
+                 ("disp_err_amp", float), ("disp_err_phase", float),
                  # --- 探针 = 坐标 SIREN ---
                  ("probe_inr_hidden", int), ("probe_inr_layers", int),
                  ("probe_inr_w0", float), ("probe_inr_prefit", int),
