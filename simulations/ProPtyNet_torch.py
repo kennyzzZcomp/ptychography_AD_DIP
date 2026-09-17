@@ -250,8 +250,8 @@ class Cfg:
     # 把它变成可扫的轴, 用来测"相位强度 vs 先验收益"。
     obj_amp_min: float = 0.4
     obj_phase_span: float = 0.8
-    obj_amp_img: str = "cameraman.bmp"              # -> 物体振幅
-    obj_phase_img: str = "westconcordorthophoto.bmp"  # -> 物体相位
+    obj_amp_img: str = "USAF.jpg"              # -> 物体振幅 原本：cameraman.bmp -> USAF.jpg
+    obj_phase_img: str = "pepper.jpg"  # -> 物体相位 westconcordorthophoto.bmp -> pepper.jpg
     assets: str = ""             # 空 = 自动找 ../cameraman.bmp
     outdir: str = "results_proptynet"
 
@@ -1526,6 +1526,9 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
     def _dphi(a, b):                # 缠绕相位差，不会在 ±pi 边界炸掉
         return np.angle(np.exp(1j * (np.angle(a) - np.angle(b))))
 
+    # 探针相位只在【振幅够大】的地方有意义：支撑外振幅 ~0，angle() 是纯噪声，
+    # 会把三张探针相位图全糊成 ±pi 的椒盐。用真值探针的 5% 峰值做阈值掩掉。
+    _pm = (np.abs(pg) > 0.05 * max(np.abs(pg).max(), 1e-30)).astype(np.float32)
     AMP = (cfg.disp_amp_lo, cfg.disp_amp_hi)
     PHS = (-cfg.disp_phase_lim, cfg.disp_phase_lim)
     EA = (-cfg.disp_err_amp, cfg.disp_err_amp)
@@ -1535,15 +1538,15 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
         (np.abs(ra), "rec amp", AMP, "gray"),
         (np.angle(ra), "rec phase", PHS, "gray"),
         (np.abs(pa), "rec probe amp", PAMP, "gray"),
-        (np.angle(pa), "rec probe phase", PPHS, "gray"),
+        (np.angle(pa) * _pm, "rec probe phase", PPHS, "gray"),
         (np.abs(ga), "GT amp", AMP, "gray"),
         (np.angle(ga), "GT phase", PHS, "gray"),
         (np.abs(pg), "GT probe amp", PAMP, "gray"),
-        (np.angle(pg), "GT probe phase", PPHS, "gray"),
+        (np.angle(pg) * _pm, "GT probe phase", PPHS, "gray"),
         (np.abs(ra) - np.abs(ga), "err amp (rec-GT)", EA, "RdBu_r"),
         (_dphi(ra, ga), "err phase (rad)", EP, "RdBu_r"),
         (np.abs(pa) - np.abs(pg), "err probe amp", EA, "RdBu_r"),
-        (_dphi(pa, pg) * _m, "err probe phase (rad)", EP, "RdBu_r"),
+        (_dphi(pa, pg) * _pm, "err probe phase (rad)", EP, "RdBu_r"),
     ]
     fig, ax = plt.subplots(3, 4, figsize=(15, 11.4))
     over = []
