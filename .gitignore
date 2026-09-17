@@ -1,6 +1,7 @@
 # ---- 版权材料：不要推到公开仓库 ----
 # paper/ 整个目录不推（4 篇 PDF 共 33 MB + KACP.txt 提取文本，都是出版商版权文件）。
 paper/
+experiment/
 
 # ---- Python ----
 __pycache__/

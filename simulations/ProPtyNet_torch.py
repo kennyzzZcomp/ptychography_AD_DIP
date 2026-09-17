@@ -150,15 +150,15 @@ class Cfg:
     stages: int = 8
     obj_epoch: int = 8
     prb_epoch: int = 8
-    lr_obj: float = 3e-2
-    lr_prb: float = 3e-2
+    lr_obj: float = 1e-3
+    lr_prb: float = 1e-3
     decay: float = 0.75
     tv1: float = 0.0
     tv2: float = 0.0
 
     # ---- ProPtyNet 模式 ----
     iters: int = 2000
-    lr_net: float = 1e-3         # 论文: 5e-4 ~ 5e-3
+    lr_net: float = 1e-4         # 论文: 5e-4 ~ 5e-3
     lr_cosine: bool = False      # 两个 lr 一起余弦退火到 0。治后期的 loss 尖峰
     base_ch: int = 32            # 32/64/128/256 -> 约 2.2 M 参数（论文称 2.5 M）
     data_loss: str = "direct"    # direct(=notebook 的 ‖|U|-√I‖²) | paper(Eq.4/5 强度域)
@@ -198,7 +198,7 @@ class Cfg:
     # ---- 未知量的参数化（默认 = 修复后；--paper 切回原版）----
     probe_mode: str = "pixel"    # pixel | net(论文:共享U-Net) | inr(坐标SIREN) | truth(诊断)
     probe_warmup: int = 300      # 前 N 步冻结探针，让物体网络先站稳（pixel 与 inr 共用）
-    lr_probe: float = 1e-2       # 自由像素探针的学习率（与 AD 基线的 lr_prb 同量级）
+    lr_probe: float = 1e-3       # 自由像素探针的学习率（与 AD 基线的 lr_prb 同量级）
     phase_repr: str = "cossin"   # cossin(单位圆，无缠绕无饱和) | tanh(论文)
     amp_act: str = "softplus"    # softplus | relu | leaky(论文，允许负振幅)
     phase_span_obj: float = 2 * PI   # 仅 phase_repr='tanh' 时生效
@@ -250,7 +250,7 @@ class Cfg:
     # 把它变成可扫的轴, 用来测"相位强度 vs 先验收益"。
     obj_amp_min: float = 0.4
     obj_phase_span: float = 0.8
-    obj_amp_img: str = "USAF.jpg"              # -> 物体振幅 原本：cameraman.bmp -> USAF.jpg
+    obj_amp_img: str = "Siemens.jpg"              # -> 物体振幅 原本：cameraman.bmp -> USAF.jpg
     obj_phase_img: str = "Peppers.jpg"  # -> 物体相位 westconcordorthophoto.bmp -> Peppers.jpg
     assets: str = ""             # 空 = 自动找 ../cameraman.bmp
     outdir: str = "results_proptynet"
