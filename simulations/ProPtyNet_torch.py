@@ -251,7 +251,7 @@ class Cfg:
     obj_amp_min: float = 0.4
     obj_phase_span: float = 0.8
     obj_amp_img: str = "USAF.jpg"              # -> 物体振幅 原本：cameraman.bmp -> USAF.jpg
-    obj_phase_img: str = "pepper.jpg"  # -> 物体相位 westconcordorthophoto.bmp -> pepper.jpg
+    obj_phase_img: str = "Peppers.jpg"  # -> 物体相位 westconcordorthophoto.bmp -> Peppers.jpg
     assets: str = ""             # 空 = 自动找 ../cameraman.bmp
     outdir: str = "results_proptynet"
 
