@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter, gaussian_filter
 
 PI = math.pi
 
@@ -683,6 +683,7 @@ def run(cfg: Cfg):
         P = (a_p[d, d] * torch.exp(1j * cfg.phase_span_prb * p_p[d, d])).to(torch.complex64)
         return O, P, a_p[d, d], a_s
 
+
     # ---- 中性初始化：直接把四个输出头设成常数 ---------------------------- #
     # 目标：O ≡ 1·exp(i0)，P ≡ 1·exp(i0)。
     # 不做预拟合 —— 解析地把输出头定死即可，第 0 步的输出【精确】等于目标：
@@ -700,10 +701,12 @@ def run(cfg: Cfg):
         for _h in (net.phs_s, net.phs_p):
             _h.weight.zero_(); _h.bias.zero_()
 
+
     with torch.no_grad():
         O, P, _, _ = decode()
         _oa, _op = O.abs(), torch.angle(O)
         _pa, _pp = P.abs(), torch.angle(P)[S1 > 0]
+
         print(f"[init] 物体初始振幅范围   [{_oa.min().item():.4f}, {_oa.max().item():.4f}]")
         print(f"[init] 物体初始相位 RMS   {_op.pow(2).mean().sqrt().item():.4f} rad")
         print(f"[init] probe 初始振幅范围 [{_pa.min().item():.4f}, {_pa.max().item():.4f}]")
