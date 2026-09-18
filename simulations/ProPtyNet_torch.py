@@ -1,55 +1,19 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-ProPtyNet_torch.py —— PyTorch 版无训练神经网络 ptychography
+"""ProPtyNet (PyTorch) —— 未训练网络先验 vs 纯 AD 的 ptychography 对照。
 
-对应论文: Z. Liu, Y. Chen, N. Lin, "Noise-robust ptychography using unsupervised
-neural network", Optics and Lasers in Engineering 186 (2025) 108791.
+固定下来的约定（不再是开关，改了就是换了一个实验）：
+  * 扫描        raster 或 fermat，位置严格确定性
+  * 探针支撑    无。模型能表示完整探针，数据/模型零失配
+  * 探针初值    平滑圆盘 + 零相位、不传播（err_P0 ≈ 0.27）。探针从第 0 步就参与优化
+  * 物体初值    相位中性：第 0 步 O ≡ 1·exp(i0)，与 AD 完全相同
+  * 参数化      振幅 softplus、相位 cos/sin 单位圆、标度每步闭式最小二乘(VarPro)
+  * 数据项      振幅域 ‖|U|-√I‖²
+  * AD          标准 AD ptychography：联合更新 + 单个 Adam + 全批量 + 无 lr 调度
 
-【定位】本文件是 INNM_Ptycho.ipynb 的 PyTorch 侧兄弟。物理前向、扫描位置、探针真值
-与初值、噪声模型、评估裁剪，全部逐条对齐 INNM_Ptycho.ipynb / functions/innm_common.py，
-以满足 simulations/README.md 里"可比测试"的规则。唯一改变的因子是【未知量的参数化】:
-
-    AD   : 物体/探针 = 自由可训练张量                    (INNM_Ptycho.ipynb, TF)
-    本文件: 物体/探针 = 一个未训练 U-Net 的 4 通道输出     (ProPtyNet, 本文件)
-
-两种模式都在这里实现，`--mode ad` 是 TF 版的 PyTorch 移植，用来验证移植没走样
-（对得上 notebook 里记录的 stage 数字才能开始比 net）。
-
-用法:
-    python ProPtyNet_torch.py check                       # 采样自检 + 前向与 numpy 对拍
-    python ProPtyNet_torch.py ad   --stages 8             # AD 基线（INNM/Keras 调度）
-    python ProPtyNet_torch.py ad   --opt-mode plain --ad-iters 2000   # 标准 AD ptychography
-    python ProPtyNet_torch.py net  --iters 2000           # 默认 = 已修复的配置
-    python ProPtyNet_torch.py net  --probe-mode truth --amp-output softplus --phase-output cossin
-    python ProPtyNet_torch.py net  --probe-mode truth --amp-output leaky --phase-output tanh
-    python ProPtyNet_torch.py net  --paper                # 复现论文原配置（用于消融）
-    python ProPtyNet_torch.py net  --probe-mode truth     # 诊断: 探针=真值，只解物体
-    python ProPtyNet_torch.py net  --holdout-frac 0.05 --poisson --peak-photons 1e3
-    python ProPtyNet_torch.py net  --probe-mode inr --probe-prefit-only --probe-inr-w0 30
-    python ProPtyNet_torch.py net  --probe-mode inr --probe-warmup 300   # 阶段1+2 全流程
-    python ProPtyNet_torch.py net  --data-loss censor_pg --poisson --peak-photons 1e3
-    python ProPtyNet_torch.py net  --data-loss censor_pg --noise-clip --sat-threshold 0.3
-
-【默认值已改为修复后的配置】原论文/原实现的配置用 --paper 复现，逐项对照:
-
-    旋钮            默认(修复)   --paper(原版)   为什么改
-    probe_mode      pixel        net            探针与物体共享同一 U-Net 特征图，
-                                                而探针是物体画布的中心裁剪 -> 两个任务
-                                                在同一批特征上打架，探针支撑域被烙进物体
-                                                另有 inr: 坐标 SIREN 表示探针，先离线
-                                                预拟合到针孔初值 P0，再联合微调。它与
-                                                pixel 共用同一个 P0 和同一个 warmup，
-                                                唯一变量是【表示方式】-> 单变量消融
-    phase_repr      cossin       tanh           tanh*span 有两个陷阱: 探针 span=pi 时
-                                                真值相位贴着 ±pi 边界永远走不到（饱和）;
-                                                物体 span=2pi 允许缠绕，loss 不变而
-                                                angle() 指标崩 -> 表现为"越跑越差"
-    amp_act         softplus     leaky          leaky_relu 允许负振幅 = 隐藏的 pi 相位翻转
-    scale_mode      ls           frozen         原写法用随机初始化的一次前向定死全局标度
-    weight_decay    0.0          1e-2           AdamW 默认带 wd，DIP 里它让表示持续漂移
-
-依赖: torch, numpy, scipy, matplotlib, (cv2 或 Pillow)
-资源: 与 notebook 共用 ../cameraman.bmp 与 ../westconcordorthophoto.bmp
+两个方法在【同一份数据、同一个初值、同一套协议】下跑，唯一变量是物体的参数化：
+  ad  -> 物体 = 自由复数像素
+  net -> 物体 = U-Net 的输出（DIP 先验）
 """
 
 from __future__ import annotations
@@ -60,20 +24,20 @@ import json
 import time
 import math
 import argparse
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict, fields as dataclass_fields
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter, gaussian_filter
 
 PI = math.pi
 
 
 # ============================================================================ #
-# 参数 —— 逐条对应 INNM_Ptycho.ipynb 的 CELL 2
+# 配置
 # ============================================================================ #
 
 @dataclass
@@ -84,175 +48,76 @@ class Cfg:
     N_OBJ: int = 224             # 物体画布
     dx: float = 10e-6            # 样品面 = 探测器面像素（角谱保持像素尺寸）
     dz_true: float = 8e-3        # 样品-探测器
-    probe_dia: int = 48
-    z_probe: float = 3e-3        # 孔径->样品，合成真值探针
-    z_probe_init: float = 3e-3   # 合成探针初值 P0 的传播距离。实验台上 z 是量得准的，
-                                 # 所以默认与 z_probe 相同。
-    probe_aberr: float = 0.0
+    probe_dia: int = 48          # R_AP = probe_dia/2 - 6 = 18 px
+    z_probe: float = 3e-3        # 光阑 -> 样品，合成真值探针
+    probe_aberr: float = 0.0     # >0 时给真值光阑加随机波前（真值探针不再理想）
     aberr_seed: int = 7
-    support_energy: float = 0.995   # 支撑域取到包住这么多能量为止。
-                                    # 0.995 会留下约 5e-2 的模型误差（域外残余能量），
-                                    # 让 --probe-mode truth 这一列自带偏差。
-                                    # 想让"探针已知"成为真正的上界就调到 0.9999。
-    # 模型里探针支撑的形式。【与评估口径分开】—— 评估恒用二值 rr<=R_in。
-    #   hard: 二值盘。INNM notebook 的约定，保留只为与历史结果逐位可比。
-    #   soft: 余弦过渡带，去掉硬边阶跃与 P=0 处的硬零梯度。
-    #   none: 全 1。模型能表示完整探针。ProPtyNet 原文用的是软惩罚(Eq.5 的 beta)
-    #         而不是硬掩膜 —— 硬掩膜会让 Loss2 恒等于 0。论文主结果建议用这一档。
-    # ---- 结果 PNG 的显示范围（只影响出图，不影响任何指标）----
-    # 固定常数，跨方法 / 跨 seed / 跨配置一致，且必须【足够宽以覆盖所有方法的数值】。
-    #   * 掺进 rec 的 min/max -> 每张 PNG 色标不同，两张图没法并排比。
-    #   * 只用 GT 的范围     -> 超出真值范围的偏差被【显示饱和】吃掉:
-    #     GT=0.400 而重建 0.170，范围取 [0.4,1.0] 时两者同为纯黑，0.23 的误差看不见。
-    # 超出范围时标题标 ⚠clip 并打印提示 —— 那时把这几项调宽，不要去动数据。
-    disp_amp_lo: float = 0.15
-    disp_amp_hi: float = 1.15
-    disp_phase_lim: float = 1.0      # 物体相位，对称 ±
-    disp_err_amp: float = 0.3        # 误差图振幅，对称 ±
-    disp_err_phase: float = 0.3      # 误差图相位(rad)，对称 ±
-    probe_support: str = "hard"     # hard | soft | none
-    support_soft: float = 6.0       # soft 模式的过渡带宽度(px)
-    # 仿真数据用哪个探针。full = 完整真值探针(物理正确)；model = probe*sup_model,
-    # 数据与模型完全一致(inverse crime，只当诊断用)。probe_support=none 时两者等价。
-    sim_probe: str = "full"         # full | model
+
+    # ---- 探针初值 P0：平滑圆盘 + 零相位、不传播 ----
+    # 只编码"光阑大概多大"，不给波前、也不给传播产生的 Fresnel 环纹
+    # （真值探针被传播摊开到约 33px = 光阑的 1.8 倍）。
+    # sigma 单位 = R_AP 的倍数，物理含义 = "知道光阑大小、不知道边缘锐度"。
+    # ⚠ 不要按 err_P0 最小去调它 —— 那等于偷用真值信息。定死 0.15。
+    probe_init_sigma: float = 0.15
 
     # ---- 扫描 ----
-    scan_pattern: str = "raster_jitter"
+    scan_pattern: str = "raster"     # raster | fermat
     scan_npos: int = 25
-    scan_step: float = 20.0      # E5 重叠轴有 26.7 / 13.3 / 11.4 这些小数档，必须是 float
-    scan_jitter: float = 0.0
-    scan_seed: int = 0
+    scan_step: float = 20.0          # 重叠轴有 26.7 / 13.3 这些小数档，必须是 float
 
     # ---- 区域 ----
     eval_size: int = 96          # -> EVAL_CROP = (224-96)/2 = 64
     reg_size: int = 128          # -> REG_CROP  = (224-128)/2 = 48
-    phase_support: float = 0.05
+    phase_support: float = 0.05  # 相位指标只在振幅 > 该比例×峰值 的像素上统计
 
     # ---- 噪声 ----
     poisson: bool = False
     peak_photons: float = 5000.0
     noise_global_norm: bool = True
     noise_seed: int = 42
-    # 论文 Table 1 的额外一步: 归一化到 [0,1] 后 clip，制造过曝像素。
-    # 只有开了它，论文 Eq.(5) 的过曝掩膜 S2 和 γ 才有东西可作用。
-    noise_clip: bool = False
-    gauss_snr_db: float = 0.0    # >0 时按论文 Table 1 追加高斯噪声
 
-    # ---- AD 模式（移植校验）----
-    # alternating / joint = INNM notebook(Keras/TF) 的逐行移植，含四处 Keras 训练循环
-    #   伪影: 每 stage 重建优化器(状态清零) / batch_size=1 顺序遍历 / 每 stage lr*decay /
-    #   amsgrad=True。它们是【调度】伪影，不改变 AD ptychography 这个方法本身。
-    # plain = 标准 AD ptychography(Kandel et al. 2019): 联合更新 + 全程单个 Adam +
-    #   全批量 + 无 lr 调度 + amsgrad=False。前向模型/损失/初值与上面完全相同，
-    #   差别只在优化调度 -> plain vs alternating 直接量出"Keras 调度影响多大"。
-    opt_mode: str = "alternating"   # alternating | joint | plain(标准 AD)
-    ad_iters: int = 2000            # 仅 opt_mode='plain': 全批量梯度步数（与 net 的 iters 对齐）
-    stages: int = 8
-    obj_epoch: int = 8
-    prb_epoch: int = 8
-    lr_obj: float = 1e-3
-    lr_prb: float = 1e-3
-    decay: float = 0.75
-    tv1: float = 0.0
-    tv2: float = 0.0
+    # ---- AD（标准 AD ptychography）----
+    ad_iters: int = 2000         # 全批量梯度步数（与 net 的 iters 同刻度）
+    lr_obj: float = 1e-2
+    lr_prb: float = 1e-2
+    tv1: float = 0.0             # 物体振幅 TGV，0 = 关
+    tv2: float = 0.0             # 物体相位 TGV，0 = 关
 
-    # ---- ProPtyNet 模式 ----
+    # ---- net（DIP）----
     iters: int = 2000
-    lr_net: float = 1e-3         # 论文: 5e-4 ~ 5e-3
-    lr_cosine: bool = False      # 两个 lr 一起余弦退火到 0。治后期的 loss 尖峰
-    base_ch: int = 32            # 32/64/128/256 -> 约 2.2 M 参数（论文称 2.5 M）
-    data_loss: str = "direct"    # direct(=notebook 的 ‖|U|-√I‖²) | paper(Eq.4/5 强度域)
-    beta: float = 0.90           # 论文 Eq.4
-    gamma0: float = 1.0          # 论文 Eq.5，随迭代衰减
-    gamma_end: float = 0.05
-    # ---- data_loss='censor_pg' 专用（删失复合泊松-高斯似然）----
-    # 【量纲坑1】本文件的 I 不是归一化到 [0,1] 的: simulate() 里 clip 之后又乘回
-    #   g=I.max()，所以 I.max() 是 1.15 这种数。sat_threshold 写死 1.0 会 censor 到
-    #   莫名其妙的像素上。-1 = 自动取 Im.max()（等于不删失，退化成纯 PG 似然，安全默认）。
-    #   想真正测删失分支，要把它压到 Im.max() 以下，例如 --sat-threshold 0.3。
-    sat_threshold: float = -1.0
-    # 【量纲坑2】泊松方差 = 光子数，不是 I。simulate() 里 I = poisson(I*s)/s，
-    #   s = peak_photons/I.max() ≈ 4400。所以 sigma_read 必须以【光子】为单位，
-    #   并且 sigma^2 = D + sigma_read^2 要在光子域算，否则读出噪声与散粒噪声的
-    #   相对权重会差三个数量级，异方差加权整个失效、退化成普通强度域 MSE。
-    # 【坑3】sigma_read 不能给太小。方差 sigma^2 = D + sr^2 在 D->0 时塌到 sr^2，
-    #   权重 1/(2 sigma^2) 就爆掉 —— 实测 sr=0.01 时 D=0.01 光子的像素梯度是亮像素
-    #   的 100 倍，而本仿真的衍射图【中位数就是 0 光子】，等于让网络被暗区绑架把
-    #   整幅图往 0 压（异方差 NLL 的 variance-collapse）。sr=1 光子起梯度才平。
-    #   1~2 e- 也正好是真实 sCMOS 的读出噪声量级。(你给的 0.01 是归一化强度单位
-    #   下的数，这里单位已换成光子，所以默认值改成 1.0；要复现原值就 --sigma-read 0.01)
-    sigma_read: float = 1.0      # 单位: 光子
-    photon_scale: float = -1.0   # -1 = 自动 (poisson 时 peak_photons/Im.max()，否则 1)
-    # 【坑4】异方差 NLL 的系统偏置。d/dD[0.5*log(2pi*var)] = 1/(2var) 恒为正，
-    #   在【真解】处梯度也不为 0 —— 实测它比数据项还大(5000光子档 3.2e-3 vs 2.4e-3)，
-    #   方向是把 D 往小压，且越暗的像素压得越狠(D=0 时是亮像素的 5000 倍)。
-    #   ls 标度能吸收掉均匀的那部分(所以振幅没事)，吸收不掉空间变化的那部分：
-    #   它把每张衍射图的暗区相对压暗，而相消干涉条纹=相位信息正住在暗区 -> 相位崩。
-    #   detach 方差后 log 项变常数(梯度 0)、偏置消失，1/(2var) 作为逐步冻结的权重
-    #   保留下来 = 泊松加权的强度最小二乘，正是想要的东西。
-    #   (Seitzer et al. 2022, On the Pitfalls of Heteroscedastic Uncertainty Estimation)
-    #   消融对照: --pg-no-detach-var 切回有偏的原始 NLL。
-    pg_detach_var: bool = True
+    lr_net: float = 1e-3
+    lr_probe: float = 1e-2       # 自由像素探针，与 AD 的 lr_prb 同量级
+    lr_cosine: bool = False      # 两个 lr 一起余弦退火到 0，治后期 loss 尖峰
+    base_ch: int = 32            # -> 约 2.2 M 参数
+    weight_decay: float = 0.0    # DIP 不该有权重衰减
     eval_every: int = 25
-
-    # ---- 未知量的参数化（默认 = 修复后；--paper 切回原版）----
-    probe_mode: str = "pixel"    # pixel | net(论文:共享U-Net) | inr(坐标SIREN) | truth(诊断)
-    probe_warmup: int = 300      # 前 N 步冻结探针，让物体网络先站稳（pixel 与 inr 共用）
-    lr_probe: float = 1e-2       # 自由像素探针的学习率（与 AD 基线的 lr_prb 同量级）
-    phase_repr: str = "cossin"   # cossin(单位圆，无缠绕无饱和) | tanh(论文)
-    amp_act: str = "softplus"    # softplus | relu | leaky(论文，允许负振幅)
-    phase_span_obj: float = 2 * PI   # 仅 phase_repr='tanh' 时生效
-    phase_span_prb: float = PI       # 仅 phase_repr='tanh' 时生效
-    scale_mode: str = "ls"       # ls(每步闭式最小二乘, VarPro) | frozen(论文)
-
-    # ---- 物体输出头的初始化 ----
-    # default = PyTorch 缺省。cossin 的两个通道零均值同方差 -> atan2 出来的初始物体
-    # 相位是 U(-pi,pi) 的白噪声(蒙特卡洛 RMS 1.80 rad), 而真值 span=0.8 时只有
-    # 0.46 rad —— 比真值粗 4 倍, 且每个 seed 换一张。AD 的初值是 O = 1 (相位恒 0),
-    # 所以 net 与 AD 的对比里"先验"和"初始点"是混在一起的。
-    # neutral = 把物体头改成 A=1, phi=0, 与 AD 的初值完全相同。
-    # obj_init_alpha 缩放物体头的权重: 1 = 保持默认随机, 0 = 严格中性,
-    # 中间值给出一条"初始相位粗糙度"的连续轴。
-    obj_init: str = "default"      # default | neutral
+    # 物体输出头权重的缩放：0 = 严格中性（第 0 步 O ≡ 1，与 AD 初值相同），
+    # 1 = 保持 PyTorch 默认随机。中间值 = 一条"初始相位粗糙度"的连续轴。
     obj_init_alpha: float = 0.0
-    weight_decay: float = 0.0    # DIP 不该有权重衰减；原实现用 AdamW 默认 1e-2
+    # 探针参数化：pixel = 自由复数像素；truth = 冻结在真值上（上界对照，不参与优化）
+    probe_mode: str = "pixel"    # pixel | truth
 
-    # ---- 探针 = 坐标 SIREN（probe_mode='inr'）----
-    # 先验不是"共享了哪些特征"，而是【带宽】: 由 w0 与宽度决定，是可连续扫的物理旋钮。
-    # 注意本仿真的真值探针是硬边光阑近场传播（N_F~17）而来，几乎全带宽:
-    #   把真值低通到支撑直径内 6 / 9 / 12 / 25 个周期，残余复相对误差 = .21/.16/.13/.06
-    #   而针孔初值 P0 本身的误差就是 .217
-    # -> w0 给小了，平滑先验会把探针恢复直接锁死在"和不学一样"的水平。必须先跑
-    #    --probe-prefit-only 扫 w0，取能让预拟合误差 < tol 的最小 w0。
-    probe_inr_hidden: int = 64        # SIREN 宽度
-    probe_inr_layers: int = 3         # sine 层数
-    probe_inr_w0: float = 30.0        # 第一层/隐藏层频率尺度 = 带宽先验（核心旋钮）
-    probe_inr_coord: str = "support"  # support(按支撑半径归一化) | grid(按 N/2)
-    probe_inr_prefit: int = 2000      # 阶段1 预拟合步数；0 = 跳过(退化成随机初始化)
-    probe_inr_prefit_lr: float = 1e-3
-    probe_inr_prefit_tol: float = 0.02   # 硬门槛: 达到即早停；未达到 -> 打印警告
-    probe_inr_prefit_only: bool = False  # 只跑阶段1 就退出（几秒钟，用来扫 w0）
-    probe_inr_ceiling: bool = False   # 诊断: 另拟合到【真值探针】，量出该 w0 的表示上限
-    lr_probe_inr: float = 1e-4        # 阶段2 解冻后的小学习率（≠ lr_probe）
-
-    # ---- 无 GT 早停: 留出探测器像素做验证 ----
+    # ---- 无 GT 早停：留出探测器像素 ----
     holdout_frac: float = 0.0    # >0 时每张图随机留出这么多像素，永不进 loss
     holdout_seed: int = 1234
 
+    # ---- 真值物体 ----
+    obj_amp_min: float = 0.4     # 振幅 = [obj_amp_min, 1.0]
+    obj_phase_span: float = 0.8  # 相位 = ±该值 (rad)。0 = 纯振幅物体
+    obj_amp_img: str = "Siemens.jpg"
+    obj_phase_img: str = "Peppers.jpg"
+
+    # ---- 结果 PNG 的显示范围（只影响出图，不影响任何指标）----
+    disp_amp_lo: float = 0.15
+    disp_amp_hi: float = 1.15
+    disp_phase_lim: float = 1.0
+    disp_err_amp: float = 0.3
+    disp_err_phase: float = 0.3
+
     # ---- 其它 ----
-    seed: int = 0
+    seed: int = 0                # 只影响 net。AD 完全确定性，--seed 对它无效
     device: str = "auto"
-    # 样品图。可以是 assets 目录下的文件名，也可以是绝对/相对路径。
-    # 换样品会让所有历史结果失去可比性 —— 请换一棵 runs/ 目录树。
-    # 真值物体的振幅/相位跨度。振幅 = [obj_amp_min, 1.0]; 相位 = ±obj_phase_span 弧度。
-    # 本文件用 cossin 单位圆参数化, 没有 tanh 箱、不会饱和也不会缠绕, 所以相位跨度
-    # 可以自由调。默认 0.8 rad 是【弱相位物体】(Born 近似量级), 任务偏简单 ——
-    # 把它变成可扫的轴, 用来测"相位强度 vs 先验收益"。
-    obj_amp_min: float = 0.4
-    obj_phase_span: float = 0.8
-    obj_amp_img: str = "Siemens.jpg"              # -> 物体振幅 原本：cameraman.bmp -> USAF.jpg
-    obj_phase_img: str = "Peppers.jpg"  # -> 物体相位 westconcordorthophoto.bmp -> Peppers.jpg
-    assets: str = ""             # 空 = 自动找 ../cameraman.bmp
+    assets: str = ""
     outdir: str = "results_proptynet"
 
     def __post_init__(self):
@@ -263,12 +128,17 @@ class Cfg:
         self.PATCH_C0 = (self.N_OBJ - self.N) / 2.0
         self.SCAN_LIMIT = self.PATCH_C0
         self.dz_max = self.N * self.dx ** 2 / self.wlength
-        self.ph_ch = 2 if self.phase_repr == "cossin" else 1
 
     def dev(self):
         if self.device != "auto":
             return torch.device(self.device)
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+
+# ============================================================================ #
+# 素材 / 传播 / 亚像素裁剪  —— 以下为原实现逐字保留
+# ============================================================================ #
 
 
 def asset_dir(cfg: Cfg) -> Path:
@@ -279,11 +149,6 @@ def asset_dir(cfg: Cfg) -> Path:
         if (c / "cameraman.bmp").is_file():
             return c
     return here
-
-
-# ============================================================================ #
-# 角谱传播 —— 移植自 notebook CELL 3 的 make_H / propagate_np
-# ============================================================================ #
 
 def make_H(cfg: Cfg, dz, band_limit=True):
     """H(fx,fy,dz) = exp(i·sqrt(k²-fx²-fy²)·dz)，建在未 shift 的 FFT 排布上。
@@ -301,21 +166,14 @@ def make_H(cfg: Cfg, dz, band_limit=True):
         H = np.where(FX ** 2 + FY ** 2 <= f_lim ** 2, H, 0)
     return H.astype(np.complex64)
 
-
 def propagate_np(field, H):
     return np.fft.ifft2(np.fft.fft2(field) * H)
-
-
-# ============================================================================ #
-# 亚像素平移 + 局部裁剪 —— 移植自 innm_common.fourier_shift_* / crop_patch_*
-# ============================================================================ #
 
 def fourier_shift_np(f, rx, ry):
     n0, n1 = f.shape[:2]
     fx = np.fft.fftfreq(n0).reshape(n0, 1)
     fy = np.fft.fftfreq(n1).reshape(1, n1)
     return np.fft.ifft2(np.fft.fft2(f) * np.exp(-2j * PI * (fx * rx + fy * ry)))
-
 
 def crop_patch_np(canvas, corner, n):
     c = np.asarray(corner, float)
@@ -325,7 +183,6 @@ def crop_patch_np(canvas, corner, n):
         f"patch 越界: corner={c}, n={n}, canvas={canvas.shape}"
     w = canvas[i[0]:i[0] + n, i[1]:i[1] + n]
     return w if not fr.any() else fourier_shift_np(w, -fr[0], -fr[1])
-
 
 def crop_patch_torch(canvas: torch.Tensor, corners: torch.Tensor, n: int):
     """canvas: (M,M) complex ; corners: (I,2) float（左上角，可小数）-> (I,n,n) complex
@@ -350,11 +207,6 @@ def crop_patch_torch(canvas: torch.Tensor, corners: torch.Tensor, n: int):
     ramp = torch.polar(torch.ones_like(ph), ph).to(w.dtype)
     return torch.fft.ifft2(torch.fft.fft2(w) * ramp)
 
-
-# ============================================================================ #
-# 真值物体 / 探针 / 扫描 —— 移植自 notebook CELL 4
-# ============================================================================ #
-
 def _center_crop_square(a):
     """居中裁成正方形。原来直接 resize 到 (n,n) 不保持宽高比，非正方形图会被拉扁 ——
     对 USAF 这种分辨率靶尤其致命（线对不再是方的，横竖分辨率不一致）。
@@ -364,7 +216,6 @@ def _center_crop_square(a):
         return a
     m = min(h, w)
     return a[(h - m) // 2:(h - m) // 2 + m, (w - m) // 2:(w - m) // 2 + m]
-
 
 def _imread_resize(path: Path, n: int):
     """读灰度 -> 居中裁方 -> 缩放到 n x n。
@@ -390,8 +241,14 @@ def _imread_resize(path: Path, n: int):
         return np.asarray(Image.fromarray(a).resize((n, n), rs), dtype=float)
 
 
+
+# ============================================================================ #
+# 真值 / 探针初值 / 扫描 / 仿真
+# ============================================================================ #
+
+
 def make_truth(cfg: Cfg):
-    """返回 obj(复), probe(复), support(float), pupil_true, H_true —— 与 notebook 逐位一致。"""
+    """返回 obj(复), probe(复, 峰值归一), rr(到中心的像素距离)。"""
     d = asset_dir(cfg)
 
     def _resolve(name):
@@ -401,7 +258,7 @@ def make_truth(cfg: Cfg):
     _a = _imread_resize(_resolve(cfg.obj_amp_img), cfg.N_OBJ)
     _a = cfg.obj_amp_min + (1.0 - cfg.obj_amp_min) * _a / _a.max()
     _p = _imread_resize(_resolve(cfg.obj_phase_img), cfg.N_OBJ)
-    _p = -1.0 + 2.0 * (_p - _p.min()) / max(_p.max() - _p.min(), 1e-12)   # = cv2.normalize(-1,1)
+    _p = -1.0 + 2.0 * (_p - _p.min()) / max(_p.max() - _p.min(), 1e-12)
     obj = (_a * np.exp(1j * cfg.obj_phase_span * _p)).astype(np.complex64)
 
     N = cfg.N
@@ -410,108 +267,54 @@ def make_truth(cfg: Cfg):
 
     pupil_mask = rr <= cfg.R_AP
     if cfg.probe_aberr > 0:
-        try:
-            import cv2
-            _r = cv2.GaussianBlur(np.random.default_rng(cfg.aberr_seed)
-                                  .normal(size=(N, N)).astype(np.float64), (0, 0), 1.5)
-        except ImportError:
-            from scipy.ndimage import gaussian_filter
-            _r = gaussian_filter(np.random.default_rng(cfg.aberr_seed)
-                                 .normal(size=(N, N)), 1.5)
+        _r = gaussian_filter(np.random.default_rng(cfg.aberr_seed).normal(size=(N, N)), 1.5)
         _phi_ap = _r * (cfg.probe_aberr / np.sqrt(np.mean(_r[pupil_mask] ** 2)))
     else:
         _phi_ap = np.zeros((N, N))
     pupil_true = (pupil_mask * np.exp(1j * _phi_ap)).astype(np.complex64)
 
-    H_probe = make_H(cfg, cfg.z_probe)
-    probe = propagate_np(pupil_true, H_probe)
+    probe = propagate_np(pupil_true, make_H(cfg, cfg.z_probe))
     probe = (probe / np.abs(probe).max()).astype(np.complex64)
-
-    # 支撑域：二值，取到包住 99.5% 能量。必须二值（模型里有 Pr*support）
-    e = np.abs(probe) ** 2
-    for _R in range(int(cfg.probe_dia / 2), N // 2):
-        if (e * (rr <= _R)).sum() / e.sum() > cfg.support_energy:
-            break
-    support = (rr <= _R).astype(np.float32)
-    return obj, probe, support, pupil_true, rr, _R
+    return obj, probe, rr
 
 
-def make_support(cfg: Cfg, rr, R_in):
-    """模型里乘进前向的探针支撑【权重】。评估口径另有一把尺子，见 setup_support。"""
-    m = cfg.probe_support
-    if m == "none":
-        return np.ones_like(rr, dtype=np.float32)
-    if m == "hard":
-        return (rr <= R_in).astype(np.float32)
-    if m == "soft":
-        w = max(float(cfg.support_soft), 1e-9)
-        t = np.clip((rr - R_in) / w, 0.0, 1.0)
-        return (0.5 * (1.0 + np.cos(PI * t))).astype(np.float32)
-    raise ValueError(f"probe_support={m}，只能是 hard | soft | none")
+def make_probe_init(cfg: Cfg, rr):
+    """探针初值 P0 = 平滑圆盘 + 零相位，不传播。
 
+    只编码"光阑大概多大"。不给波前相位，也不给传播产生的 Fresnel 环纹 ——
+    本几何（R_AP=18px, z=3mm）实测 err_P0 ≈ 0.27，拆解为只丢相位 0.28 /
+    只丢振幅 0.30，两者相当。
 
-def setup_support(cfg: Cfg, probe, rr, R_in, tag):
-    """返回 (sup_model, sup_mask, P_sim)。
-
-    【check / ad / net 三条路径必须都调这个函数】。历史教训: 曾经只把 ad 和 check
-    的 simulate() 改成 probe*support、漏了 net，结果两个方法在【不同的数据】上比，
-    所有 net-vs-AD 的结论当场失效。数据用哪个探针只能有一个出口。
-
-      sup_model : 乘进前向模型的支撑权重（由 probe_support 决定）
-      sup_mask  : 评估/绘图口径，恒为二值 rr <= R_in —— 换档不换尺子
-      P_sim     : simulate() 用的探针（由 sim_probe 决定）
+    【ad / net 两条路径必须都调这个函数】。历史教训：AD 分支曾经自己复制了一份
+    初值构造代码，结果换初值的开关只对 net 生效，两个方法在不同起跑线上比。
     """
-    # 评估口径跟着【模型口径】走，不跟 support_energy 走:
-    #   none -> 全阵列（模型能表示整个探针，就该整个评估）。此时 support_energy
-    #           对重建和指标都【完全没有影响】，只剩 check 模式打印一行半径。
-    #   hard/soft -> 二值 rr<=R_in，与模型能表示的区域一致。
-    sup_model = make_support(cfg, rr, R_in)
-    sup_mask = (np.ones_like(rr, dtype=np.float32) if cfg.probe_support == "none"
-                else (rr <= R_in).astype(np.float32))
-    P_sim = (probe * sup_model).astype(np.complex64) if cfg.sim_probe == "model" else probe
-    miss = probe * (1.0 - sup_model)
-    e_amp = float(np.linalg.norm(miss) / max(np.linalg.norm(probe), 1e-30))
-    e_pow = float((np.abs(miss) ** 2).sum() / max((np.abs(probe) ** 2).sum(), 1e-30))
-    print(f"[{tag}] 探针支撑: 模型={cfg.probe_support}"
-          + (f"(过渡带 {cfg.support_soft:g}px)" if cfg.probe_support == "soft" else "")
-          + f"  自由实数 {2*int((sup_model > 0).sum())}"
-          + ("   评估口径=全阵列（与 support_energy 无关）" if cfg.probe_support == "none"
-             else f"   评估口径=二值 rr<={R_in}px")
-          + f"   仿真探针={cfg.sim_probe}")
-    if cfg.sim_probe == "model":
-        print(f"[{tag}] ⚠ sim_probe=model: 数据与模型用同一个截断探针（inverse crime），"
-              f"只能当诊断，不能当最终配置")
-    else:
-        print(f"[{tag}] 数据/模型探针失配: 幅度范数 {e_amp*100:.2f}%  能量 {e_pow*100:.4f}%"
-              + ("   <- 为 0" if e_amp < 1e-12 else "   <- 会被补偿进物体，低重叠下表现为环纹"))
-    return sup_model, sup_mask, P_sim
+    amp = (rr <= cfg.R_AP).astype(np.float32)
+    s_px = float(cfg.probe_init_sigma) * float(cfg.R_AP)
+    if s_px > 0:
+        amp = gaussian_filter(amp, sigma=s_px)
+    P0 = amp.astype(np.complex64)                      # 零相位
+    return (P0 / np.abs(P0).max()).astype(np.complex64)
 
 
-def make_probe_init(cfg: Cfg, rr, support):
-    """针孔场传播到 z_probe_init 的探针初值 P0。
+def probe_init_err(cfg: Cfg, rr, probe):
+    """P0 相对真值探针的复相对误差（消去全局复因子，与 evaluate_probe 同口径）。
 
-    pixel 模式把它当【参数初值】，inr 模式把它当【阶段1 的回归目标】——
-    两者共用这一个函数，保证 --z-probe-init 这条"先验强度"轴对两种模式同时生效，
-    也保证 pixel vs inr 是干净的单变量对照（同初值场、同 warmup、同 LR 结构）。
-
-    运行时会实测并打印 err_P0（消去全局复因子后的复相对误差）。
+    err_P0 是刻画"探针先验强度"的唯一诚实数字，ad 与 net 同口径同函数。
     """
-    P0 = propagate_np((rr <= cfg.R_AP).astype(np.complex64),
-                      make_H(cfg, cfg.z_probe_init))
-    return (P0 / np.abs(P0).max() * support).astype(np.complex64)
+    P0 = make_probe_init(cfg, rr)
+    Pt = probe.astype(np.complex64)
+    return float(np.linalg.norm(align_global_factor(P0, Pt)[0] - Pt)
+                 / max(np.linalg.norm(Pt), 1e-12))
 
 
 def make_scan_positions(cfg: Cfg):
-    """与 notebook 的 make_scan_positions 使用同一 RNG 调用序列 -> 位置逐位一致。"""
-    rng = np.random.default_rng(cfg.scan_seed)
+    """确定性扫描位置。raster = 规则栅格；fermat = 费马螺旋。"""
     pat, n_pos, step = cfg.scan_pattern, cfg.scan_npos, cfg.scan_step
-    if pat in ("raster", "raster_jitter"):
+    if pat == "raster":
         k = int(round(np.sqrt(n_pos)))
         off = (k - 1) * step / 2
         p = np.array([[i * step - off, j * step - off]
                       for i in range(k) for j in range(k)], float)
-        if pat == "raster_jitter":
-            p += rng.uniform(-cfg.scan_jitter * step, cfg.scan_jitter * step, p.shape)
     elif pat == "fermat":
         R = step * np.sqrt(n_pos) / 2
         n = np.arange(1, n_pos + 1)
@@ -519,9 +322,39 @@ def make_scan_positions(cfg: Cfg):
         th = n * np.deg2rad(137.508)
         p = np.stack([r * np.cos(th), r * np.sin(th)], 1)
     else:
-        raise ValueError(pat)
+        raise ValueError(f"scan_pattern={pat}，只能是 raster | fermat")
     return p.astype(np.float32)
 
+
+def simulate(cfg: Cfg, obj, probe, positions, H_true):
+    """生成衍射强度。噪声 = 可选的散粒噪声，别的都没有。"""
+    I = np.empty((len(positions), cfg.N, cfg.N), np.float32)
+    for i, p in enumerate(positions):
+        I[i] = np.abs(forward_np(cfg, obj, probe, p, H_true)) ** 2
+    I_clean = I.copy()
+    if cfg.poisson:
+        rng = np.random.default_rng(cfg.noise_seed)
+        gmax = float(I.max())
+        for i in range(len(I)):
+            imax = gmax if cfg.noise_global_norm else float(I[i].max())
+            s = cfg.peak_photons / (imax + 1e-12)
+            I[i] = rng.poisson(np.maximum(I[i], 0) * s).astype(np.float32) / s
+    return I, I_clean
+
+
+def make_field(amp_raw, phs_raw):
+    """原始头 -> 复数场。振幅 softplus，相位 cos/sin 单位圆。
+
+    amp_raw: (H,W) ; phs_raw: (2,H,W)
+
+    cos/sin 而不是 span*tanh：没有 ±pi 边界、没有饱和、没有 2pi 缠绕的等价解 ——
+    这三样正是让优化在等价解之间漂移（loss 不变而指标变差）的来源。
+    softplus 而不是 leaky_relu：后者允许负振幅 = 隐藏的 pi 相位翻转。
+    """
+    amp = F.softplus(amp_raw)
+    c, sn = phs_raw[0], phs_raw[1]
+    n = torch.sqrt(c * c + sn * sn + 1e-8)
+    return torch.complex(amp * c / n, amp * sn / n)
 
 def check_scan_fits(cfg, positions, verbose=True):
     """位置越界必须在跑之前拦住。
@@ -548,7 +381,6 @@ def check_scan_fits(cfg, positions, verbose=True):
               f"每像素被照亮 {len(P)*np.pi*(cfg.probe_dia/2)**2/(2*mx+cfg.probe_dia)**2:.2f} 次")
     return {"n": len(P), "linear_overlap": lin, "areal_overlap": ar, "pos_max": mx}
 
-
 def overlap_areal(d, D):
     R = D / 2.0
     if d >= 2 * R:
@@ -559,14 +391,15 @@ def overlap_areal(d, D):
     return float(a / (PI * R ** 2))
 
 
+
 # ============================================================================ #
 # 前向模型
 # ============================================================================ #
 
+
 def forward_np(cfg, O, P, pos, H):
     psi = crop_patch_np(O, cfg.PATCH_C0 - np.asarray(pos, float), cfg.N) * P
     return np.fft.ifft2(np.fft.fft2(psi) * H)
-
 
 def forward_torch(cfg, O, P, corners, H):
     """O:(M,M)c ; P:(n,n)c ; corners:(I,2)f ; H:(n,n)c -> U:(I,n,n) complex"""
@@ -574,40 +407,11 @@ def forward_torch(cfg, O, P, corners, H):
     return torch.fft.ifft2(torch.fft.fft2(psi) * H[None])
 
 
-def simulate(cfg: Cfg, obj, probe, positions, H_true):
-    """生成衍射强度。噪声流程与 notebook CELL 5 一致，再可选加论文 Table 1 的 clip。"""
-    I = np.empty((len(positions), cfg.N, cfg.N), np.float32)
-    for i, p in enumerate(positions):
-        I[i] = np.abs(forward_np(cfg, obj, probe, p, H_true)) ** 2
-    I_clean = I.copy()
-
-    rng = np.random.default_rng(cfg.noise_seed)
-    if cfg.poisson:
-        gmax = float(I.max())
-        for i in range(len(I)):
-            imax = gmax if cfg.noise_global_norm else float(I[i].max())
-            s = cfg.peak_photons / (imax + 1e-12)
-            I[i] = rng.poisson(np.maximum(I[i], 0) * s).astype(np.float32) / s
-
-    if cfg.gauss_snr_db > 0:
-        # 论文 Table 1 的高斯列: σ = mean(signal)/sqrt(10^(SNR/10))，逐图
-        g = float(I_clean.max())
-        for i in range(len(I)):
-            s = I_clean[i] / g
-            sigma = s.mean() / math.sqrt(10 ** (cfg.gauss_snr_db / 10))
-            I[i] = I[i] + rng.normal(0, sigma, s.shape).astype(np.float32) * g
-
-    if cfg.noise_clip:
-        # 论文: 全局归一化到 [0,1] 后 clip -> 负值归零、>1 饱和（过曝的来源）
-        g = float(I.max())
-        I = np.clip(I / g, 0.0, 1.0).astype(np.float32) * g
-        I_clean = np.clip(I_clean / g, 0.0, 1.0).astype(np.float32) * g
-    return I, I_clean
-
 
 # ============================================================================ #
-# 评估指标 —— 移植自 innm_common（数值与 TF 版一致）
+# 评估指标
 # ============================================================================ #
+
 
 def ssim(x, y, data_range=None, win_size=7):
     x = np.asarray(x, np.float64); y = np.asarray(y, np.float64)
@@ -626,14 +430,12 @@ def ssim(x, y, data_range=None, win_size=7):
     pad = (win_size - 1) // 2
     return float(S[pad:-pad, pad:-pad].mean())
 
-
 def psnr(rec, gt, data_range=None):
     rec = np.asarray(rec, np.float64); gt = np.asarray(gt, np.float64)
     if data_range is None:
         data_range = gt.max() - gt.min()
     mse = np.mean((rec - gt) ** 2)
     return float("inf") if mse == 0 else float(10 * np.log10(data_range ** 2 / mse))
-
 
 def align_global_factor(rec, gt):
     """消去全局复因子: c = <rec,gt>/<rec,rec>。相位恢复天然有这个自由度。"""
@@ -642,7 +444,6 @@ def align_global_factor(rec, gt):
         return rec, 0j
     c = np.vdot(rec, gt) / den
     return rec * c, c
-
 
 def evaluate_object(rec, gt, phase_support=0.05):
     rec, _ = align_global_factor(rec, gt)
@@ -660,16 +461,14 @@ def evaluate_object(rec, gt, phase_support=0.05):
         "relerr_o_complex": float(np.linalg.norm(rec - gt) / np.linalg.norm(gt)),
     }
 
-
 def evaluate_object_roi(cfg, rec, gt):
     c = cfg.EVAL_CROP
     return evaluate_object(rec[c:-c, c:-c], gt[c:-c, c:-c], cfg.phase_support)
 
-
 def evaluate_probe(rec_c, gt_field, mask, r_far=None):
-    """r_far: 远端能量诊断的参照半径（px）。【纯几何量，与 support_energy 无关】。
+    """r_far: 远端能量诊断的参照半径（px），纯几何量。
 
-    probe_support=none 时上面那些指标覆盖整个阵列，看不出"探针在远端长垃圾"。
+    模型里没有探针支撑，上面那些指标覆盖整个阵列，看不出"探针在远端长垃圾"。
     这一项 = 重建探针落在 r>r_far 之外的能量占比。真值探针的参照值（r_far=probe_dia=48）
     是 0.0015%；明显高于它 = 数据约束不住远端，需要正则（论文 Eq.5 的 beta 软惩罚），
     接近它 = 不需要任何支撑。
@@ -691,7 +490,6 @@ def evaluate_probe(rec_c, gt_field, mask, r_far=None):
         **({} if r_far is None else {"p_far_frac": _far_energy_frac(rec_c, r_far)}),
     }
 
-
 def _far_energy_frac(field, r_far):
     n0, n1 = field.shape
     _y, _x = np.mgrid[0:n0, 0:n1]
@@ -700,14 +498,15 @@ def _far_energy_frac(field, r_far):
     return float((e * (_rr > r_far)).sum() / max(e.sum(), 1e-30))
 
 
+
 # ============================================================================ #
-# 正则项（TGV / TV）—— 移植自 innm_common，reduce='mean'
+# 正则项与数值安全的小工具
 # ============================================================================ #
+
 
 def _grad_xy(u):
     """u: (H,W) 实数"""
     return u[1:, :] - u[:-1, :], u[:, 1:] - u[:, :-1]
-
 
 def tgv_loss(u, w1=1.0, w2=2.0, beta=1e-2):
     dx, dy = _grad_xy(u)
@@ -717,11 +516,9 @@ def tgv_loss(u, w1=1.0, w2=2.0, beta=1e-2):
     tv2 = dxx.abs().mean() + dyy.abs().mean()
     return beta * (w1 * tv1 + w2 * tv2)
 
-
 def tv_loss(u, beta=1e-2, eps=1e-8):
     dx, dy = _grad_xy(u)
     return beta * torch.sqrt(dx[:, :-1] ** 2 + dy[:-1, :] ** 2 + eps).mean()
-
 
 def safe_angle(z, eps=1e-20):
     """angle 在 0 处梯度是 -inf。两处 where 缺一不可（0*inf 仍然 nan）。"""
@@ -730,15 +527,9 @@ def safe_angle(z, eps=1e-20):
     z_safe = torch.where(ok, z, torch.ones_like(z))
     return torch.where(ok, torch.angle(z_safe), torch.zeros_like(mag2))
 
-
-# ============================================================================ #
-# 数据项
-# ============================================================================ #
-
 def cabs(z, eps=1e-12):
     """torch.abs 对复数在 z=0 处的反向是 grad*z/|z| -> NaN。加 eps 走 sqrt 更安全。"""
     return torch.sqrt(z.real ** 2 + z.imag ** 2 + eps)
-
 
 def masked_mse(pred, target, M=None):
     """M: 1=进 loss，0=留出。None 表示全用。"""
@@ -747,83 +538,20 @@ def masked_mse(pred, target, M=None):
     d = (pred - target) ** 2 * M
     return d.sum() / M.sum().clamp_min(1.0)
 
-
 def held_out_mse(pred, target, M):
     d = (pred - target) ** 2 * (1.0 - M)
     return (d.sum() / (1.0 - M).sum().clamp_min(1.0)).item()
-
 
 def data_loss_direct(U, sqrtI):
     """notebook 的写法: Keras mse(|U|, sqrt(I))，逐元素均值。"""
     return F.mse_loss(cabs(U), sqrtI)
 
 
-def data_loss_paper(Ic, Im, S2, gamma, probe_amp=None, S1=None, beta=0.9, M=None):
-    """论文 Eq.(4)/(5)。强度域 L2 范数（不是均值），带过曝掩膜 S2 与衰减的 γ。
-
-    注意: 本项目的探针已被二值 support 硬约束，Loss2 恒为 0 —— 只有在把 support
-    去掉、改用软约束时 Loss2 才有意义。同理 S2 只有在 noise_clip=True 时才非平凡。
-    """
-    r = Ic - Im
-    if M is not None:
-        r = r * M
-    loss1 = torch.linalg.vector_norm(r * S2 + gamma * r * (1.0 - S2))
-    if probe_amp is None or S1 is None:
-        return loss1
-    loss2 = torch.linalg.vector_norm(probe_amp * (1.0 - S1))
-    return beta * loss1 + (1.0 - beta) * loss2
-
-
-def data_loss_censor_pg(D, Im, S=1.0, sigma_read=1.0, M=None, eps=1e-8,
-                        photon_scale=1.0, detach_var=True):
-    """删失复合泊松-高斯负对数似然 (Censored Poisson-Gaussian NLL)。
-
-    D  : 预测光强 |U|^2（与 Im 同尺寸同量纲）   Im : 实测光强
-    S  : 探测器饱和阈值，与 Im 同量纲
-    sigma_read   : 读出底噪标准差，【单位 = 光子数】
-    detach_var   : True(默认) = 方差不回传梯度。去掉 log 项那个"把 D 往小压"的
-                   系统偏置，只保留 1/(2var) 作为逐步冻结的异方差权重。
-                   False = 原始有偏 NLL，只用来做消融。见 Cfg.pg_detach_var 的注释。
-    photon_scale : I -> 光子数的换算系数 s。simulate() 里 I = poisson(I*s)/s，
-                   所以 Var(I) = D/s，必须先换算到光子域再套 sigma^2 = D + sr^2。
-                   传 1.0 = 直接把 I 当光子数（只在 I 本身就是计数时才对）。
-    M  : 留出掩膜，1=进 loss，0=留出；None = 全用。
-
-    未过曝 (Im <  S): 0.5*log(2*pi*var) + (y-d)^2/(2*var),   var = d + sigma_read^2
-    过曝   (Im >= S): -log P(Y >= S) = -log Phi((d-S)/sigma)   <- 右删失
-        d >= S 时该项梯度自发趋 0，峰值不会被数据往下拽 -> 不再削顶。
-
-    【数值】原始写法 -log(0.5*erfc(z)+eps) 在 z 稍大时 erfc 下溢到 0，log 被 eps
-    夹成常数 -> 梯度归零，删失分支等于没写。这里用 torch.special.log_ndtr，
-    极远尾部仍按 -x^2/2 正确外推，且数学上完全等价:
-        0.5*erfc((S-d)/(sqrt2*sigma)) == Phi((d-S)/sigma)
-    【坑】torch.where 会把【两支都算出来】再选，反向时未选中的那支要乘 0。
-    若它是 ±inf，0*inf = NaN，整个 loss 就废了 —— 而 -log_ndtr(x) ~ x^2/2，
-    S 给大一点（比如不小心传了 1e30）就会溢出 float32。所以这里不能指望
-    "反正它不会被选中"，必须先把未选中像素的【输入】换成安全值再算。
-    """
-    d = D.clamp_min(0.0) * photon_scale
-    y = Im * photon_scale
-    s = S * photon_scale
-    var = ((d.detach() if detach_var else d) + sigma_read ** 2).clamp_min(eps)
-    sat = y >= s
-    nll_unsat = 0.5 * torch.log(2 * PI * var) + (y - d) ** 2 / (2 * var)
-    # 未删失像素在删失支上代 d=s（-> arg=0, log_ndtr(0)=log0.5, 有限且梯度有限）；
-    # clamp 只是兜底防 float32 溢出，正常量纲下永远够不着。
-    # 注意写成 where(sat, d-s, 0) 而不是 where(sat, d, s)-s ——
-    # 后者在 S=inf 时是 inf-inf = NaN。
-    arg = (torch.where(sat, d - s, torch.zeros_like(d))
-           / var.sqrt()).clamp(-1e9, 1e9)
-    nll_sat = -torch.special.log_ndtr(arg)
-    nll = torch.where(sat, nll_sat, nll_unsat)
-    if M is None:
-        return nll.mean()
-    return (nll * M).sum() / M.sum().clamp_min(1.0)
-
 
 # ============================================================================ #
-# ProPtyNet 的 U-Net —— 论文 Fig.1(b)
+# U-Net
 # ============================================================================ #
+
 
 class DoubleConv(nn.Module):
     """Conv-BN-LeakyReLU ×2，尺寸不变。对应 PhysenNet 的 layer_0x。"""
@@ -838,7 +566,6 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.f(x)
 
-
 class ProPtyUNet(nn.Module):
     """论文 Fig.1(b)。相对 PhysenNet_torch.py 的 net_model 有三处必改:
 
@@ -848,7 +575,7 @@ class ProPtyUNet(nn.Module):
       3. 原 forward() 把 encoder 重复算了 4 遍（x6_1/x7_1/x8_1/x9_1），这里只算一次。
 
     【本版改动】输出头返回【未激活】的原始张量，激活与复数合成统一放在 make_field()，
-    这样 amp_act / phase_repr 可以在一处切换，网络本身不需要知道用哪种参数化。
+    激活与复数合成统一放在 make_field()，网络本身不需要知道用哪种参数化。
 
     n_fields=1 -> 只出物体（探针另有其人）；n_fields=2 -> 论文的物体+探针共享写法。
     """
@@ -879,142 +606,18 @@ class ProPtyUNet(nn.Module):
         y = self.d1(torch.cat([self.u1(y), x1], 1))
         return self.head_amp(y)[0], self.head_phs(y)[0]     # (F,H,W), (F*ph,H,W)
 
-
-def make_field(amp_raw, phs_raw, span, cfg):
-    """原始头 -> 复数场。
-
-    amp_raw: (H,W) ; phs_raw: (ph_ch,H,W)
-
-    phase_repr='cossin': 网络出 (c,s)，投影到单位圆后用 atan2 隐式取相位。
-      没有 ±pi 边界、没有 tanh 饱和、没有 2pi 缠绕的等价解 —— 这三样正是
-      'tanh*span' 写法里让优化在等价解之间漂移（loss 不变而指标变差）的来源。
-    phase_repr='tanh'  : 论文原写法，span*tanh(·)。
-    """
-    if cfg.amp_act == "softplus":
-        amp = F.softplus(amp_raw)
-    elif cfg.amp_act == "relu":
-        amp = F.relu(amp_raw)
-    else:
-        amp = F.leaky_relu(amp_raw, 0.2)      # 论文写法（允许负振幅）
-    if cfg.phase_repr == "cossin":
-        c, sn = phs_raw[0], phs_raw[1]
-        n = torch.sqrt(c * c + sn * sn + 1e-8)
-        return torch.complex(amp * c / n, amp * sn / n)
-    ph = span * torch.tanh(phs_raw[0])
-    return torch.complex(amp * torch.cos(ph), amp * torch.sin(ph))
-
-
-# ============================================================================ #
-# 探针 = 坐标 SIREN （probe_mode='inr'）
-# ============================================================================ #
-
-class SineLayer(nn.Module):
-    """SIREN 的一层: sin(w0 * (Wx+b))。
-
-    init 必须按 Sitzmann et al. 2020 的方案，否则深层 sin 的输入分布会塌掉、完全训不动
-    （这是 SIREN 最常见的坑，表现为 loss 卡在 1.0 附近不动）:
-      首层  W ~ U(-1/cin, +1/cin)                 —— 坐标本身已是 O(1)，不再缩放
-      其余  W ~ U(-sqrt(6/cin)/w0, +sqrt(6/cin)/w0) —— 使 w0*(Wx) 保持 arcsine 分布
-    """
-
-    def __init__(self, cin, cout, w0, is_first=False):
-        super().__init__()
-        self.w0 = w0
-        self.lin = nn.Linear(cin, cout)
-        with torch.no_grad():
-            b = (1.0 / cin) if is_first else (math.sqrt(6.0 / cin) / w0)
-            self.lin.weight.uniform_(-b, b)
-            self.lin.bias.uniform_(-b, b)
-
-    def forward(self, x):
-        return torch.sin(self.w0 * self.lin(x))
-
-
-class ProbeSIREN(nn.Module):
-    """坐标 MLP 探针: (u,v) -> (amp_raw, phs_raw)。
-
-    相对 U-Net 探针的三个结构优势:
-      1. 直接输出 N x N = 探针原生尺寸，不需要从 224 画布中心裁剪
-         （U-Net 探针有 (224^2-128^2)/224^2 = 68% 的输出被丢弃）;
-      2. 未知量从"每像素独立"变成"全局耦合的权重"，逐像素吸收噪声的自由度被去掉;
-      3. 带宽由 w0 与宽度显式控制 -> 先验强度是一个可扫的连续量，而不是架构选择。
-
-    输出头故意保持【未激活】，交给 make_field() 统一处理，这样 --amp-output /
-    --phase-output 对物体与探针始终是同一套参数化，消融轴不会打架。
-    """
-
-    def __init__(self, hidden=64, layers=3, w0=30.0, ph_ch=2):
-        super().__init__()
-        seq = [SineLayer(2, hidden, w0, is_first=True)]
-        seq += [SineLayer(hidden, hidden, w0) for _ in range(max(layers - 1, 0))]
-        self.body = nn.Sequential(*seq)
-        self.head = nn.Linear(hidden, 1 + ph_ch)      # 末层是普通 Linear，不加 sin
-        with torch.no_grad():
-            b = math.sqrt(6.0 / hidden) / w0
-            self.head.weight.uniform_(-b, b)
-            self.head.bias.zero_()
-        self.ph_ch = ph_ch
-
-    def forward(self, coords, n):
-        """coords: (n*n, 2) -> amp_raw (n,n), phs_raw (ph_ch,n,n)"""
-        y = self.head(self.body(coords))                       # (n*n, 1+ph_ch)
-        y = y.reshape(n, n, 1 + self.ph_ch).permute(2, 0, 1)   # (1+ph_ch, n, n)
-        return y[0], y[1:]
-
-
-def make_inr_coords(cfg: Cfg, R_sup, dev):
-    """固定的归一化像素坐标网格 (N*N, 2)，行优先 (与 np.mgrid[0:N,0:N] 同序)。
-
-    用支撑半径而不是 N/2 做归一化: 支撑域外的像素反正被 *support 掩掉，
-    锚在支撑域上 w0 才有物理含义（否则支撑只占坐标范围的 25/64=39%，
-    有效带宽被稀释 2.56 倍，那个旋钮就没法解释了）。
-    """
-    n = cfg.N
-    ys, xs = torch.meshgrid(torch.arange(n, dtype=torch.float32),
-                            torch.arange(n, dtype=torch.float32), indexing="ij")
-    u = (xs - n / 2.0) / R_sup
-    v = (ys - n / 2.0) / R_sup
-    return torch.stack([u, v], dim=-1).reshape(-1, 2).to(dev)
-
-
-def prefit_probe_inr(inr, coords, cfg, target_t, sup_t, tag="P0"):
-    """阶段 1: 把 SIREN 回归到给定复数目标场。返回 (最终复相对误差, 实际步数)。
-
-    两个刻意的选择:
-      * 只在支撑域内算 loss。目标在支撑外恒为 0，强迫正弦基底在那里精确输出 0
-        是白白吃掉容量和 w0 预算，还会拖坏支撑边界附近的拟合；反正 decode() 里
-        还要再乘一次 support。
-      * 拟合【复数场本身】而不是分开拟合振幅与相位。P0 在支撑边缘振幅低到 0.049，
-        那里的相位几乎没有意义，分开拟合会让相位项在低振幅区贡献大量无意义梯度。
-        复数 MSE 自带振幅加权。
-    """
-    m = sup_t > 0
-    den = torch.linalg.vector_norm(target_t[m]).clamp_min(1e-12)
-    if cfg.probe_inr_prefit <= 0:
-        with torch.no_grad():
-            Pf = make_field(*inr(coords, cfg.N), cfg.phase_span_prb, cfg)
-            return float(torch.linalg.vector_norm((Pf - target_t)[m]) / den), 0
-    opt = torch.optim.Adam(inr.parameters(), lr=cfg.probe_inr_prefit_lr)
-    err, i = float("nan"), 0
-    for i in range(1, cfg.probe_inr_prefit + 1):
-        Pf = make_field(*inr(coords, cfg.N), cfg.phase_span_prb, cfg)
-        e = torch.linalg.vector_norm((Pf - target_t)[m]) / den
-        opt.zero_grad(set_to_none=True)
-        (e ** 2).backward()
-        opt.step()
-        err = e.item()
-        if err < cfg.probe_inr_prefit_tol:
-            break
-    return err, i
-
-
 # ============================================================================ #
 # 自检
 # ============================================================================ #
 
+def _banner(cfg: Cfg, err_P0: float, tag: str):
+    print(f"[{tag}] 探针初值 P0 = 平滑圆盘(sigma={cfg.probe_init_sigma:g}R) + 零相位，"
+          f"相对真值复误差 err_P0 = {err_P0:.4f}")
+
+
 def run_check(cfg: Cfg):
     dev = cfg.dev()
-    obj, probe, support, pupil_true, rr, R_sup = make_truth(cfg)
+    obj, probe, rr = make_truth(cfg)
     positions = make_scan_positions(cfg)
     H_true = make_H(cfg, cfg.dz_true)
 
@@ -1023,23 +626,16 @@ def run_check(cfg: Cfg):
           f"   -> {'OK' if abs(cfg.dz_true) <= cfg.dz_max else '超限！会混叠'}")
     a = cfg.probe_dia * cfg.dx / 2
     print(f"菲涅耳数 a²/(λ·dz) = {a**2/(cfg.wlength*cfg.dz_true):.1f}  (深近场 -> 角谱是正确选择)")
-    dx1_fresnel = cfg.wlength * cfg.dz_true / (cfg.N * cfg.dx)
-    print(f"[对照] 若改用 Fresnel 单次 FFT，样品面像素会变成 {dx1_fresnel*1e6:.2f} µm 而不是 "
-          f"{cfg.dx*1e6:.1f} µm；且 chirp 采样要求 dx ≤ sqrt(λz/N) = "
-          f"{math.sqrt(cfg.wlength*cfg.dz_true/cfg.N)*1e6:.2f} µm，当前 {cfg.dx*1e6:.1f} µm 已超 -> 会混叠")
     print("-" * 74)
-    m = float(np.abs(positions).max())
     check_scan_fits(cfg, positions)
-    dd = np.sqrt(((positions[:, None] - positions[None]) ** 2).sum(-1)) + np.eye(len(positions)) * 1e9
-    nn_ = dd.min(1)
-    print(f"  最近邻中位数 {np.median(nn_):.1f}px  线性重叠 {1-np.median(nn_)/cfg.probe_dia:.1%}"
-          f"  面积重叠 {np.median([overlap_areal(d, cfg.probe_dia) for d in nn_]):.1%}")
-    print(f"  支撑半径 {R_sup}px   评估区 {cfg.eval_size}²(crop {cfg.EVAL_CROP})   "
+    print(f"  评估区 {cfg.eval_size}²(crop {cfg.EVAL_CROP})   "
           f"正则区 {cfg.reg_size}²(crop {cfg.REG_CROP})")
+    _banner(cfg, probe_init_err(cfg, rr, probe), "check")
     print("-" * 74)
 
     # A) 角谱往返
-    rngt = np.random.default_rng(0).random((cfg.N, cfg.N)) + 1j * np.random.default_rng(1).random((cfg.N, cfg.N))
+    rngt = (np.random.default_rng(0).random((cfg.N, cfg.N))
+            + 1j * np.random.default_rng(1).random((cfg.N, cfg.N)))
     back = np.fft.ifft2(np.fft.fft2(propagate_np(rngt, H_true)) * np.conj(H_true))
     print(f"[A] 角谱往返相对误差            {np.linalg.norm(back-rngt)/np.linalg.norm(rngt):.3e}  (应 ~1e-8)")
 
@@ -1068,178 +664,110 @@ def run_check(cfg: Cfg):
     g = (Op.grad.abs() > 0).cpu().numpy()
     ys, xs = np.where(g)
     print(f"[D] 物体梯度回流窗口             行 {ys.min()}..{ys.max()}  列 {xs.min()}..{xs.max()}"
-          f"  ({ys.max()-ys.min()+1}×{xs.max()-xs.min()+1})，画布 {cfg.N_OBJ}\n"
-          f"    单点应为 {cfg.N}×{cfg.N}；{len(positions)} 点的并集 = N + 扫描跨度 "
-          f"= {cfg.N + int(np.ceil(2*np.abs(positions).max()))}，边缘个别像素梯度恰为 0 属正常")
+          f"  ({ys.max()-ys.min()+1}×{xs.max()-xs.min()+1})，画布 {cfg.N_OBJ}")
 
-    # E) 真值代入的数据残差（模型探针 = probe×sup_model）
-    sup_model, _sup_mask, P_sim = setup_support(cfg, probe, rr, R_sup, "check")
-    I, _ = simulate(cfg, obj, P_sim, positions, H_true)
-    Ps = torch.from_numpy((probe * sup_model).astype(np.complex64)).to(dev)
+    # E) 真值代入的数据残差 —— 无探针支撑，所以应当是 0（除噪声外）
+    I, _ = simulate(cfg, obj, probe, positions, H_true)
+    y0 = torch.from_numpy(np.sqrt(np.maximum(I, 0))).to(dev)
     with torch.no_grad():
-        Um = forward_torch(cfg, Ot, Ps, corners, Ht)
-        r = (Um.abs() - torch.from_numpy(np.sqrt(np.maximum(I, 0))).to(dev)).norm() \
-            / torch.from_numpy(np.sqrt(np.maximum(I, 0))).to(dev).norm()
-    print(f"[E] 真值代入的数据残差           {r.item():.3e}  "
-          + ("  <- 无失配（sim_probe=model 或 probe_support=none）"
-             if cfg.sim_probe == "model" or cfg.probe_support == "none"
-             else "  (hard + sim_probe=full: notebook 记录约 5e-2，来自支撑外残余能量)"))
+        Um = forward_torch(cfg, Ot, Pt, corners, Ht)
+        r = ((Um.abs() - y0).norm() / y0.norm()).item()
+    print(f"[E] 真值代入的数据残差           {r:.3e}  "
+          + ("  <- 无探针支撑，数据/模型零失配" if not cfg.poisson else "  (泊松噪声下非 0 属正常)"))
     print("=" * 74)
 
 
 # ============================================================================ #
-# 模式 1: AD 基线（TF 版的 PyTorch 移植，用于校验）
+# 模式 1: AD —— 标准 AD ptychography（Kandel et al. 2019）
 # ============================================================================ #
 
 def run_ad(cfg: Cfg):
+    """物体 = 自由复数像素。联合更新 + 全程单个 Adam + 全批量 + 无 lr 调度。
+
+    与 run_net 共用：同一份数据、同一个探针初值、探针从第 0 步就更新。
+    唯一的差别是物体的参数化。
+    """
     dev = cfg.dev()
-    torch.manual_seed(cfg.seed)
-    obj, probe, support, _, rr, _R = make_truth(cfg)
+    obj, probe, rr = make_truth(cfg)
     positions = make_scan_positions(cfg)
     check_scan_fits(cfg, positions)
     H_true = make_H(cfg, cfg.dz_true)
-    support, sup_mask, P_sim = setup_support(cfg, probe, rr, _R, "ad")
-    I, _ = simulate(cfg, obj, P_sim, positions, H_true)
+    I, _ = simulate(cfg, obj, probe, positions, H_true)
 
     Ht = torch.from_numpy(H_true).to(dev)
     corners = torch.from_numpy(cfg.PATCH_C0 - positions).to(dev)
-    sup = torch.from_numpy(support).to(dev)
     y0 = torch.from_numpy(np.sqrt(np.maximum(I, 0))).to(dev)
+    ones = np.ones_like(rr, dtype=np.float32)
 
-    # 初值: 物体全 1；探针 = 针孔场传播（估计距离，非真值）
+    # 初值：物体 O ≡ 1（与 net 的 obj_init_alpha=0 相同）；探针 = make_probe_init
     Or = nn.Parameter(torch.ones((cfg.N_OBJ, cfg.N_OBJ), device=dev))
     Oi = nn.Parameter(torch.zeros((cfg.N_OBJ, cfg.N_OBJ), device=dev))
-    P0 = propagate_np((rr <= cfg.probe_dia / 2 - 6).astype(np.complex64),
-                      make_H(cfg, cfg.z_probe_init))
-    P0 = P0 / np.abs(P0).max() * support
+    P0 = make_probe_init(cfg, rr)
+    _banner(cfg, probe_init_err(cfg, rr, probe), "ad")
     Pr = nn.Parameter(torch.from_numpy(P0.real.astype(np.float32)).to(dev))
     Pi = nn.Parameter(torch.from_numpy(P0.imag.astype(np.float32)).to(dev))
 
     c = cfg.REG_CROP
-    lo, lp = cfg.lr_obj, cfg.lr_prb
-    hist = []
-    t0 = time.time()
+    opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
+                            {"params": [Pr, Pi], "lr": cfg.lr_prb}])
+    print(f"[ad] 标准 AD: 全批量 {len(positions)} 位置/步 × {cfg.ad_iters} 步  "
+          f"lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减）  "
+          f"正则 tv1={cfg.tv1:g} tv2={cfg.tv2:g}")
 
-    if cfg.opt_mode == "plain":
-        # ---------------- 标准 AD ptychography ----------------
-        # 与 alternating 的差别【只在优化调度】: 前向模型、损失、物体/探针初值完全相同。
-        # 两个 param group 保留 lr_obj / lr_prb 两个旋钮，但全程只有一个 Adam，不重建。
-        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
-                                {"params": [Pr, Pi], "lr": cfg.lr_prb}])
-        _upd_alt = cfg.stages * (cfg.obj_epoch + cfg.prb_epoch) * len(positions)
-        _pass_alt = cfg.stages * (cfg.obj_epoch + cfg.prb_epoch)
-        print(f"[ad] opt_mode=plain（标准 AD）: 全批量 {len(positions)} 位置/步，"
-              f"{cfg.ad_iters} 步 -> 参数更新 {cfg.ad_iters} 次 / 数据遍历 {cfg.ad_iters} 遍")
-        print(f"[ad] 刻度对照: 同配置 alternating(--stages {cfg.stages}) -> 参数更新 "
-              f"{_upd_alt} 次 / 数据遍历 {_pass_alt} 遍 —— 按 stage 数直接比两者是错的")
-        print(f"[ad] lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减） amsgrad=False "
-              f"正则 tv1={cfg.tv1:g} tv2={cfg.tv2:g}")
-        rec = pc = None
-        for it in range(cfg.ad_iters):
-            O = torch.complex(Or, Oi)
-            P = torch.complex(Pr * sup, Pi * sup)
-            U = forward_torch(cfg, O, P, corners, Ht)        # 全部位置一次前向
-            loss = data_loss_direct(U, y0)
-            if cfg.tv1 > 0 or cfg.tv2 > 0:
-                Oreg = O[c:-c, c:-c] if c > 0 else O
-                if cfg.tv1 > 0:
-                    loss = loss + cfg.tv1 * tgv_loss(Oreg.abs(), beta=1.0) * 1e-2
-                if cfg.tv2 > 0:
-                    loss = loss + cfg.tv2 * tgv_loss(safe_angle(Oreg), beta=1.0) * 1e-2
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-            if (it + 1) % cfg.eval_every == 0 or it == cfg.ad_iters - 1:
-                rec = torch.complex(Or, Oi).detach().cpu().numpy()
-                pc = torch.complex(Pr * sup, Pi * sup).detach().cpu().numpy()
-                mo = evaluate_object_roi(cfg, rec, obj)
-                mp = evaluate_probe(pc, probe, sup_mask, r_far=cfg.probe_dia)
-                hist.append({"it": it + 1, "loss": loss.item(), **mo, **mp})
-                if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.ad_iters - 1:
-                    print(f"  it {it+1:5d} | loss {loss.item():.4e} | "
-                          f"amplitude PSNR {mo['psnr_o_amp']:6.2f} dB | "
-                          f"SSIM {mo['ssim_o_amp']:.4f} | "
-                          f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex error "
-                          f"{mo['relerr_o_complex']:.4f} | probe error "
-                          f"{mp['relerr_p_complex']:.4f}", flush=True)
-        print(f"[ad] 用时 {time.time()-t0:.1f}s / {cfg.ad_iters} it")
-        _save(cfg, "ad", rec, pc, obj, probe, sup_mask, hist)
-        return hist
-
-    print(f"[ad] opt_mode={cfg.opt_mode}（INNM/Keras 移植调度: 每 stage 重建优化器 + "
-          f"batch_size=1 顺序 + lr*{cfg.decay:g}/stage + amsgrad）")
-    for st in range(cfg.stages):
-        for which in (("obj", "prb") if cfg.opt_mode != "joint" else ("both",)):
-            if which == "obj":
-                params, lr = [Or, Oi], lo
-            elif which == "prb":
-                params, lr = [Pr, Pi], lp
-            else:
-                params, lr = [Or, Oi, Pr, Pi], lo
-            # Keras 每个 stage 重新 compile -> 优化器状态清零，这里照做
-            opt = torch.optim.Adam(params, lr=lr, amsgrad=True)
-            n_ep = cfg.obj_epoch if which != "prb" else cfg.prb_epoch
-            for _ in range(n_ep):
-                for i in range(len(positions)):        # batch_size=1, shuffle=False
-                    O = torch.complex(Or, Oi)
-                    P = torch.complex(Pr * sup, Pi * sup)
-                    U = forward_torch(cfg, O, P, corners[i:i + 1], Ht)
-                    loss = data_loss_direct(U, y0[i:i + 1])
-                    if which != "prb" and (cfg.tv1 > 0 or cfg.tv2 > 0):
-                        Oreg = O[c:-c, c:-c] if c > 0 else O
-                        if cfg.tv1 > 0:
-                            loss = loss + cfg.tv1 * tgv_loss(Oreg.abs(), beta=1.0) * 1e-2
-                        if cfg.tv2 > 0:
-                            loss = loss + cfg.tv2 * tgv_loss(safe_angle(Oreg), beta=1.0) * 1e-2
-                    opt.zero_grad(set_to_none=True)
-                    loss.backward()
-                    opt.step()
-            if which == "obj":
-                lo *= cfg.decay
-            elif which == "prb":
-                lp *= cfg.decay
-            else:
-                lo *= cfg.decay
-
-        rec = (Or + 1j * Oi).detach().cpu().numpy()
-        pc = ((Pr * sup) + 1j * (Pi * sup)).detach().cpu().numpy()
-        mo = evaluate_object_roi(cfg, rec, obj)
-        mp = evaluate_probe(pc, probe, sup_mask, r_far=cfg.probe_dia)
-        hist.append({**mo, **mp})
-        print(f"  stage {st+1}/{cfg.stages} | amplitude PSNR {mo['psnr_o_amp']:6.2f} dB | "
-              f"SSIM {mo['ssim_o_amp']:.4f} | phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | "
-              f"complex error {mo['relerr_o_complex']:.4f} | probe error {mp['relerr_p_complex']:.4f}",
-              flush=True)
-    print(f"[ad] 用时 {time.time()-t0:.1f}s")
-    _save(cfg, "ad", rec, pc, obj, probe, sup_mask, hist)
+    hist, t0, rec, pc = [], time.time(), None, None
+    for it in range(cfg.ad_iters):
+        O = torch.complex(Or, Oi)
+        P = torch.complex(Pr, Pi)
+        U = forward_torch(cfg, O, P, corners, Ht)
+        loss = data_loss_direct(U, y0)
+        if cfg.tv1 > 0 or cfg.tv2 > 0:
+            Oreg = O[c:-c, c:-c] if c > 0 else O
+            if cfg.tv1 > 0:
+                loss = loss + cfg.tv1 * tgv_loss(Oreg.abs(), beta=1.0) * 1e-2
+            if cfg.tv2 > 0:
+                loss = loss + cfg.tv2 * tgv_loss(safe_angle(Oreg), beta=1.0) * 1e-2
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        if (it + 1) % cfg.eval_every == 0 or it == cfg.ad_iters - 1:
+            rec = torch.complex(Or, Oi).detach().cpu().numpy()
+            pc = torch.complex(Pr, Pi).detach().cpu().numpy()
+            mo = evaluate_object_roi(cfg, rec, obj)
+            mp = evaluate_probe(pc, probe, ones, r_far=cfg.probe_dia)
+            hist.append({"it": it + 1, "loss": loss.item(), **mo, **mp})
+            if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.ad_iters - 1:
+                print(f"  it {it+1:5d} | loss {loss.item():.4e} | "
+                      f"amp PSNR {mo['psnr_o_amp']:6.2f} dB | SSIM {mo['ssim_o_amp']:.4f} | "
+                      f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex err "
+                      f"{mo['relerr_o_complex']:.4f} | probe err {mp['relerr_p_complex']:.4f}",
+                      flush=True)
+    print(f"[ad] 用时 {time.time()-t0:.1f}s / {cfg.ad_iters} it")
+    _save(cfg, "ad", rec, pc, obj, probe, ones, hist)
     return hist
 
 
 # ============================================================================ #
-# 模式 2: ProPtyNet
+# 模式 2: net —— 物体 = U-Net 输出（DIP 先验）
 # ============================================================================ #
 
 def run_net(cfg: Cfg):
     dev = cfg.dev()
     torch.manual_seed(cfg.seed)
-    obj, probe, support, _, rr, _R = make_truth(cfg)
+    obj, probe, rr = make_truth(cfg)
     positions = make_scan_positions(cfg)
     check_scan_fits(cfg, positions)
     H_true = make_H(cfg, cfg.dz_true)
-    support, sup_mask, P_sim = setup_support(cfg, probe, rr, _R, "net")
-    I, I_clean = simulate(cfg, obj, P_sim, positions, H_true)
+    I, I_clean = simulate(cfg, obj, probe, positions, H_true)
 
     Ht = torch.from_numpy(H_true).to(dev)
     corners = torch.from_numpy(cfg.PATCH_C0 - positions).to(dev)
-    sup = torch.from_numpy(support).to(dev)
     Im = torch.from_numpy(I).to(dev)
     Iclean = torch.from_numpy(I_clean).to(dev)
     sqrtIm = torch.sqrt(Im.clamp_min(0))
     pad = (cfg.N_OBJ - cfg.N) // 2
+    ones = np.ones_like(rr, dtype=np.float32)
 
-    # ---- 留出探测器像素: 无 GT 的早停/选权判据 ----
-    # 每张衍射图随机留出 holdout_frac 的像素永不进 loss，只用来监控。
-    # 相比留出整个扫描位置，这不破坏扫描几何（重叠率不变），代价几乎为零。
+    # 留出探测器像素：无 GT 的早停判据。不破坏扫描几何（重叠率不变）。
     if cfg.holdout_frac > 0:
         g = torch.Generator().manual_seed(cfg.holdout_seed)
         Mtr = (torch.rand(Im.shape, generator=g) >= cfg.holdout_frac).float().to(dev)
@@ -1247,174 +775,49 @@ def run_net(cfg: Cfg):
     else:
         Mtr = None
 
-    # ---- 网络输入: 零填充到画布尺寸的实测衍射图堆栈，全程固定 (论文 Fig.1c) ----
-    x_in = F.pad(Im[None], (pad, pad, pad, pad))            # (1, J, N_OBJ, N_OBJ)
+    # 网络输入：零填充到画布尺寸的实测衍射图堆栈，全程固定
+    x_in = F.pad(Im[None], (pad, pad, pad, pad))
     x_in = x_in / x_in.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
-    n_fields = 2 if cfg.probe_mode == "net" else 1
-    net = ProPtyUNet(len(positions), cfg.base_ch, n_fields=n_fields, ph_ch=cfg.ph_ch).to(dev)
+    net = ProPtyUNet(len(positions), cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
     print(f"[net] U-Net {sum(p.numel() for p in net.parameters())/1e6:.2f} M 参数  "
-          f"输入 {tuple(x_in.shape)}  相位表示 {cfg.phase_repr}  振幅激活 {cfg.amp_act}  "
-          f"标度 {cfg.scale_mode}")
-    print(f"[net] output parameterization: amplitude={cfg.amp_act}, phase={cfg.phase_repr}")
+          f"输入 {tuple(x_in.shape)}")
 
-    # ---- 物体输出头的相位中性初始化 ----
-    # 只动 field 0(物体)。probe_mode='net' 时探针共享这个 U-Net 的第 2 组通道，
-    # 那一路保持默认 —— 把探针振幅也按成 1 是错的(它应该是个紧凑亮盘)。
-    # alpha=0 不会造成死梯度: cossin 在 (c,sn)=(1,0) 处 d(phi)/d(sn)=1,
-    # softplus 在 b=ln(e-1) 处导数 sigmoid(0.5413)=0.632, 且权重梯度 = upstream ⊗ y
-    # 随像素变化，第一步就破对称。此处不消耗 RNG，探针 SIREN 的 seed+10000 流不受影响。
-    if cfg.obj_init == "neutral":
-        _a = float(cfg.obj_init_alpha)
-        with torch.no_grad():
-            net.head_amp.weight[0].mul_(_a)
-            net.head_phs.weight[0:cfg.ph_ch].mul_(_a)
-            net.head_amp.bias[0] = (math.log(math.e - 1.0)
-                                    if cfg.amp_act == "softplus" else 1.0)
-            net.head_phs.bias[0:cfg.ph_ch] = 0.0
-            if cfg.phase_repr == "cossin":
-                net.head_phs.bias[0] = 1.0      # (c, sn) = (1, 0) -> phi = 0
-        print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
-              f"（alpha=0 时第 0 步的物体恒等于 1·exp(i0)，与 AD 的初值相同）")
+    # 物体输出头的相位中性初始化。alpha=0 时第 0 步 O ≡ 1·exp(i0)，与 AD 初值完全相同。
+    # alpha=0 不会死梯度：cossin 在 (c,sn)=(1,0) 处 d(phi)/d(sn)=1，softplus 在
+    # b=ln(e-1) 处导数 0.632，且权重梯度随像素变化，第一步就破对称。
+    _a = float(cfg.obj_init_alpha)
+    with torch.no_grad():
+        net.head_amp.weight[0].mul_(_a)
+        net.head_phs.weight[0:2].mul_(_a)
+        net.head_amp.bias[0] = math.log(math.e - 1.0)   # softplus(b) = 1
+        net.head_phs.bias[0:2] = 0.0
+        net.head_phs.bias[0] = 1.0                      # (c, sn) = (1, 0) -> phi = 0
+    print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
+          + ("（第 0 步 O ≡ 1·exp(i0)，与 AD 初值相同）" if _a == 0 else ""))
 
-    # ---- 探针 ----
-    # 【顺序要求】物体 U-Net 必须在上面先建完，才能在这里建探针网络。torch.manual_seed
-    # 在函数开头调用一次，谁先建谁拿到那段 RNG —— 反了的话物体分支的初值就和已有的
-    # truth / pixel 结果不再逐比特一致，dose sweep 之类的历史结果就没法直接对比了。
-    prb_params, Ptruth, inr, coords_t = [], None, None, None
-    err_P0 = float("nan")
-    if cfg.probe_mode in ("pixel", "inr"):
-        # P0 相对真值探针的复相对误差（消去全局复因子，与 evaluate_probe 同口径）。
-        # 这是 pixel 与 inr 共同的起跑线，也是判断"先验强度"的唯一诚实数字：
-        _P0 = make_probe_init(cfg, rr, support)
-        _Pt = (probe * support).astype(np.complex64)
-        err_P0 = float(np.linalg.norm(align_global_factor(_P0, _Pt)[0] - _Pt)
-                       / max(np.linalg.norm(_Pt), 1e-12))
-        print(f"[net] 探针初值 P0: z={cfg.z_probe_init*1e3:.2f}mm（真值 "
-              f"{cfg.z_probe*1e3:.2f}mm），相对真值复误差 {err_P0:.4f}")
-    if cfg.probe_mode == "pixel":
-        P0 = make_probe_init(cfg, rr, support)
+    # 探针
+    prb_params, Ptruth = [], None
+    if cfg.probe_mode == "truth":
+        Ptruth = torch.from_numpy(probe.astype(np.complex64)).to(dev)
+        print("[net] 探针 = 真值且冻结（上界对照：只考察物体表示本身的能力）")
+    else:
+        P0 = make_probe_init(cfg, rr)
+        _banner(cfg, probe_init_err(cfg, rr, probe), "net")
         Pr = nn.Parameter(torch.from_numpy(P0.real.astype(np.float32)).to(dev))
         Pi = nn.Parameter(torch.from_numpy(P0.imag.astype(np.float32)).to(dev))
         prb_params = [Pr, Pi]
-        print(f"[net] 探针 = 自由复数像素（{2*int((support>0).sum())} 个未知量），初值 = 针孔场传播 "
-              f"z={cfg.z_probe_init*1e3:.2f}mm（真值 {cfg.z_probe*1e3:.2f}mm，故意差 30%），"
-              f"前 {cfg.probe_warmup} 步冻结")
-    elif cfg.probe_mode == "inr":
-        # ---------- 阶段 1: 探针离线预拟合 ----------
-        P0 = make_probe_init(cfg, rr, support)          # 与 pixel 模式同一个 P0
-        P0_t = torch.from_numpy(P0).to(dev)
-        R_sup = float(_R) if cfg.probe_inr_coord == "support" else cfg.N / 2.0
-        if cfg.probe_support == "none" and cfg.probe_inr_coord == "support":
-            print(f"[net] ⚠ probe_support=none 但 SIREN 坐标仍按 support_energy 推出的 "
-                  f"R={R_sup:g}px 归一化 —— 这是 none 档下 support_energy 唯一还在影响"
-                  f"物理的地方。要彻底脱钩用 --probe-inr-coord grid（按 N/2）。")
-        coords_t = make_inr_coords(cfg, R_sup, dev)
-        torch.manual_seed(cfg.seed + 10000)             # 与物体网的 RNG 流隔离
-        inr = ProbeSIREN(cfg.probe_inr_hidden, cfg.probe_inr_layers,
-                         cfg.probe_inr_w0, cfg.ph_ch).to(dev)
-        n_inr = sum(p.numel() for p in inr.parameters())
-        print(f"[net] 探针 = 坐标 SIREN（{n_inr} 参数  hidden={cfg.probe_inr_hidden} "
-              f"layers={cfg.probe_inr_layers} w0={cfg.probe_inr_w0:g}  "
-              f"坐标归一={cfg.probe_inr_coord} R={R_sup:g}px）")
-        print(f"[net] 注意: SIREN 有 {n_inr} 个参数，比 pixel 的 "
-              f"{2*int((support>0).sum())} 个自由实数还多 —— 它的先验来自"
-              f"【全局耦合 + 带宽受限】，不是「未知量更少」。")
-        t_pre = time.time()
-        err, nstep = prefit_probe_inr(inr, coords_t, cfg, P0_t, sup, tag="P0")
-        print(f"[net] 阶段1 预拟合 -> P0: 复相对误差 {err:.4f}  ({nstep} 步 / "
-              f"{time.time()-t_pre:.1f}s)")
-        if err > cfg.probe_inr_prefit_tol:
-            print(f"[net] ⚠ 预拟合误差 {err:.4f} > 门槛 {cfg.probe_inr_prefit_tol:.3f}。"
-                  f"该 w0/宽度不足以表示这个探针: pixel 的起点恰好是 {err_P0:.4f}，"
-                  f"而 inr 的起点被抬到约 {(err_P0**2 + err**2)**0.5:.4f}，"
-                  f"inr-vs-pixel 的单变量对照【不成立】。"
-                  f"请提高 --probe-inr-w0 或 --probe-inr-hidden 后重跑。")
-        if cfg.probe_inr_ceiling:
-            # 诊断: 同超参、另起一个 SIREN 直接拟合【真值探针】= 该表示的绝对上限。
-            # 把"表示能力"与"优化能力"分开，是 DIP 类工作最容易被质疑的一点。
-            torch.manual_seed(cfg.seed + 20000)
-            inr2 = ProbeSIREN(cfg.probe_inr_hidden, cfg.probe_inr_layers,
-                              cfg.probe_inr_w0, cfg.ph_ch).to(dev)
-            Pt_t = torch.from_numpy((probe * support).astype(np.complex64)).to(dev)
-            e2, n2 = prefit_probe_inr(inr2, coords_t, cfg, Pt_t, sup, tag="truth")
-            print(f"[net] 表示上限诊断: 同超参 SIREN 拟合【真值探针】-> {e2:.4f} ({n2} 步)。"
-                  f" 联合重建的探针误差不可能低于这个数。")
-            del inr2
-        prb_params = list(inr.parameters())
-        print(f"[net] 阶段2: 前 {cfg.probe_warmup} 步冻结 SIREN，之后以 "
-              f"lr={cfg.lr_probe_inr:g} 与物体网联合微调")
-    elif cfg.probe_mode == "truth":
-        Ptruth = torch.from_numpy((probe * support).astype(np.complex64)).to(dev)
-        print("[net] 探针 = 真值（诊断模式：探针不参与优化，只考察物体分支的能力上限）")
-    else:
-        print("[net] 探针 = 与物体共享同一 U-Net 的第 2 组输出通道（论文原写法）")
-
-    if cfg.probe_inr_prefit_only and cfg.probe_mode == "inr":
-        print("[net] --probe-prefit-only: 阶段1 完成，跳过联合重建。")
-        return []
-
-    # 论文 Eq.5 的过曝掩膜；noise_clip=False 时 S2 全 1，Eq.5 退化成普通 L2
-    S2 = (Im < Im.max() - 1e-12).float() if cfg.noise_clip else torch.ones_like(Im)
-    if cfg.data_loss == "paper":
-        print(f"[net] 论文损失: 过曝像素占比 {float((1-S2).mean())*100:.4f} %"
-              + ("" if cfg.noise_clip else "   <- noise_clip=False，S2 全 1"))
-
-    # Censor-PG 的量纲解析。S 和 photon_scale 都依赖实测数据的量纲，只能在这里定。
-    _pg = None
-    if cfg.data_loss == "censor_pg":
-        _S = float(Im.max()) if cfg.sat_threshold < 0 else float(cfg.sat_threshold)
-        if cfg.photon_scale > 0:
-            _ps = float(cfg.photon_scale)
-        elif cfg.poisson:
-            _ps = float(cfg.peak_photons) / max(float(Im.max()), 1e-12)
-        else:
-            _ps = 1.0
-        _pg = {"S": _S, "ps": _ps}
-        _fsat = float((Im >= _S).float().mean())
-        print(f"[net] Censor-PG: S={_S:.4g}"
-              f"{'(自动=Im.max)' if cfg.sat_threshold < 0 else ''}  "
-              f"删失像素 {100*_fsat:.4f}%  光子标度 {_ps:.4g}  "
-              f"读出噪声 {cfg.sigma_read:g} 光子  "
-              f"(峰值 {_ps*float(Im.max()):.0f} 光子, 中位 {_ps*float(Im.median()):.2f} 光子)")
-        print(f"[net]   方差 {'detach(无偏)' if cfg.pg_detach_var else 'NOT detach(有偏, 消融用)'}"
-              f"  低于 1 光子的像素占比 {100*float((Im*_ps < 1).float().mean()):.1f}%")
-        if _fsat < 1e-6:
-            print("[net]   <- 没有像素触发删失分支，等价于纯 PG 似然。"
-                  "要测删失请把 --sat-threshold 压到 Im.max() 以下")
+        print(f"[net] 探针 = 自由复数像素（{2*rr.size} 个未知量），从第 0 步起与物体联合更新")
 
     def decode():
         a_raw, p_raw = net(x_in)
-        O = make_field(a_raw[0], p_raw[0:cfg.ph_ch], cfg.phase_span_obj, cfg)
-        if cfg.probe_mode == "net":
-            Pf = make_field(a_raw[1], p_raw[cfg.ph_ch:2*cfg.ph_ch], cfg.phase_span_prb, cfg)
-            Pc = Pf[pad:pad + cfg.N, pad:pad + cfg.N] * sup
-            amp_p = Pf[pad:pad + cfg.N, pad:pad + cfg.N].abs()
-        elif cfg.probe_mode == "inr":
-            Pf = make_field(*inr(coords_t, cfg.N), cfg.phase_span_prb, cfg)   # (N,N)
-            Pc = Pf * sup; amp_p = Pf.abs()      # 无需裁剪: SIREN 直接输出 N x N
-        elif cfg.probe_mode == "pixel":
-            Pc = torch.complex(Pr * sup, Pi * sup); amp_p = None
-        else:
-            Pc = Ptruth; amp_p = None
-        return O, Pc, amp_p
+        O = make_field(a_raw[0], p_raw[0:2])
+        Pc = Ptruth if Ptruth is not None else torch.complex(Pr, Pi)
+        return O, Pc
 
-    # 全局幅度标度。物体与探针之间有 O->aO, P->P/a 的规范自由度，网络无从固定它。
-    #   frozen: 论文写法，用【随机初始化】的一次前向定死，之后永不更新
-    #   ls    : 每步解析地求最优标量 s* = <|U|,sqrt(I)>/<|U|,|U|>（VarPro）。
-    #           不 detach —— 这样标度方向上的梯度恒为 0，那个自由度被彻底消掉。
-    scale_frozen = 1.0
-    if cfg.scale_mode == "frozen":
-        with torch.no_grad():
-            O, Pc, _ = decode()
-            scale_frozen = (sqrtIm.mean() / cabs(forward_torch(cfg, O, Pc, corners, Ht)).mean()
-                            .clamp_min(1e-12)).item()
-        print(f"[net] 冻结的幅度标定系数 = {scale_frozen:.4g}")
-
-    # 探针分支的 lr 按模式取值。inr 已经站在一个好解上，只需小步微调。
-    _lr_p = cfg.lr_probe_inr if cfg.probe_mode == "inr" else cfg.lr_probe
-    opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net, weight_decay=cfg.weight_decay)
-    opt_prb = torch.optim.Adam(prb_params, lr=_lr_p) if prb_params else None
+    opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
+                               weight_decay=cfg.weight_decay)
+    opt_prb = torch.optim.Adam(prb_params, lr=cfg.lr_probe) if prb_params else None
 
     hist, t0 = [], time.time()
     best_val = {"val": float("inf"), "it": -1, "ssim": float("nan")}
@@ -1422,39 +825,26 @@ def run_net(cfg: Cfg):
     rec = pc = None
 
     for it in range(cfg.iters):
-        gamma = cfg.gamma0 * (cfg.gamma_end / cfg.gamma0) ** (it / max(cfg.iters - 1, 1))
-        if cfg.lr_cosine:   # 余弦退火，治后期的 loss 尖峰（实测 it≈1600 有一次瞬时发散）
+        if cfg.lr_cosine:
             f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
             for g in opt_net.param_groups:
                 g["lr"] = cfg.lr_net * f
             if opt_prb is not None:
                 for g in opt_prb.param_groups:
-                    g["lr"] = _lr_p * f          # 必须用 _lr_p，写死 cfg.lr_probe 会
-                                                 # 在第 0 步把 inr 的 1e-4 无声覆写成 1e-2
-        O, Pc, amp_p = decode()
-        U = forward_torch(cfg, O, Pc, corners, Ht)
-        Ua = cabs(U)
-        if cfg.scale_mode == "ls":
-            Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
-        else:
-            Ua = Ua * scale_frozen
-
-        if cfg.data_loss == "paper":
-            loss = data_loss_paper(Ua ** 2, Im, S2, gamma, amp_p, sup, cfg.beta, Mtr)
-        elif cfg.data_loss == "censor_pg":
-            loss = data_loss_censor_pg(Ua ** 2, Im, S=_pg["S"],
-                                       sigma_read=cfg.sigma_read, M=Mtr,
-                                       photon_scale=_pg["ps"],
-                                       detach_var=cfg.pg_detach_var)
-        else:
-            loss = masked_mse(Ua, sqrtIm, Mtr)
+                    g["lr"] = cfg.lr_probe * f
+        O, Pc = decode()
+        Ua = cabs(forward_torch(cfg, O, Pc, corners, Ht))
+        # 全局幅度标度：物体与探针之间有 O->aO, P->P/a 的规范自由度。每步解析地求最优
+        # 标量（VarPro），不 detach —— 这样标度方向上的梯度恒为 0，那个自由度被消掉。
+        Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
+        loss = masked_mse(Ua, sqrtIm, Mtr)
 
         opt_net.zero_grad(set_to_none=True)
         if opt_prb is not None:
             opt_prb.zero_grad(set_to_none=True)
         loss.backward()
         opt_net.step()
-        if opt_prb is not None and it >= cfg.probe_warmup:
+        if opt_prb is not None:
             opt_prb.step()
 
         if (it + 1) % cfg.eval_every == 0 or it == cfg.iters - 1:
@@ -1463,8 +853,9 @@ def run_net(cfg: Cfg):
                 val = held_out_mse(Ua, sqrtIm, Mtr) if Mtr is not None else float("nan")
                 rec = O.detach().cpu().numpy(); pc = Pc.detach().cpu().numpy()
             mo = evaluate_object_roi(cfg, rec, obj)
-            mp = evaluate_probe(pc, probe, sup_mask, r_far=cfg.probe_dia)
-            hist.append({"it": it + 1, "loss": loss.item(), "val": val, "real": real, **mo, **mp})
+            mp = evaluate_probe(pc, probe, ones, r_far=cfg.probe_dia)
+            hist.append({"it": it + 1, "loss": loss.item(), "val": val, "real": real,
+                         **mo, **mp})
             if mo["ssim_o_amp"] > best_gt["ssim"]:
                 best_gt = {"ssim": mo["ssim_o_amp"], "it": it + 1}
             if Mtr is not None and val < best_val["val"]:
@@ -1472,41 +863,36 @@ def run_net(cfg: Cfg):
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 v = f" | val {val:.4e}" if Mtr is not None else ""
                 print(f"  it {it+1:5d} | loss {loss.item():.4e}{v} | real {real:.4e} | "
-                      f"amplitude PSNR {mo['psnr_o_amp']:6.2f} dB | SSIM {mo['ssim_o_amp']:.4f} | "
-                      f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex error "
-                      f"{mo['relerr_o_complex']:.4f} | probe error {mp['relerr_p_complex']:.4f}",
+                      f"amp PSNR {mo['psnr_o_amp']:6.2f} dB | SSIM {mo['ssim_o_amp']:.4f} | "
+                      f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex err "
+                      f"{mo['relerr_o_complex']:.4f} | probe err {mp['relerr_p_complex']:.4f}",
                       flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
-
-    # 论文判据(2): real error 与 loss 同趋势且更低 = 网络在屏蔽噪声
     if len(hist) > 8:
         tail = [h["real"] for h in hist[-len(hist)//4:]]
         k = np.polyfit(np.arange(len(tail)), np.array(tail), 1)[0]
         print(f"[net] 尾段 real error 斜率 {k:+.3e}  "
               f"({'仍在下降' if k < 0 else '已回升 -> 开始拟合噪声'})")
-
-    # 无 GT 早停的检验: 留出验证挑的停止点 vs 真值 SSIM 挑的停止点
     if Mtr is not None:
         print(f"[net] 留出验证最优步 = {best_val['it']} (val {best_val['val']:.4e}, "
               f"该步 SSIM {best_val['ssim']:.4f})")
         print(f"[net] 真值 SSIM 最优步 = {best_gt['it']} (SSIM {best_gt['ssim']:.4f})"
               f"   <- 两者越接近，留出验证越可以替代 GT 做早停")
 
-    _save(cfg, "net", rec, pc, obj, probe, sup_mask, hist)
+    _save(cfg, "net", rec, pc, obj, probe, ones, hist)
     return hist
+
 
 
 # ============================================================================ #
 # 保存 / 绘图
 # ============================================================================ #
 
+
 def _save(cfg, tag, rec, pc, obj, probe, support, hist):
     os.makedirs(cfg.outdir, exist_ok=True)
     cfg_out = asdict(cfg)
-    # 同时用消融 CLI 的名称保存，便于四组结果直接汇总；旧字段继续保留兼容性。
-    cfg_out["amp_output"] = cfg.amp_act
-    cfg_out["phase_output"] = cfg.phase_repr
     np.savez_compressed(os.path.join(cfg.outdir, f"{tag}_result.npz"),
                         obj_rec=rec, probe_rec=pc, hist=json.dumps(hist),
                         cfg=json.dumps(cfg_out, default=str))
@@ -1570,102 +956,37 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
               f"--disp-err-phase 调宽后重出图，不要去截断数据。")
     return
 
+# ============================================================================ #
+# CLI —— 直接从 Cfg 的字段生成，不再手工维护一份平行列表
+#   （旧版就是因为两份列表会漂移，加了 Cfg 字段却忘了加 --flag）
+# ============================================================================ #
 
-# ============================================================================ #
-# CLI
-# ============================================================================ #
+_CHOICES = {
+    "scan_pattern": ["raster", "fermat"],
+    "probe_mode": ["pixel", "truth"],
+    "device": None,
+}
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(
+        description="ProPtyNet —— 未训练网络先验 vs 纯 AD 的 ptychography 对照")
+    ap.add_argument("mode", choices=["check", "ad", "net"],
+                    help="check=自检 | ad=纯 AD 基线 | net=DIP")
+    for f in dataclass_fields(Cfg):
+        flag = "--" + f.name.replace("_", "-")
+        if isinstance(f.default, bool):
+            ap.add_argument(flag, dest=f.name, action="store_true", default=None)
+        elif f.name in _CHOICES and _CHOICES[f.name]:
+            ap.add_argument(flag, dest=f.name, choices=_CHOICES[f.name], default=None)
+        else:
+            ap.add_argument(flag, dest=f.name, type=type(f.default), default=None)
+    return ap
+
 
 def main():
-    ap = argparse.ArgumentParser(description="ProPtyNet (PyTorch) —— 对齐 INNM_Ptycho 的约定")
-    ap.add_argument("mode", choices=["check", "ad", "net"])
-    for k, t in [("N", int), ("N_OBJ", int), ("dz_true", float), ("probe_dia", int),
-                 ("scan_pattern", str), ("scan_npos", int), ("scan_step", float),
-                 ("stages", int), ("lr_net", float), ("lr_obj", float),
-                 ("lr_prb", float), ("base_ch", int), ("beta", float), ("seed", int),
-                 ("peak_photons", float), ("gauss_snr_db", float), ("eval_every", int),
-                 ("device", str), ("outdir", str), ("assets", str),
-                 ("tv1", float), ("tv2", float), ("opt_mode", str),
-                 ("phase_span_obj", float), ("phase_span_prb", float),
-                 ("obj_epoch", int), ("prb_epoch", int), ("decay", float), ("iters", int),
-                 ("ad_iters", int),
-                 ("probe_warmup", int), ("lr_probe", float), ("weight_decay", float),
-                 ("obj_init", str), ("obj_init_alpha", float), ("support_soft", float),
-                 ("disp_amp_lo", float), ("disp_amp_hi", float), ("disp_phase_lim", float),
-                 ("disp_err_amp", float), ("disp_err_phase", float),
-                 # --- 探针 = 坐标 SIREN ---
-                 ("probe_inr_hidden", int), ("probe_inr_layers", int),
-                 ("probe_inr_w0", float), ("probe_inr_prefit", int),
-                 ("probe_inr_prefit_lr", float), ("probe_inr_prefit_tol", float),
-                 ("lr_probe_inr", float),
-                 ("holdout_frac", float), ("holdout_seed", int),
-                 # --- 扫轴实验需要的 ---
-                 ("scan_seed", int), ("scan_jitter", float), ("noise_seed", int),
-                 ("probe_aberr", float), ("aberr_seed", int), ("support_energy", float),
-                 ("eval_size", int), ("reg_size", int), ("z_probe_init", float),
-                 ("obj_amp_img", str), ("obj_phase_img", str),
-                 ("obj_amp_min", float), ("obj_phase_span", float),
-                 ("sat_threshold", float), ("sigma_read", float),
-                 ("photon_scale", float)]:
-        ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
-    ap.add_argument("--data-loss", dest="data_loss",
-                    choices=["direct", "paper", "censor_pg"],
-                    help="censor_pg = 删失复合泊松-高斯似然；只在 net 模式生效")
-    ap.add_argument("--probe-support", dest="probe_support", choices=["hard","soft","none"],
-                    help="模型里探针支撑: hard(二值,历史默认) | soft(余弦过渡带) | "
-                         "none(全1,无失配)。评估口径始终是二值 rr<=R。")
-    ap.add_argument("--sim-probe", dest="sim_probe", choices=["full","model"],
-                    help="仿真数据用哪个探针: full(完整真值,默认) | "
-                         "model(probe*sup_model, inverse crime, 只当诊断)")
-    ap.add_argument("--probe-mode", dest="probe_mode",
-                    choices=["pixel", "net", "inr", "truth"])
-    ap.add_argument("--probe-inr-coord", dest="probe_inr_coord",
-                    choices=["support", "grid"],
-                    help="SIREN 坐标归一化基准: support(默认,按支撑半径) | grid(按 N/2)")
-    ap.add_argument("--probe-inr-ceiling", dest="probe_inr_ceiling",
-                    action="store_true", default=None,
-                    help="诊断: 同超参 SIREN 直接拟合真值探针，量出该 w0 的表示上限")
-    ap.add_argument("--probe-prefit-only", dest="probe_inr_prefit_only",
-                    action="store_true", default=None,
-                    help="只跑阶段1 预拟合就退出（几秒钟一次，用来扫 --probe-inr-w0）")
-    amp_group = ap.add_mutually_exclusive_group()
-    amp_group.add_argument("--amp-output", dest="amp_output", choices=["softplus", "leaky"],
-                           help="消融：最终振幅输出激活（不改变隐藏层）")
-    amp_group.add_argument("--amp-act", dest="amp_act", choices=["softplus", "relu", "leaky"],
-                           help=argparse.SUPPRESS)  # 兼容旧脚本
-    phase_group = ap.add_mutually_exclusive_group()
-    phase_group.add_argument("--phase-output", dest="phase_output", choices=["cossin", "tanh"],
-                             help="消融：最终相位输出表示；tanh 严格使用 π*tanh(raw)")
-    phase_group.add_argument("--phase-repr", dest="phase_repr", choices=["cossin", "tanh"],
-                             help=argparse.SUPPRESS)  # 兼容旧脚本
-    ap.add_argument("--scale-mode", dest="scale_mode", choices=["ls", "frozen"])
-    ap.add_argument("--poisson", dest="poisson", action="store_true", default=None)
-    ap.add_argument("--noise-clip", dest="noise_clip", action="store_true", default=None)
-    ap.add_argument("--pg-no-detach-var", dest="pg_detach_var", action="store_false",
-                    default=None,
-                    help="消融: censor_pg 的方差回传梯度（= 原始有偏 NLL）")
-    ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None,
-                    help="两个 lr 一起余弦退火到 0，治后期 loss 尖峰")
-    ap.add_argument("--paper", action="store_true",
-                    help="复现 ProPtyNet 原配置（共享 U-Net 探针 / tanh 相位 / leaky 振幅 / "
-                         "冻结标度 / AdamW 权重衰减），用于消融对照")
-    a = ap.parse_args()
-
-    kw = {k: v for k, v in vars(a).items()
-          if k not in ("mode", "paper", "amp_output", "phase_output") and v is not None}
-    if a.amp_output is not None:
-        kw["amp_act"] = a.amp_output
-    if a.phase_output is not None:
-        kw["phase_repr"] = a.phase_output
-        if a.phase_output == "tanh":
-            # 本消融的 Tanh 定义固定为论文式 phi=pi*tanh(raw)，明确禁止 2pi。
-            kw["phase_span_obj"] = PI
-    if a.paper:   # 显式给出的旋钮优先于 --paper 预设
-        for k, v in dict(probe_mode="net", phase_repr="tanh", amp_act="leaky",
-                         scale_mode="frozen", weight_decay=1e-2).items():
-            kw.setdefault(k, v)
-    if a.mode == "ad" and kw.get("data_loss") == "censor_pg":
-        print("[warn] ad 模式恒用 data_loss_direct，--data-loss censor_pg 不生效 —— "
-              "要和 net 比损失函数，两边都得是 net。")
+    a = build_parser().parse_args()
+    kw = {k: v for k, v in vars(a).items() if k != "mode" and v is not None}
     cfg = Cfg(**kw)
     {"check": run_check, "ad": run_ad, "net": run_net}[a.mode](cfg)
 

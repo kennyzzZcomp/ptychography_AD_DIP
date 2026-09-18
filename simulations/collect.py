@@ -10,16 +10,16 @@
 import sys, os, json, glob, argparse
 import numpy as np
 
-CFG_KEYS = ["obj_amp_img", "obj_phase_img", "probe_mode", "phase_repr", "amp_act", "scale_mode", "weight_decay",
-            "lr_cosine", "support_energy", "iters", "stages", "lr_net", "lr_probe",
-            "probe_warmup", "holdout_frac", "poisson", "peak_photons", "noise_seed",
-            "scan_npos", "scan_step", "scan_seed", "base_ch", "data_loss", "seed",
-            "N", "N_OBJ", "eval_size", "reg_size",
-            # 【必须记录】没有这四项，jitter/相位跨度不同的几棵目录树在 CSV 里
-            # 的配置列会一模一样，只剩目录名可以区分 —— 半年后没人复现得出来。
-            "scan_pattern", "scan_jitter", "obj_phase_span", "obj_amp_min",
-            "obj_init", "obj_init_alpha",
-            "probe_support", "support_soft", "sim_probe", "z_probe_init"]
+# 【必须记录】否则不同目录树在 CSV 里的配置列会一模一样，只剩目录名可以区分 ——
+# 半年后没人复现得出来。加了 Cfg 字段就往这里加一条。
+CFG_KEYS = ["obj_amp_img", "obj_phase_img", "obj_phase_span", "obj_amp_min",
+            "scan_pattern", "scan_npos", "scan_step",
+            "probe_mode", "probe_init_sigma", "probe_aberr",
+            "iters", "ad_iters", "lr_net", "lr_probe", "lr_obj", "lr_prb",
+            "base_ch", "weight_decay", "lr_cosine", "obj_init_alpha",
+            "tv1", "tv2", "holdout_frac",
+            "poisson", "peak_photons", "noise_seed", "seed",
+            "N", "N_OBJ", "eval_size", "reg_size"]
 
 MET = ["ssim_o_amp", "psnr_o_amp", "relerr_o_complex", "rmse_o_phi_rad",
        "ssim_o_phi", "relerr_p_complex", "p_far_frac"]
@@ -92,8 +92,8 @@ def main():
     print(f"{len(rows)} 次跑 -> {out}")
     # 相位列必须打出来: SSIM 只看振幅，只看 SSIM 会漏掉纯相位的失败
     key = [c for c in ["run", "mode", "scan_npos", "peak_photons",
-                       "scan_jitter", "obj_phase_span",
-                       "seed", "noise_seed", "scan_seed",
+                       "scan_pattern", "obj_phase_span", "probe_mode",
+                       "seed", "noise_seed",
                        "ssim_o_amp_final", "psnr_o_amp_final",
                        "rmse_o_phi_rad_final", "ssim_o_phi_final",
                        "relerr_o_complex_final", "relerr_o_complex_best",
