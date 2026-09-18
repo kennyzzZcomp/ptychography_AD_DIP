@@ -158,7 +158,7 @@ class Cfg:
 
     # ---- ProPtyNet 模式 ----
     iters: int = 2000
-    lr_net: float = 1e-4         # 论文: 5e-4 ~ 5e-3
+    lr_net: float = 1e-3         # 论文: 5e-4 ~ 5e-3
     lr_cosine: bool = False      # 两个 lr 一起余弦退火到 0。治后期的 loss 尖峰
     base_ch: int = 32            # 32/64/128/256 -> 约 2.2 M 参数（论文称 2.5 M）
     data_loss: str = "direct"    # direct(=notebook 的 ‖|U|-√I‖²) | paper(Eq.4/5 强度域)
