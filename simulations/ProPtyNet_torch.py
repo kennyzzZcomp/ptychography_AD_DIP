@@ -198,7 +198,7 @@ class Cfg:
     # ---- 未知量的参数化（默认 = 修复后；--paper 切回原版）----
     probe_mode: str = "pixel"    # pixel | net(论文:共享U-Net) | inr(坐标SIREN) | truth(诊断)
     probe_warmup: int = 300      # 前 N 步冻结探针，让物体网络先站稳（pixel 与 inr 共用）
-    lr_probe: float = 1e-3       # 自由像素探针的学习率（与 AD 基线的 lr_prb 同量级）
+    lr_probe: float = 1e-2       # 自由像素探针的学习率（与 AD 基线的 lr_prb 同量级）
     phase_repr: str = "cossin"   # cossin(单位圆，无缠绕无饱和) | tanh(论文)
     amp_act: str = "softplus"    # softplus | relu | leaky(论文，允许负振幅)
     phase_span_obj: float = 2 * PI   # 仅 phase_repr='tanh' 时生效
