@@ -683,6 +683,33 @@ def run(cfg: Cfg):
         P = (a_p[d, d] * torch.exp(1j * cfg.phase_span_prb * p_p[d, d])).to(torch.complex64)
         return O, P, a_p[d, d], a_s
 
+    # ---- 中性初始化：直接把四个输出头设成常数 ---------------------------- #
+    # 目标：O ≡ 1·exp(i0)，P ≡ 1·exp(i0)。
+    # 不做预拟合 —— 解析地把输出头定死即可，第 0 步的输出【精确】等于目标：
+    #   amp_s / amp_p : Conv2d -> leaky_relu(·,0.2)   weight=0, bias=1 -> 输出恒 1
+    #   phs_s / phs_p : Conv2d -> tanh                weight=0, bias=0 -> 输出恒 0
+    # 卷积 weight 全 0 时输出与输入无关、恒等于 bias（padding=1 的边界也一样），
+    # 所以 |O|=|P|=1、arg(O)=arg(P)=0 是精确的，没有残差也没有额外迭代开销。
+    #
+    # 【weight=0 会不会断梯度】不会，只慢一步：∂out/∂y = weight = 0，所以 U-Net
+    # 主干在第 0 步确实拿不到梯度；但头自身的 ∂out/∂weight = y 随像素变化、非零，
+    # 一步 Adam 之后 weight≠0，主干立刻恢复回传。bias 的梯度自始至终非零。
+    with torch.no_grad():
+        for _h in (net.amp_s, net.amp_p):
+            _h.weight.zero_(); _h.bias.fill_(1.0)
+        for _h in (net.phs_s, net.phs_p):
+            _h.weight.zero_(); _h.bias.zero_()
+
+    with torch.no_grad():
+        O, P, _, _ = decode()
+        _oa, _op = O.abs(), torch.angle(O)
+        _pa, _pp = P.abs(), torch.angle(P)[S1 > 0]
+        print(f"[init] 物体初始振幅范围   [{_oa.min().item():.4f}, {_oa.max().item():.4f}]")
+        print(f"[init] 物体初始相位 RMS   {_op.pow(2).mean().sqrt().item():.4f} rad")
+        print(f"[init] probe 初始振幅范围 [{_pa.min().item():.4f}, {_pa.max().item():.4f}]")
+        print(f"[init] probe 有效区内初始相位 RMS {_pp.pow(2).mean().sqrt().item():.4f} rad")
+    # --------------------------------------------------------------------- #
+
     scale = 1.0
     if cfg.scale_cal:
         # 论文没写网络输出的绝对幅度怎么锚定。这里在第一次前向后算一个常数并冻结，
