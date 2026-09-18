@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter, gaussian_filter
 
 PI = math.pi
 
@@ -682,6 +682,59 @@ def run(cfg: Cfg):
         d = slice(pad_o, pad_o + n)
         P = (a_p[d, d] * torch.exp(1j * cfg.phase_span_prb * p_p[d, d])).to(torch.complex64)
         return O, P, a_p[d, d], a_s
+
+    # ---- 中性初始化 ----------------------------------------------------- #
+    # 物体与探针都由同一个 U-Net 输出，没法像自由像素那样直接赋初值，所以先用一段
+    # 复数 MSE 把网络回归到下面这个起点，再开始正式的物理重建。
+    #   O0 = 1·exp(i0)                     物体振幅 1、相位 0
+    #   P0 = 高斯平滑圆盘 · exp(i0)         探针振幅是平滑圆盘、相位 0
+    # 两者都【不含任何真值信息】—— 不用真值物体/真值探针的振幅、相位或纹理。
+    # 实测（smoke preset）：lr 1e-3 太小，400 步只到 |O|∈[0.004,1.38]；lr 1e-2
+    # 恒定不衰减、1000 步能到 [0.911,1.057]。余弦衰减反而更差（600 步就停滞在
+    # [0.78,1.24]），所以这里【不衰减】。loss 有跳动 -> 保留最优迭代，见下。
+    _INIT_STEPS, _INIT_LR, _INIT_TOL = 1500, 1e-2, 1e-5
+
+    O0 = torch.ones((M, M), dtype=torch.complex64, device=device)
+    R0 = cfg.probe_diam_px / 2
+    mask0 = (rr <= R0).astype(np.float32)
+    amp_P0 = gaussian_filter(mask0, sigma=3.0)
+    amp_P0 /= max(amp_P0.max(), 1e-12)
+    P0 = torch.from_numpy(amp_P0.astype(np.complex64)).to(device)
+    _p0_den = torch.sum(torch.abs(P0) ** 2).clamp_min(1e-12)
+
+    # 预拟合用【自己的】优化器，跑完就丢掉 —— 不让它的 Adam 动量带进正式训练。
+    opt_init = torch.optim.Adam(net.parameters(), lr=_INIT_LR)
+    _t_init, _n_init, loss_init = time.time(), 0, float("nan")
+    _best_loss, _best_sd, _best_at = float("inf"), None, 0
+    for _i in range(_INIT_STEPS):
+        O, P, _, _ = decode()
+        loss_i = (torch.mean(torch.abs(O - O0) ** 2)
+                  + torch.sum(torch.abs(P - P0) ** 2) / _p0_den)
+        opt_init.zero_grad(set_to_none=True)
+        loss_i.backward()
+        opt_init.step()
+        loss_init, _n_init = loss_i.item(), _i + 1
+        if loss_init < _best_loss:      # loss 会跳动，末步不一定是最好的那一步
+            _best_loss, _best_at = loss_init, _n_init
+            _best_sd = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        if loss_init < _INIT_TOL:
+            break
+    if _best_sd is not None:
+        net.load_state_dict(_best_sd)
+        loss_init = _best_loss
+    del opt_init, _best_sd
+
+    with torch.no_grad():
+        O, P, _, _ = decode()
+        _oa, _op = O.abs(), torch.angle(O)
+        _pa, _pp = P.abs(), torch.angle(P)[S1 > 0]
+        print(f"[init] 预拟合 {_n_init} 步 / {time.time()-_t_init:.1f}s  "
+              f"loss_init = {loss_init:.3e} (取自第 {_best_at} 步)")
+        print(f"[init] 物体初始振幅范围   [{_oa.min().item():.4f}, {_oa.max().item():.4f}]")
+        print(f"[init] 物体初始相位 RMS   {_op.pow(2).mean().sqrt().item():.4f} rad")
+        print(f"[init] probe 初始振幅范围 [{_pa.min().item():.4f}, {_pa.max().item():.4f}]")
+        print(f"[init] probe 有效区内初始相位 RMS {_pp.pow(2).mean().sqrt().item():.4f} rad")
+    # --------------------------------------------------------------------- #
 
     scale = 1.0
     if cfg.scale_cal:
