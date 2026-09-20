@@ -173,11 +173,24 @@ def run_net(cfg: Cfg):
     else:
         Mtr = None
 
-    # 网络输入：零填充到画布尺寸的实测衍射图堆栈，全程固定
-    x_in = F.pad(Im[None], (pad, pad, pad, pad))
-    x_in = x_in / x_in.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+    # ---- 网络输入，两种都是全程固定的常量张量 ----
+    if cfg.input_mode == "raw":
+        # 零填充到画布尺寸的实测衍射图堆栈，通道数 = 扫描点数
+        x_in = F.pad(Im[None], (pad, pad, pad, pad))
+        x_in = x_in / x_in.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+        in_ch = len(positions)
+    else:
+        # 标准 DIP：固定均匀噪声 U(0, 0.1)，采样一次，训练全程不变。
+        # 【必须用独立 Generator】用全局 RNG 采样会推进 RNG 状态，导致下面的
+        # 网络权重初始化与 raw 模式不同 —— 那样两种输入就不是同一张网在比了。
+        _g = torch.Generator().manual_seed(cfg.seed + 90001)
+        in_ch = int(cfg.input_channels)
+        x_in = (torch.rand(1, in_ch, cfg.N + 2 * pad, cfg.N + 2 * pad,
+                           generator=_g) * 0.1).to(dev)
+        print(f"[net] 输入 = 固定均匀噪声 U(0,0.1) {in_ch} 通道 "
+              f"（seed={cfg.seed}，全程不变，不参与优化）")
 
-    net = ProPtyUNet(len(positions), cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
+    net = ProPtyUNet(in_ch, cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
     print(f"[net] U-Net {sum(p.numel() for p in net.parameters())/1e6:.2f} M 参数  "
           f"输入 {tuple(x_in.shape)}")
 

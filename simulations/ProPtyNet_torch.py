@@ -93,6 +93,12 @@ class Cfg:
     # 探针参数化：pixel = 自由复数像素；truth = 冻结在真值上（上界对照，不参与优化）
     probe_mode: str = "pixel"    # pixel | truth
 
+    # ---- 网络输入 ----
+    #   raw   实测衍射图堆栈零填充到画布，通道数 = 扫描点数（本项目原始做法）
+    #   noise 标准 DIP：固定均匀噪声 U(0,0.1)，通道数 = input_channels，全程不变
+    input_mode: str = "raw"
+    input_channels: int = 8      # 仅 noise 模式用；raw 模式通道数由扫描点数决定
+
     # ---- 无 GT 早停：留出探测器像素 ----
     holdout_frac: float = 0.0    # >0 时每张图随机留出这么多像素，永不进 loss
     holdout_seed: int = 1234
@@ -137,6 +143,7 @@ class Cfg:
 
 _CHOICES = {
     "probe_mode": ["pixel", "truth"],
+    "input_mode": ["raw", "noise"],
     "device": None,
 }
 
