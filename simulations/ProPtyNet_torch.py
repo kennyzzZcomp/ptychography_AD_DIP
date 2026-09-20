@@ -93,18 +93,6 @@ class Cfg:
     # 探针参数化：pixel = 自由复数像素；truth = 冻结在真值上（上界对照，不参与优化）
     probe_mode: str = "pixel"    # pixel | truth
 
-    # ---- 网络输入模式 ----
-    #   raw               历史行为：整摞衍射图当通道，通道数 = 扫描点数
-    #   adjoint_curriculum 物理伴随实空间融合：固定 4 通道（B.real/B.imag/覆盖/残差），
-    #                     配稀疏->全量两阶段课程
-    input_mode: str = "adjoint_curriculum"
-    curriculum_stride: int = 3          # 第一阶段取 0,3,6,... 每隔两个用一个
-    curriculum_stage1_frac: float = 0.35   # 前 35% 迭代只用稀疏子集
-    curriculum_ramp_frac: float = 0.15     # 接下来 15% 平滑加入其余数据
-    curriculum_freeze_probe_stage1: bool = True   # 稀疏阶段把探针学习率压到 0
-    adjoint_channels: str = "all"   # all = [ReB,ImB,Γ,ρ] | B = 只给网络伴随复场
-    adjoint_eps: float = 1e-6           # 伴随归一化的下限，防 0 除
-
     # ---- 无 GT 早停：留出探测器像素 ----
     holdout_frac: float = 0.0    # >0 时每张图随机留出这么多像素，永不进 loss
     holdout_seed: int = 1234
@@ -149,8 +137,6 @@ class Cfg:
 
 _CHOICES = {
     "probe_mode": ["pixel", "truth"],
-    "input_mode": ["raw", "adjoint_curriculum"],
-    "adjoint_channels": ["all", "B"],
     "device": None,
 }
 
