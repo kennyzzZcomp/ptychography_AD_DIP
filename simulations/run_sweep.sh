@@ -35,7 +35,6 @@ OVERLAPS=${OVERLAPS:-"9:33.4 16:26.7 25:20 36:16 49:13.3"}
 DOSES=${DOSES:-"1e2 3e2 1e3 3e3 1e4"}
 
 # ---- 换了下面任何一项 = 换了实验，必须同时换 ROOT，否则会和已有结果混在一棵树里 ----
-SCAN_PATTERN=${SCAN_PATTERN:-raster}   # raster | fermat
 PHASE=${PHASE:-}            # --obj-phase-span，空 = Cfg 默认 0.8；0 = 纯振幅物体
 AMP_MIN=${AMP_MIN:-}        # --obj-amp-min，空 = 0.4
 IMG_AMP=${IMG_AMP:-}
@@ -50,7 +49,7 @@ LR_PROBE=${LR_PROBE:-}
 LR_OBJ=${LR_OBJ:-}
 LR_PRB=${LR_PRB:-}
 
-COMMON="--scan-pattern $SCAN_PATTERN --lr-cosine"
+COMMON="--lr-cosine"
 [ -n "$PHASE" ]     && COMMON="$COMMON --obj-phase-span $PHASE"
 [ -n "$AMP_MIN" ]   && COMMON="$COMMON --obj-amp-min $AMP_MIN"
 [ -n "$IMG_AMP" ]   && COMMON="$COMMON --obj-amp-img $IMG_AMP"
@@ -70,7 +69,7 @@ mkdir -p "$ROOT"
 echo "=== run_sweep $(date '+%F %T') ==="
 echo "  ROOT=$ROOT  SCRIPT=$SCRIPT"
 echo "  ITERS=$ITERS  AD_ITERS=$AD_ITERS  SEEDS='$SEEDS'  NOISE_SEEDS='$NOISE_SEEDS'"
-echo "  扫描=$SCAN_PATTERN  物体相位跨度=${PHASE:-0.8(默认)}  振幅下限=${AMP_MIN:-0.4(默认)}"
+echo "  扫描=raster  物体相位跨度=${PHASE:-0.8(默认)}  振幅下限=${AMP_MIN:-0.4(默认)}"
 echo "  探针=$PROBE_MODE  初值=平滑圆盘+零相位 sigma=${SIGMA:-0.15(默认)}R"
 echo "  物体初值 alpha=${ALPHA:-0(默认,与 AD 同初值)}   留出=${HOLDOUT:-0(不留出)}"
 [ "$PROBE_MODE" = "truth" ] && \

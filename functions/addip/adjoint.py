@@ -34,8 +34,8 @@ PI = math.pi
 def _coverage(cfg: Cfg, P_ref, corners_act, canvas_shape, dev):
     """Γ(r) = Σ_{i∈A} S_iᵀ |P_ref|²，用 crop_patch_torch 的 VJP 算。
 
-    【不能手工 scatter】整数坐标下 scatter 和 VJP 等价，但 fermat / 亚像素坐标下
-    crop_patch_torch 会在 patch 上做相位斜坡，它的伴随不是"取整后散射"。用 VJP
+    【不能手工 scatter】整数坐标下 scatter 和 VJP 等价，但亚像素坐标（scan_step
+    为小数）下 crop_patch_torch 会在 patch 上做相位斜坡，它的伴随不是"取整后散射"。用 VJP
     才能保证覆盖图与前向严格同一个算子。
     """
     G = torch.zeros(canvas_shape, dtype=torch.complex64, device=dev, requires_grad=True)

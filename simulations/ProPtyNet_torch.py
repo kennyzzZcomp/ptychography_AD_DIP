@@ -3,7 +3,7 @@
 """ProPtyNet (PyTorch) —— 未训练网络先验 vs 纯 AD 的 ptychography 对照。
 
 固定下来的约定（不再是开关，改了就是换了一个实验）：
-  * 扫描        raster 或 fermat，位置严格确定性
+  * 扫描        规则栅格 raster，位置严格确定性
   * 探针支撑    无。模型能表示完整探针，数据/模型零失配
   * 探针初值    平滑圆盘 + 零相位、不传播（err_P0 ≈ 0.27）。探针从第 0 步就参与优化
   * 物体初值    相位中性：第 0 步 O ≡ 1·exp(i0)，与 AD 完全相同
@@ -58,8 +58,7 @@ class Cfg:
     probe_init_sigma: float = 0.15
 
     # ---- 扫描 ----
-    scan_pattern: str = "raster"     # raster | fermat
-    scan_npos: int = 25
+    scan_npos: int = 25              # 必须是完全平方数
     scan_step: float = 20.0          # 重叠轴有 26.7 / 13.3 这些小数档，必须是 float
 
     # ---- 区域 ----
@@ -148,7 +147,6 @@ class Cfg:
 # ============================================================================ #
 
 _CHOICES = {
-    "scan_pattern": ["raster", "fermat"],
     "probe_mode": ["pixel", "truth"],
     "input_mode": ["raw", "adjoint_curriculum"],
     "device": None,

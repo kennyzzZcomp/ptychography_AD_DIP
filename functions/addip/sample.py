@@ -110,21 +110,17 @@ def probe_init_err(cfg: Cfg, rr, probe):
                  / max(np.linalg.norm(Pt), 1e-12))
 
 def make_scan_positions(cfg: Cfg):
-    """确定性扫描位置。raster = 规则栅格；fermat = 费马螺旋。"""
-    pat, n_pos, step = cfg.scan_pattern, cfg.scan_npos, cfg.scan_step
-    if pat == "raster":
-        k = int(round(np.sqrt(n_pos)))
-        off = (k - 1) * step / 2
-        p = np.array([[i * step - off, j * step - off]
-                      for i in range(k) for j in range(k)], float)
-    elif pat == "fermat":
-        R = step * np.sqrt(n_pos) / 2
-        n = np.arange(1, n_pos + 1)
-        r = (R / np.sqrt(n_pos)) * np.sqrt(n)
-        th = n * np.deg2rad(137.508)
-        p = np.stack([r * np.cos(th), r * np.sin(th)], 1)
-    else:
-        raise ValueError(f"scan_pattern={pat}，只能是 raster | fermat")
+    """确定性扫描位置：规则栅格（raster）。
+
+    scan_npos 必须是完全平方数，step 是相邻点中心距（px，可为小数）。
+    """
+    n_pos, step = cfg.scan_npos, cfg.scan_step
+    k = int(round(np.sqrt(n_pos)))
+    if k * k != n_pos:
+        raise ValueError(f"scan_npos={n_pos} 不是完全平方数，规则栅格排不出来")
+    off = (k - 1) * step / 2
+    p = np.array([[i * step - off, j * step - off]
+                  for i in range(k) for j in range(k)], float)
     return p.astype(np.float32)
 
 def check_scan_fits(cfg, positions, verbose=True):
@@ -146,7 +142,7 @@ def check_scan_fits(cfg, positions, verbose=True):
     lin = 1 - np.median(nn_) / cfg.probe_dia
     ar = float(np.median([overlap_areal(d, cfg.probe_dia) for d in nn_]))
     if verbose:
-        print(f"[scan] {len(P)} 点 step {cfg.scan_step:g} {cfg.scan_pattern}  "
+        print(f"[scan] {len(P)} 点 step {cfg.scan_step:g} raster  "
               f"线性重叠 {lin:.1%}  面积重叠 {ar:.1%}  "
               f"位置极值 {mx:.1f}/{cfg.SCAN_LIMIT:.0f}px  "
               f"每像素被照亮 {len(P)*np.pi*(cfg.probe_dia/2)**2/(2*mx+cfg.probe_dia)**2:.2f} 次")

@@ -13,7 +13,8 @@ import numpy as np
 # 【必须记录】否则不同目录树在 CSV 里的配置列会一模一样，只剩目录名可以区分 ——
 # 半年后没人复现得出来。加了 Cfg 字段就往这里加一条。
 CFG_KEYS = ["obj_amp_img", "obj_phase_img", "obj_phase_span", "obj_amp_min",
-            "scan_pattern", "scan_npos", "scan_step",
+            "scan_pattern",   # 旧结果遗留列；新 Cfg 已无此字段，缺失时自动跳过
+            "scan_npos", "scan_step",
             "probe_mode", "probe_init_sigma", "probe_aberr",
             "iters", "ad_iters", "lr_net", "lr_probe", "lr_obj", "lr_prb",
             "base_ch", "weight_decay", "lr_cosine", "obj_init_alpha",
