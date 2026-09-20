@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import math
 import numpy as np
@@ -10,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from functions.addip.adjoint import build_adjoint_features, save_adjoint_features
 from functions.addip.evaluate import evaluate_object_roi, evaluate_probe
 from functions.addip.losses import cabs, data_loss_direct, held_out_mse, masked_mse, safe_angle, tgv_loss
 from functions.addip.model import ProPtyUNet, make_field
@@ -173,11 +175,57 @@ def run_net(cfg: Cfg):
     else:
         Mtr = None
 
-    # 网络输入：零填充到画布尺寸的实测衍射图堆栈，全程固定
-    x_in = F.pad(Im[None], (pad, pad, pad, pad))
-    x_in = x_in / x_in.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+    # 探针
+    prb_params, Ptruth = [], None
+    if cfg.probe_mode == "truth":
+        Ptruth = torch.from_numpy(probe.astype(np.complex64)).to(dev)
+        print("[net] 探针 = 真值且冻结（上界对照：只考察物体表示本身的能力）")
+    else:
+        P0 = make_probe_init(cfg, rr)
+        _banner(cfg, probe_init_err(cfg, rr, probe), "net")
+        Pr = nn.Parameter(torch.from_numpy(P0.real.astype(np.float32)).to(dev))
+        Pi = nn.Parameter(torch.from_numpy(P0.imag.astype(np.float32)).to(dev))
+        prb_params = [Pr, Pi]
+        print(f"[net] 探针 = 自由复数像素（{2*rr.size} 个未知量），从第 0 步起与物体联合更新")
 
-    net = ProPtyUNet(len(positions), cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
+    # ---- 网络输入 ----------------------------------------------------- #
+    # 【探针块必须在这之前】伴随融合要用 P_ref = P0；它只读 P0，不改后续参与优化的 Pr/Pi。
+    idx_full = torch.arange(len(positions), device=dev)
+    idx_sparse, feat_sparse, feat_full = idx_full, None, None
+    if cfg.input_mode == "raw":
+        # 历史行为，逐位不变：零填充的实测衍射图堆栈，通道数 = 扫描点数
+        x_in = F.pad(Im[None], (pad, pad, pad, pad))
+        x_in = x_in / x_in.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+        in_ch = len(positions)
+    else:
+        # 物理伴随实空间融合：固定 4 通道，与扫描点数无关
+        # P_ref 只能是 P0；probe_mode='truth' 的上界对照才允许传冻结的真值探针
+        P_ref = Ptruth if Ptruth is not None else torch.complex(Pr.detach(), Pi.detach())
+        O_ref = torch.ones((cfg.N_OBJ, cfg.N_OBJ), dtype=torch.complex64, device=dev)
+        idx_sparse = torch.arange(0, len(positions), cfg.curriculum_stride, device=dev)
+        feat_sparse = build_adjoint_features(cfg, sqrtIm, corners, Ht, P_ref,
+                                             idx_sparse, O_ref)
+        feat_full = build_adjoint_features(cfg, sqrtIm, corners, Ht, P_ref,
+                                           idx_full, O_ref)
+        x_in, in_ch = feat_sparse, 4
+        _s1 = int(cfg.iters * cfg.curriculum_stage1_frac)
+        _rp = max(1, int(cfg.iters * cfg.curriculum_ramp_frac))
+        print(f"[net-input] mode={cfg.input_mode}")
+        print(f"[net-input] sparse positions={len(idx_sparse)}/{len(positions)} "
+              f"stride={cfg.curriculum_stride}")
+        print(f"[net-input] features_sparse={tuple(feat_sparse.shape)}")
+        print(f"[net-input] features_full={tuple(feat_full.shape)}")
+        print(f"[curriculum] stage1={_s1} iters, ramp={_rp} iters, "
+              f"full={max(cfg.iters - _s1 - _rp, 0)} iters")
+        print(f"[curriculum] probe frozen during sparse stage: "
+              f"{bool(cfg.curriculum_freeze_probe_stage1)}")
+        os.makedirs(cfg.outdir, exist_ok=True)
+        save_adjoint_features(cfg, feat_sparse, 1e-3,
+                              os.path.join(cfg.outdir, "adjoint_features_sparse.png"))
+        save_adjoint_features(cfg, feat_full, 1e-3,
+                              os.path.join(cfg.outdir, "adjoint_features_full.png"))
+
+    net = ProPtyUNet(in_ch, cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
     print(f"[net] U-Net {sum(p.numel() for p in net.parameters())/1e6:.2f} M 参数  "
           f"输入 {tuple(x_in.shape)}")
 
@@ -194,19 +242,6 @@ def run_net(cfg: Cfg):
     print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
           + ("（第 0 步 O ≡ 1·exp(i0)，与 AD 初值相同）" if _a == 0 else ""))
 
-    # 探针
-    prb_params, Ptruth = [], None
-    if cfg.probe_mode == "truth":
-        Ptruth = torch.from_numpy(probe.astype(np.complex64)).to(dev)
-        print("[net] 探针 = 真值且冻结（上界对照：只考察物体表示本身的能力）")
-    else:
-        P0 = make_probe_init(cfg, rr)
-        _banner(cfg, probe_init_err(cfg, rr, probe), "net")
-        Pr = nn.Parameter(torch.from_numpy(P0.real.astype(np.float32)).to(dev))
-        Pi = nn.Parameter(torch.from_numpy(P0.imag.astype(np.float32)).to(dev))
-        prb_params = [Pr, Pi]
-        print(f"[net] 探针 = 自由复数像素（{2*rr.size} 个未知量），从第 0 步起与物体联合更新")
-
     def decode():
         a_raw, p_raw = net(x_in)
         O = make_field(a_raw[0], p_raw[0:2])
@@ -222,20 +257,52 @@ def run_net(cfg: Cfg):
     best_gt = {"ssim": -1.0, "it": -1}
     rec = pc = None
 
+    # 两阶段课程的分界（raw 模式下这三个量不参与任何计算）
+    stage1_end = int(cfg.iters * cfg.curriculum_stage1_frac)
+    ramp_len = max(1, int(cfg.iters * cfg.curriculum_ramp_frac))
+    alpha, scan_weight, probe_lr_now = 1.0, None, cfg.lr_probe
+
     for it in range(cfg.iters):
-        if cfg.lr_cosine:
-            f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
+        cos_f = (0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
+                 if cfg.lr_cosine else 1.0)
+        if cfg.input_mode != "raw":
+            if it < stage1_end:
+                alpha = 0.0
+            elif it < stage1_end + ramp_len:
+                alpha = (it - stage1_end) / ramp_len
+            else:
+                alpha = 1.0
+            # 同语义特征之间的线性过渡（不是拼成 8 通道）
+            x_in = (1.0 - alpha) * feat_sparse + alpha * feat_full
+            scan_weight = torch.full((len(positions),), alpha, device=dev)
+            scan_weight[idx_sparse] = 1.0
+            probe_lr_now = (cfg.lr_probe * alpha * cos_f
+                            if cfg.curriculum_freeze_probe_stage1
+                            else cfg.lr_probe * cos_f)
+        else:
+            probe_lr_now = cfg.lr_probe * cos_f
+        if cfg.lr_cosine or cfg.input_mode != "raw":
             for g in opt_net.param_groups:
-                g["lr"] = cfg.lr_net * f
+                g["lr"] = cfg.lr_net * cos_f
             if opt_prb is not None:
                 for g in opt_prb.param_groups:
-                    g["lr"] = cfg.lr_probe * f
+                    g["lr"] = probe_lr_now
         O, Pc = decode()
         Ua = cabs(forward_torch(cfg, O, Pc, corners, Ht))
         # 全局幅度标度：物体与探针之间有 O->aO, P->P/a 的规范自由度。每步解析地求最优
         # 标量（VarPro），不 detach —— 这样标度方向上的梯度恒为 0，那个自由度被消掉。
         Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
-        loss = masked_mse(Ua, sqrtIm, Mtr)
+        if scan_weight is None:
+            loss = masked_mse(Ua, sqrtIm, Mtr)          # raw：逐位不变
+        else:
+            # 按扫描位置加权：未激活的位置既不进分子也不进分母
+            err = (Ua - sqrtIm).square()
+            if Mtr is not None:
+                err = err * Mtr
+                den = (scan_weight[:, None, None] * Mtr).sum().clamp_min(1e-12)
+            else:
+                den = (scan_weight.sum() * cfg.N * cfg.N).clamp_min(1e-12)
+            loss = (err * scan_weight[:, None, None]).sum() / den
 
         opt_net.zero_grad(set_to_none=True)
         if opt_prb is not None:
@@ -260,11 +327,14 @@ def run_net(cfg: Cfg):
                 best_val = {"val": val, "it": it + 1, "ssim": mo["ssim_o_amp"]}
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 v = f" | val {val:.4e}" if Mtr is not None else ""
+                cur = ("" if cfg.input_mode == "raw" else
+                       f" | alpha={alpha:.3f} active_weight="
+                       f"{scan_weight.sum().item():.1f} probe_lr={probe_lr_now:.2e}")
                 print(f"  it {it+1:5d} | loss {loss.item():.4e}{v} | real {real:.4e} | "
                       f"amp PSNR {mo['psnr_o_amp']:6.2f} dB | SSIM {mo['ssim_o_amp']:.4f} | "
                       f"phase RMSE {mo['rmse_o_phi_rad']:.4f} rad | complex err "
-                      f"{mo['relerr_o_complex']:.4f} | probe err {mp['relerr_p_complex']:.4f}",
-                      flush=True)
+                      f"{mo['relerr_o_complex']:.4f} | probe err "
+                      f"{mp['relerr_p_complex']:.4f}{cur}", flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     if len(hist) > 8:
