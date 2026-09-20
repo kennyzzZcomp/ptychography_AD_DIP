@@ -207,10 +207,21 @@ def run_net(cfg: Cfg):
                                              idx_sparse, O_ref)
         feat_full = build_adjoint_features(cfg, sqrtIm, corners, Ht, P_ref,
                                            idx_full, O_ref)
-        x_in, in_ch = feat_sparse, 4
+        # 诊断图先出（永远按完整 4 通道画），再按 adjoint_channels 裁通道
+        os.makedirs(cfg.outdir, exist_ok=True)
+        save_adjoint_features(cfg, feat_sparse, 1e-3,
+                              os.path.join(cfg.outdir, "adjoint_features_sparse.png"))
+        save_adjoint_features(cfg, feat_full, 1e-3,
+                              os.path.join(cfg.outdir, "adjoint_features_full.png"))
+        if cfg.adjoint_channels == "B":
+            # 消融：只给伴随复场，拿掉覆盖 Γ 与残差 ρ 两个辅助通道
+            feat_sparse = feat_sparse[:, :2].contiguous()
+            feat_full = feat_full[:, :2].contiguous()
+        x_in = feat_sparse
+        in_ch = feat_sparse.shape[1]
         _s1 = int(cfg.iters * cfg.curriculum_stage1_frac)
         _rp = max(1, int(cfg.iters * cfg.curriculum_ramp_frac))
-        print(f"[net-input] mode={cfg.input_mode}")
+        print(f"[net-input] mode={cfg.input_mode} channels={cfg.adjoint_channels}")
         print(f"[net-input] sparse positions={len(idx_sparse)}/{len(positions)} "
               f"stride={cfg.curriculum_stride}")
         print(f"[net-input] features_sparse={tuple(feat_sparse.shape)}")
@@ -219,11 +230,6 @@ def run_net(cfg: Cfg):
               f"full={max(cfg.iters - _s1 - _rp, 0)} iters")
         print(f"[curriculum] probe frozen during sparse stage: "
               f"{bool(cfg.curriculum_freeze_probe_stage1)}")
-        os.makedirs(cfg.outdir, exist_ok=True)
-        save_adjoint_features(cfg, feat_sparse, 1e-3,
-                              os.path.join(cfg.outdir, "adjoint_features_sparse.png"))
-        save_adjoint_features(cfg, feat_full, 1e-3,
-                              os.path.join(cfg.outdir, "adjoint_features_full.png"))
 
     net = ProPtyUNet(in_ch, cfg.base_ch, n_fields=1, ph_ch=2).to(dev)
     print(f"[net] U-Net {sum(p.numel() for p in net.parameters())/1e6:.2f} M 参数  "

@@ -102,6 +102,7 @@ class Cfg:
     curriculum_stage1_frac: float = 0.35   # 前 35% 迭代只用稀疏子集
     curriculum_ramp_frac: float = 0.15     # 接下来 15% 平滑加入其余数据
     curriculum_freeze_probe_stage1: bool = True   # 稀疏阶段把探针学习率压到 0
+    adjoint_channels: str = "all"   # all = [ReB,ImB,Γ,ρ] | B = 只给网络伴随复场
     adjoint_eps: float = 1e-6           # 伴随归一化的下限，防 0 除
 
     # ---- 无 GT 早停：留出探测器像素 ----
@@ -149,6 +150,7 @@ class Cfg:
 _CHOICES = {
     "probe_mode": ["pixel", "truth"],
     "input_mode": ["raw", "adjoint_curriculum"],
+    "adjoint_channels": ["all", "B"],
     "device": None,
 }
 
