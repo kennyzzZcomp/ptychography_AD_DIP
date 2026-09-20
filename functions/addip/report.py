@@ -30,7 +30,7 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
     except ImportError:
         return
     c = cfg.EVAL_CROP
-    ra, _ = align_global_factor(rec[c:-c, c:-c], obj[c:-c, c:-c])
+    ra, _c_obj = align_global_factor(rec[c:-c, c:-c], obj[c:-c, c:-c])
     ga = obj[c:-c, c:-c]
     _m = (support > 0)
     pa, _ = align_global_factor(pc * _m, probe * _m)
@@ -60,8 +60,14 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
         (_dphi(ra, ga), "err phase (rad)", EP, "RdBu_r"),
         (np.abs(pa) - np.abs(pg), "err probe amp", EA, "RdBu_r"),
         (_dphi(pa, pg) * _pm, "err probe phase (rad)", EP, "RdBu_r"),
+        # ---- 第 4 行：完整画布 ----
+        # 评估区只是画布中间一小块（eval_size=64 / N_OBJ=296 时只占 4.7% 面积），
+        # 光看裁剪图看不出样品全貌，也看不出照明足迹落在哪。红框标出评估区。
+        # 完整重建图用【评估区上算出的同一个复标度】，两组图口径一致。
+        (np.abs(obj), "GT amp (full canvas)", AMP, "gray"),
+        (np.abs(rec * _c_obj), "rec amp (full canvas)", AMP, "gray"),
     ]
-    fig, ax = plt.subplots(3, 4, figsize=(15, 11.4))
+    fig, ax = plt.subplots(4, 4, figsize=(15, 15.2))
     over = []
     for a, (im, t, (vmin, vmax), cm) in zip(ax.ravel(), panels):
         a.imshow(im, cmap=cm, vmin=vmin, vmax=vmax)
@@ -71,6 +77,12 @@ def _save(cfg, tag, rec, pc, obj, probe, support, hist):
             over.append(f"{t}: 实际 [{lo:.3f}, {hi:.3f}] 超出显示范围 [{vmin:.3f}, {vmax:.3f}]")
         a.set_title(f"{t}  [{lo:.3f}, {hi:.3f}]" + ("  ⚠clip" if clip else ""), fontsize=8)
         a.set_xticks([]); a.set_yticks([])
+    for _a in ax.ravel()[len(panels):]:      # 4x4 有 16 格，只用了 14
+        _a.axis("off")
+    _lo, _hi = c, cfg.N_OBJ - c               # 评估区在完整画布里的位置
+    for _a in ax.ravel()[len(panels) - 2:len(panels)]:
+        _a.plot([_lo, _hi, _hi, _lo, _lo], [_lo, _lo, _hi, _hi, _lo],
+                "-", lw=1.2, color="#ff3b30")
     fig.tight_layout()
     f = os.path.join(cfg.outdir, f"{tag}_result.png")
     fig.savefig(f, dpi=140); plt.close(fig)
