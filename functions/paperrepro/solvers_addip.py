@@ -80,6 +80,11 @@ def run_ad(cfg: Cfg):
     for it in range(cfg.iters):
         O, P = torch.complex(Or, Oi), torch.complex(Pr, Pi)
         Ua = cabs(_fwd(cfg, O, P, post, Q))
+        # 全局幅度标度 O->aO, P->P/a 是规范自由度，与 run_net 用同一把尺。
+        # 【不加这一行 AD 基本跑不动】数据经过 I/I.max() 全局归一，而初值 O≡1、P≡P0
+        # 的预测幅度差着 1~2 个数量级（paper preset 实测 79×）。不消掉这个自由度，
+        # 第 0 步 loss 的 99.9% 是纯尺度误差，Adam 的前几百步全在缩幅度而不是重建结构。
+        Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
         loss = F.mse_loss(Ua, sqrtIm)
         opt.zero_grad(set_to_none=True)
         loss.backward()

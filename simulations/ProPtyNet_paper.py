@@ -114,12 +114,14 @@ class Cfg:
     #   ad  : 物体 = 自由复数像素，振幅域损失
     #   net : 物体 = 未训练 U-Net（softplus 振幅 + cos/sin 相位），振幅域损失
     # 三者的迭代数都用上面的 iters，探针初值都用下面这两项。
-    probe_init: str = "ones"     # ones = P0 ≡ 1（与论文 run 的中性输出头一致）
-                                 # disk = 平滑圆盘 + 零相位（只给"针孔多大"这一条先验）
+    # 【默认 disk】ones 时 err_P0 ≈ 0.996（与真值几乎不相关），而论文那一路另有
+    # Eq.(5) Loss2 把探针按回针孔里 —— 给 ad/net 用 ones 等于让它们既没初值也没约束，
+    # 实测直接跑不出来。disk 只编码"针孔多大"，与 Loss2 的先验强度大致对等。
+    probe_init: str = "disk"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
     probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
     obj_init_alpha: float = 0.0  # net: 0 = 严格相位中性，第 0 步 O ≡ 1，与 ad 同初值
-    lr_obj: float = 1e-2         # ad  物体自由像素
-    lr_prb: float = 1e-2         # ad  探针自由像素
+    lr_obj: float = 3e-2         # ad  物体自由像素（1e-2 在本几何下明显偏小）
+    lr_prb: float = 3e-2         # ad  探针自由像素
     lr_net: float = 1e-3         # net U-Net
     lr_probe: float = 1e-2       # net 探针自由像素
     lr_cosine: bool = False      # net 两个 lr 一起余弦退火到 0
