@@ -66,19 +66,26 @@ def run_ad(cfg: Cfg):
     M, n = cfg.obj_size, cfg.N
     Or = nn.Parameter(torch.ones((M, M), device=device))
     Oi = nn.Parameter(torch.zeros((M, M), device=device))
-    Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
-    Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
-
-    opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
-                            {"params": [Pr, Pi], "lr": cfg.lr_prb}])
+    truth_P = (cfg.probe_mode == "truth")
+    if truth_P:
+        Pfix = torch.from_numpy(probe.astype(np.complex64)).to(device)
+        Pr = Pi = None
+        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj}])
+    else:
+        Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
+        Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
+        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
+                                {"params": [Pr, Pi], "lr": cfg.lr_prb}])
     print(f"[ad] 物体 = 自由复数像素 {M}²（{2*M*M} 个未知量），初值 O ≡ 1·exp(i0)")
-    print(f"[ad] 探针 = 自由复数像素 {n}²，从第 0 步起与物体联合更新")
+    print(f"[ad] 探针 = " + ("【真值且冻结】非盲上界对照，不参与优化"
+                            if truth_P else f"自由复数像素 {n}²，从第 0 步起与物体联合更新"))
     print(f"[ad] 全批量 {cfg.n_pat} 位置/步 × {cfg.iters} 步  "
           f"lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减）")
 
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
-        O, P = torch.complex(Or, Oi), torch.complex(Pr, Pi)
+        O = torch.complex(Or, Oi)
+        P = Pfix if truth_P else torch.complex(Pr, Pi)
         Ua = cabs(_fwd(cfg, O, P, post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度，与 run_net 用同一把尺。
         # 【不加这一行 AD 基本跑不动】数据经过 I/I.max() 全局归一，而初值 O≡1、P≡P0
@@ -94,7 +101,7 @@ def run_ad(cfg: Cfg):
             with torch.no_grad():
                 real = torch.linalg.vector_norm(Ua ** 2 - Icl).item()
                 rec = torch.complex(Or, Oi).detach().cpu().numpy()
-                pc = torch.complex(Pr, Pi).detach().cpu().numpy()
+                pc = P.detach().cpu().numpy()
             m = evaluate(rec[rs, cs], obj[rs, cs])
             rp = probe_relerr(pc, probe)
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
@@ -145,20 +152,26 @@ def run_net(cfg: Cfg):
     print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
           + ("（第 0 步 O ≡ 1·exp(i0)，与 ad 初值相同）" if _a == 0 else ""))
 
-    Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
-    Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
-    print(f"[net] 探针 = 自由复数像素 {n}²，从第 0 步起与物体联合更新")
+    truth_P = (cfg.probe_mode == "truth")
+    if truth_P:
+        Pfix = torch.from_numpy(probe.astype(np.complex64)).to(device)
+        Pr = Pi = None
+    else:
+        Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
+        Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
+    print(f"[net] 探针 = " + ("【真值且冻结】非盲上界对照，不参与优化"
+                             if truth_P else f"自由复数像素 {n}²，从第 0 步起与物体联合更新"))
 
     c_ns = slice(pad_n, pad_n + M)
 
     def decode():
         a_raw, p_raw = net(x)
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
-        return O, torch.complex(Pr, Pi)
+        return O, (Pfix if truth_P else torch.complex(Pr, Pi))
 
     opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
                                weight_decay=cfg.weight_decay)
-    opt_prb = torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
+    opt_prb = None if truth_P else torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
 
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
@@ -166,8 +179,9 @@ def run_net(cfg: Cfg):
             f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
             for g in opt_net.param_groups:
                 g["lr"] = cfg.lr_net * f
-            for g in opt_prb.param_groups:
-                g["lr"] = cfg.lr_probe * f
+            if opt_prb is not None:
+                for g in opt_prb.param_groups:
+                    g["lr"] = cfg.lr_probe * f
         O, P = decode()
         Ua = cabs(_fwd(cfg, O, P, post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
@@ -176,10 +190,12 @@ def run_net(cfg: Cfg):
         loss = F.mse_loss(Ua, sqrtIm)
 
         opt_net.zero_grad(set_to_none=True)
-        opt_prb.zero_grad(set_to_none=True)
+        if opt_prb is not None:
+            opt_prb.zero_grad(set_to_none=True)
         loss.backward()
         opt_net.step()
-        opt_prb.step()
+        if opt_prb is not None:
+            opt_prb.step()
 
         if (it + 1) % cfg.eval_every == 0 or it == cfg.iters - 1:
             with torch.no_grad():

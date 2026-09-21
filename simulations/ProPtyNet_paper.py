@@ -106,7 +106,7 @@ class Cfg:
 
     # ---- 优化 ----
     iters: int = 2000
-    lr: float = 1e-3             # 论文: 5e-4 ~ 5e-3
+    lr: float = 5e-4             # 论文: 5e-4 ~ 5e-3
     lr_final_frac: float = 0.1   # cosine 衰减到 lr 的这个比例; 1.0 = 不衰减
     pos_batch: int = 0           # 0 = 全 batch（论文写法）; >0 = 每步随机取这么多位置
 
@@ -117,8 +117,12 @@ class Cfg:
     # 【默认 disk】ones 时 err_P0 ≈ 0.996（与真值几乎不相关），而论文那一路另有
     # Eq.(5) Loss2 把探针按回针孔里 —— 给 ad/net 用 ones 等于让它们既没初值也没约束，
     # 实测直接跑不出来。disk 只编码"针孔多大"，与 Loss2 的先验强度大致对等。
-    probe_init: str = "disk"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
+    probe_init: str = "ones"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
     probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
+    # pixel = 自由复数像素（盲重建）| truth = 冻结在真值上，不参与优化
+    # truth 是【非盲上界】诊断档：它重建不出来 = 数据本身信息不够，与探针无关。
+    # 只对 ad / net 生效；run（论文原版）的探针是网络输出的，无法冻结。
+    probe_mode: str = "pixel"
     obj_init_alpha: float = 0.0  # net: 0 = 严格相位中性，第 0 步 O ≡ 1，与 ad 同初值
     lr_obj: float = 3e-2         # ad  物体自由像素（1e-2 在本几何下明显偏小）
     lr_prb: float = 3e-2         # ad  探针自由像素
@@ -181,7 +185,7 @@ def main():
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str),
-                 ("probe_init", str), ("probe_init_sigma", float),
+                 ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
                  ("fwd_chunk", int), ("noise_seed", int)]:
