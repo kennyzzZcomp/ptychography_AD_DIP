@@ -104,6 +104,32 @@ def make_truth(cfg: Cfg):
     S1 = (rr <= cfg.s1_margin * R).astype(np.float32)     # Eq.(6) 的针孔掩膜
     return obj, probe, S1, rr
 
+def make_probe_init(cfg: Cfg, rr):
+    """探针初值 P0。三种算法必须共用这一个函数（addip 那条线的历史教训：
+    AD 分支曾自己复制过一份初值构造，导致换初值的开关只对 net 生效）。
+
+    ones : P0 ≡ 1，与论文 run 的中性输出头一致（不给任何光阑先验）
+    disk : 平滑圆盘 + 零相位，只编码"针孔大概多大"
+    """
+    if cfg.probe_init == "ones":
+        return np.ones_like(rr, dtype=np.complex64)
+    from scipy.ndimage import gaussian_filter
+    R = cfg.probe_diam_px / 2.0
+    amp = (rr <= R).astype(np.float32)
+    s_px = float(cfg.probe_init_sigma) * R
+    if s_px > 0:
+        amp = gaussian_filter(amp, sigma=s_px)
+    P0 = amp.astype(np.complex64)
+    return (P0 / max(np.abs(P0).max(), 1e-12)).astype(np.complex64)
+
+def probe_init_err(cfg: Cfg, rr, probe):
+    """P0 相对真值探针的复相对误差，消去全局复因子。刻画探针先验强度的唯一数字。"""
+    from functions.common.metrics import align_global_factor
+    P0 = make_probe_init(cfg, rr)
+    Pt = probe.astype(np.complex64)
+    return float(np.linalg.norm(align_global_factor(P0, Pt)[0] - Pt)
+                 / max(np.linalg.norm(Pt), 1e-12))
+
 def make_positions(cfg: Cfg):
     """整数像素的方形光栅，左上角坐标 (I,2)。步长以 Δx1 为单位。"""
     p = [(cfg.scan_offset + r * cfg.step_px, cfg.scan_offset + c * cfg.step_px)

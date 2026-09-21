@@ -10,12 +10,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from functions.paperrepro.evaluate import evaluate, illum_roi, seam_diag
+from functions.paperrepro.evaluate import evaluate, illum_roi, probe_relerr, seam_diag
 from functions.paperrepro.losses import paper_loss
 from functions.paperrepro.model import ProPtyUNet
 from functions.paperrepro.optics import forward_ptycho, make_quad_phase
 from functions.paperrepro.report import _report_device, _save
 from functions.paperrepro.sample import make_positions, make_truth, simulate
+from functions.paperrepro.scene import build_scene
 
 PI = math.pi
 
@@ -141,16 +142,11 @@ def run(cfg: Cfg):
         torch.backends.cudnn.benchmark = True
     _report_device(cfg, device)
 
-    obj, probe, S1_np, rr = make_truth(cfg)
-    pos = make_positions(cfg)
-    rs, cs = illum_roi(cfg, probe, pos)
-    Q = make_quad_phase(cfg, device)
-    Im_np, Icl_np = simulate(cfg, obj, probe, pos, Q, device)
-
-    post = torch.from_numpy(pos).to(device)
-    Im = torch.from_numpy(Im_np).to(device)
-    Icl = torch.from_numpy(Icl_np).to(device)
-    S1 = torch.from_numpy(S1_np).to(device)
+    # 【三种算法共用】数据只能从 build_scene 来，见 functions/paperrepro/scene.py
+    sc = build_scene(cfg, device)
+    obj, probe, pos = sc.obj, sc.probe, sc.pos
+    (rs, cs), Q = sc.roi, sc.Q
+    post, Im, Icl, S1 = sc.post, sc.Imt, sc.Iclt, sc.S1t
     S2 = (Im < 1.0 - 1e-6).float()                       # Eq.(6)
 
     # ---- 网络输入: 零填充后的实测衍射图堆栈，全程固定 (Fig.1c) ----
@@ -165,8 +161,6 @@ def run(cfg: Cfg):
     npar = sum(p.numel() for p in net.parameters())
     print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
-    print(f"[net] 评价 ROI = 照明覆盖区 {rs.stop-rs.start}×{cs.stop-cs.start} "
-          f"(画布 {cfg.obj_size}²)")
 
     def decode():
         a_s, p_s, a_p, p_p = net(x)
@@ -247,6 +241,7 @@ def run(cfg: Cfg):
             m = evaluate(rec[rs, cs], obj[rs, cs])
             wrap, negamp = seam_diag(rec[rs, cs], obj[rs, cs], a_s_roi)
             m["wrap_frac"], m["signmix"] = wrap, negamp
+            m["relerr_p"] = probe_relerr(P.detach().cpu().numpy(), probe)
             hist.append({"it": it + 1, "loss": loss.item(), "real": real, **m})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 print(f"  it {it+1:5d} | loss {loss.item():.4e} (L1 {l1:.3e} L2 {l2:.3e}) | "
@@ -262,4 +257,5 @@ def run(cfg: Cfg):
         print(f"[net] 尾段 real error 斜率 {k:+.3e} "
               f"({'仍在下降' if k < 0 else '已回升 → 开始拟合噪声'})"
               + ("   （noise=none 时这一项没有意义）" if cfg.noise == "none" else ""))
-    _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, (rs, cs), pos)
+    _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, (rs, cs), pos,
+          tag="paper")

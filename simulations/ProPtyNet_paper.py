@@ -16,8 +16,10 @@ network", Optics and Lasers in Engineering 186 (2025) 108791.
     探针    只有 Loss2 的软约束, 【没有】二值 support 硬掩膜
     噪声    Table 1  全局归一化 -> 加噪 -> clip[0,1] (clip 产生过曝, 才有 S2)
 
-用法:
+用法（四种模式共用同一份仿真数据，见 functions/paperrepro/scene.py）:
     python ProPtyNet_paper.py check                       # 采样/几何自检
+    python ProPtyNet_paper.py ad   --preset paper --iters 2000   # 纯 AD 对照
+    python ProPtyNet_paper.py net  --preset paper --iters 2000   # DIP 对照
     python ProPtyNet_paper.py check  --preset smoke
     python ProPtyNet_paper.py run    --preset smoke --iters 400        # CPU 冒烟
     python ProPtyNet_paper.py run    --preset paper --iters 2000       # 需要 GPU
@@ -41,6 +43,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # 让 functions/ 可被 import
 
 from functions.paperrepro.solvers import run_check, run
+from functions.paperrepro.solvers_addip import run_ad, run_net
 
 PI = math.pi
 
@@ -107,6 +110,22 @@ class Cfg:
     lr_final_frac: float = 0.1   # cosine 衰减到 lr 的这个比例; 1.0 = 不衰减
     pos_batch: int = 0           # 0 = 全 batch（论文写法）; >0 = 每步随机取这么多位置
 
+    # ---- ad / net 两条对照算法（与 run 共用同一份仿真数据，见 paperrepro/scene.py）----
+    #   ad  : 物体 = 自由复数像素，振幅域损失
+    #   net : 物体 = 未训练 U-Net（softplus 振幅 + cos/sin 相位），振幅域损失
+    # 三者的迭代数都用上面的 iters，探针初值都用下面这两项。
+    probe_init: str = "ones"     # ones = P0 ≡ 1（与论文 run 的中性输出头一致）
+                                 # disk = 平滑圆盘 + 零相位（只给"针孔多大"这一条先验）
+    probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
+    obj_init_alpha: float = 0.0  # net: 0 = 严格相位中性，第 0 步 O ≡ 1，与 ad 同初值
+    lr_obj: float = 1e-2         # ad  物体自由像素
+    lr_prb: float = 1e-2         # ad  探针自由像素
+    lr_net: float = 1e-3         # net U-Net
+    lr_probe: float = 1e-2       # net 探针自由像素
+    lr_cosine: bool = False      # net 两个 lr 一起余弦退火到 0
+    weight_decay: float = 0.0    # net DIP 不该有权重衰减
+    fwd_chunk: int = 0           # 前向分块，0 = 全批量；显存不够时设 10 / 20
+
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
     seed: int = 0
@@ -148,7 +167,8 @@ def build_cfg(args) -> Cfg:
 
 def main():
     ap = argparse.ArgumentParser(description="ProPtyNet 严格复现 (Opt. Lasers Eng. 186 (2025) 108791)")
-    ap.add_argument("mode", choices=["check", "run"])
+    ap.add_argument("mode", choices=["check", "run", "ad", "net"],
+                    help="check=自检 | run=论文原版 ProPtyNet | ad=纯 AD | net=DIP")
     ap.add_argument("--preset", choices=list(PRESETS))
     for k, t in [("N", int), ("obj_size", int), ("z", float), ("det_pixel", float),
                  ("grid", int), ("step_px", int), ("probe_diam_um", float),
@@ -158,18 +178,23 @@ def main():
                  ("amp_image", str), ("phs_image", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
-                 ("seed", int), ("device", str), ("outdir", str), ("assets", str)]:
+                 ("seed", int), ("device", str), ("outdir", str), ("assets", str),
+                 ("probe_init", str), ("probe_init_sigma", float),
+                 ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
+                 ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
+                 ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
+    ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
     a = ap.parse_args()
 
     cfg = build_cfg(a)
     cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0
     os.makedirs(cfg.outdir, exist_ok=True)
-    (run_check if a.mode == "check" else run)(cfg)
+    {"check": run_check, "run": run, "ad": run_ad, "net": run_net}[a.mode](cfg)
 
 
 if __name__ == "__main__":

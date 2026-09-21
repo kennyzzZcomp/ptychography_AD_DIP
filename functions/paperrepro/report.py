@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:                      # 仅类型标注用，运行时不导入，无循环依赖
     from ProPtyNet_paper import Cfg
 
-def _save(cfg, rec, pc, obj, probe, hist, roi, positions):
+def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
     """全量存盘 + 三个尺度的对照图。
 
     rec / obj 是【完整 612² 画布】，roi 是照明覆盖区。npz 存全量，图上三行分别是
@@ -23,7 +23,7 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions):
     """
     rs, cs = roi
     os.makedirs(cfg.outdir, exist_ok=True)
-    np.savez_compressed(os.path.join(cfg.outdir, "paper_result.npz"),
+    np.savez_compressed(os.path.join(cfg.outdir, f"{tag}_result.npz"),
                         obj_rec=rec, obj_gt=obj, probe_rec=pc, probe_gt=probe,
                         roi=np.array([rs.start, rs.stop, cs.start, cs.stop]),
                         positions=positions, hist=json.dumps(hist),
@@ -94,9 +94,9 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions):
         ax[3, 2].axis("off"); ax[3, 3].axis("off")
 
     fig.tight_layout()
-    f = os.path.join(cfg.outdir, "paper_result.png")
+    f = os.path.join(cfg.outdir, f"{tag}_result.png")
     fig.savefig(f, dpi=130); plt.close(fig)
-    print(f"[net] 结果 -> {f}   (npz 里存的是【全画布】未裁剪的 obj_rec/obj_gt)")
+    print(f"[{tag}] 结果 -> {f}   (npz 里存的是【全画布】未裁剪的 obj_rec/obj_gt)")
 
 def _report_device(cfg: Cfg, device):
     """设备 + 显存估算。代码本身与设备无关：cfg.dev() 见到 CUDA 就用 CUDA。"""

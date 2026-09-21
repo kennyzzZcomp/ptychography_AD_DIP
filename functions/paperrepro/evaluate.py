@@ -49,6 +49,12 @@ def evaluate(rec, gt):
         "relerr": float(np.linalg.norm(rec - gt) / np.linalg.norm(gt)),
     }
 
+def probe_relerr(rec_p, gt_p):
+    """探针复相对误差，消去全局复因子。三种算法同一口径。"""
+    al = align_global_factor(rec_p, gt_p)[0]
+    den = np.linalg.norm(gt_p)
+    return float(np.linalg.norm(al - gt_p) / den) if den else float("nan")
+
 def seam_diag(rec, gt, amp_s):
     """参数化接缝诊断。
 
