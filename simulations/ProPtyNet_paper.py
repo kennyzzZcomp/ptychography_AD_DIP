@@ -143,12 +143,27 @@ class Cfg:
     assets: str = ""
     outdir: str = "results_paper"
     eval_every: int = 25
+    # 0 = 根据每次照明覆盖自适应；>0 = 固定画布中心方形评价区。
+    # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
+    eval_size: int = 0
 
     def __post_init__(self):
         # 采样关系 Eq.(2) 下面那条: Δx1·Δx2 = λz/M
         self.dx1 = self.wlength * self.z / (self.N * self.det_pixel)
         self.probe_diam_px = self.probe_diam_um * 1e-6 / self.dx1
         self.scan_span = self.N + (self.grid - 1) * self.step_px
+        if self.grid < 1 or self.step_px < 0:
+            raise ValueError(f"grid and step_px must be non-negative/positive: {self.grid=}, {self.step_px=}")
+        if self.scan_span > self.obj_size:
+            raise ValueError(
+                f"scan does not fit object canvas: N + (grid-1)*step_px = "
+                f"{self.scan_span} > obj_size={self.obj_size}. "
+                "Lower grid/step_px or increase --obj-size for every compared run."
+            )
+        if self.eval_size and not 7 <= self.eval_size <= self.obj_size:
+            raise ValueError(
+                f"eval_size must be 0 or within [7, obj_size]; got {self.eval_size}"
+            )
         self.n_pat = self.grid * self.grid
         self.scan_offset = (self.obj_size - self.scan_span) // 2
         # 3 次池化要求边长能被 8 整除；612 不行（612/8=76.5），必须再 pad
@@ -188,6 +203,7 @@ def main():
                  ("amp_image", str), ("phs_image", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
+                 ("eval_size", int),
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str),
                  ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str), ("probe_support_margin", float),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),

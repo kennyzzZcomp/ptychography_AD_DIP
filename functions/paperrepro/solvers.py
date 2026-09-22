@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from functions.paperrepro.evaluate import evaluate, illum_roi, probe_relerr, seam_diag
+from functions.paperrepro.evaluate import (evaluate, evaluation_roi, illum_roi,
+                                            probe_relerr, seam_diag)
 from functions.paperrepro.losses import paper_loss
 from functions.paperrepro.model import ProPtyUNet
 from functions.paperrepro.optics import forward_ptycho, make_quad_phase
@@ -76,10 +77,11 @@ def run_check(cfg: Cfg):
     with torch.no_grad():
         I = forward_ptycho(Ot, Pt, post, Q, cfg.N, chunk=8)
     Im = (I / I.max()).clamp(0, 1)
-    rs, cs = illum_roi(cfg, probe, pos)
-    print(f"[F] 照明覆盖 ROI = 行 {rs.start}..{rs.stop-1} 列 {cs.start}..{cs.stop-1}"
+    irs, ics = illum_roi(cfg, probe, pos)
+    rs, cs = evaluation_roi(cfg, probe, pos)
+    print(f"[F] 评价 ROI = 行 {rs.start}..{rs.stop-1} 列 {cs.start}..{cs.stop-1}"
           f"  ({rs.stop-rs.start}×{cs.stop-cs.start})，画布 {cfg.obj_size}"
-          f"  -> 只占 {100*(rs.stop-rs.start)**2/cfg.obj_size**2:.0f}% 面积，指标必须只在这里算")
+          f"  | 自适应照明框 {irs.stop-irs.start}×{ics.stop-ics.start}")
     print(f"[A] 衍射图 {tuple(I.shape)}  动态范围 [{Im.min():.2e}, {Im.max():.2e}]")
 
     with torch.no_grad():

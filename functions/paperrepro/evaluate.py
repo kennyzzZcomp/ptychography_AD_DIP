@@ -31,8 +31,29 @@ def illum_roi(cfg, probe, positions):
     r = np.where(m.any(1))[0]; c = np.where(m.any(0))[0]
     return slice(r[0], r[-1] + 1), slice(c[0], c[-1] + 1)
 
+
+def evaluation_roi(cfg, probe, positions):
+    """Return the ROI used by every reported object metric.
+
+    eval_size=0 preserves the historical behaviour: use the bounding box
+    inferred from this run's illumination coverage. A positive value selects
+    the same centred square for every run that shares obj_size; this is the
+    appropriate setting for overlap sweeps whose scan step changes the natural
+    illumination bounding box.
+    """
+    size = int(getattr(cfg, "eval_size", 0) or 0)
+    if size == 0:
+        return illum_roi(cfg, probe, positions)
+    if size < 7:
+        raise ValueError("eval_size must be 0 (adaptive) or at least 7 pixels for SSIM")
+    if size > cfg.obj_size:
+        raise ValueError(f"eval_size={size} exceeds obj_size={cfg.obj_size}")
+    start = (cfg.obj_size - size) // 2
+    stop = start + size
+    return slice(start, stop), slice(start, stop)
+
 def evaluate(rec, gt):
-    """论文判据 (3)(4)。传进来的 rec/gt 应当【已经裁到照明 ROI】。先消全局复因子。"""
+    """论文判据 (3)(4)。传入的 rec/gt 应已裁到统一的评价 ROI。先消全局复因子。"""
     rec = align_global_factor(rec, gt)[0]
     ra, ga = np.abs(rec), np.abs(gt)
     dra = ga.max() - ga.min()

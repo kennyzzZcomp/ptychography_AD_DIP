@@ -18,8 +18,8 @@ if TYPE_CHECKING:                      # 仅类型标注用，运行时不导入
 def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
     """全量存盘 + 三个尺度的对照图。
 
-    rec / obj 是【完整 612² 画布】，roi 是照明覆盖区。npz 存全量，图上三行分别是
-    全画布 / 照明 ROI / 探针放大 —— 只看 ROI 会漏掉画布外围的发散和扫描 footprint。
+    rec / obj 是【完整画布】，roi 是本次指标使用的评价区。npz 存全量，
+    图上三行分别是全画布 / 评价 ROI / 探针放大。
     """
     rs, cs = roi
     os.makedirs(cfg.outdir, exist_ok=True)
@@ -48,7 +48,7 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
         ("full canvas %d²" % cfg.obj_size,
          [(np.abs(ra), "rec amp"), (np.angle(ra), "rec phase"),
           (np.abs(obj), "GT amp"), (np.angle(obj), "GT phase")]),
-        ("illuminated ROI %d×%d" % (rs.stop - rs.start, cs.stop - cs.start),
+        ("evaluation ROI %d×%d" % (rs.stop - rs.start, cs.stop - cs.start),
          [(np.abs(ra[rs, cs]), "rec amp"), (np.angle(ra[rs, cs]), "rec phase"),
           (np.abs(obj[rs, cs]), "GT amp"), (np.angle(obj[rs, cs]), "GT phase")]),
         ("probe (zoom)",
