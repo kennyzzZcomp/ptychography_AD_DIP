@@ -1,4 +1,4 @@
-"""Smoothed discrete second-order TGV for the net object's amplitude only.
+"""Smoothed TGV2 for object amplitude and wrapped-gradient TGV2 for phase.
 
 R(u, v) = alpha1 mean |grad(u)-v|_2 + alpha0 mean |E(v)|_F.
 E(v) is the symmetric gradient, including both off-diagonal entries. Forward
@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 
-def tgv2_terms(u, v, mask, alpha0=2.0, alpha1=1.0, eps=1e-3):
+def tgv2_terms(u, v, mask, alpha0=2.0, alpha1=1.0, eps=1e-3, wrap_phase=False):
     """Return total, first-order, second-order terms on a boolean domain mask.
 
     u: (H,W); v: (2,H,W), components in row/column order.
@@ -21,6 +21,11 @@ def tgv2_terms(u, v, mask, alpha0=2.0, alpha1=1.0, eps=1e-3):
     valid = mask[:-1, :-1] & mask[1:, :-1] & mask[:-1, 1:]
     dy = u[1:, :-1] - u[:-1, :-1]
     dx = u[:-1, 1:] - u[:-1, :-1]
+    if wrap_phase:
+        # Principal angular increments, not differences across an atan2 branch cut.
+        # This circular extension equals scalar TGV locally when |delta phi| < pi.
+        dy = torch.atan2(torch.sin(dy), torch.cos(dy))
+        dx = torch.atan2(torch.sin(dx), torch.cos(dx))
     vy, vx = v[0], v[1]
     ry, rx = dy - vy[:-1, :-1], dx - vx[:-1, :-1]
     eyy = vy[1:, :-1] - vy[:-1, :-1]
@@ -66,22 +71,29 @@ class ObjectAmplitudeTGV:
         self.v = torch.nn.Parameter(torch.zeros((2, *domain.shape), device=device))
         self.opt = torch.optim.Adam([self.v], lr=cfg.tgv_lr)
 
-    def __call__(self, amplitude):
+    wrap_phase = False
+
+    def _prepare(self, amplitude):
         u = amplitude[self.roi]
         # Do NOT detach the mean: the prior must be invariant to object scale,
         # just like the VarPro data term. Otherwise shrinking O can lower R.
-        u = u / u[self.mask].mean().clamp_min(1e-12)
+        return u / u[self.mask].mean().clamp_min(1e-12)
+
+    def __call__(self, field):
+        u = self._prepare(field)
         for _ in range(self.cfg.tgv_inner_steps):
             self.opt.zero_grad(set_to_none=True)
             inner, _, _ = tgv2_terms(
                 u.detach(), self.v, self.mask,
                 self.cfg.tgv_alpha0, self.cfg.tgv_alpha1, self.cfg.tgv_eps,
+                wrap_phase=self.wrap_phase,
             )
             inner.backward()
             self.opt.step()
         return tgv2_terms(
             u, self.v.detach(), self.mask,
             self.cfg.tgv_alpha0, self.cfg.tgv_alpha1, self.cfg.tgv_eps,
+            wrap_phase=self.wrap_phase,
         )
 
     def save(self, path):
@@ -91,3 +103,28 @@ class ObjectAmplitudeTGV:
             mask=self.mask.cpu().numpy(),
             roi=np.array([rs.start, rs.stop, cs.start, cs.stop]),
         )
+
+
+def phase_from_head(phase_head):
+    """Phase in radians from (cos, sin) heads, with finite zero-vector handling.
+
+    Independent of the amplitude head and probe. Phase is undefined at a zero
+    vector; assign zero there with zero gradient instead of atan2(0, 0).
+    """
+    c, s = phase_head[0], phase_head[1]
+    valid = c.square() + s.square() > 1e-12
+    return torch.atan2(torch.where(valid, s, torch.zeros_like(s)),
+                       torch.where(valid, c, torch.ones_like(c)))
+
+
+class ObjectPhaseTGV(ObjectAmplitudeTGV):
+    """Independent auxiliary field; phase uses radians, never mean normalization.
+
+    Wrapped first differences avoid artificial 2*pi seams. This is a circular
+    TGV-like extension, not global phase unwrapping or a convex scalar TGV solve.
+    Principal increments are ambiguous at pi; gradients there are not smooth.
+    """
+    wrap_phase = True
+
+    def _prepare(self, phase):
+        return phase[self.roi]

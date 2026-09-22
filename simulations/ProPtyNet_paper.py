@@ -136,9 +136,10 @@ class Cfg:
     weight_decay: float = 0.0    # net DIP 不该有权重衰减
     fwd_chunk: int = 0           # 前向分块，0 = 全批量；显存不够时设 10 / 20
 
-    # net only: L = amplitude-MSE + tgv_amp * mean(I_measured) * TGV2(A/mean(A)).
+    # net only: L = amplitude-MSE + mean(I) * (tgv_amp * R_amp + tgv_phase * R_phase).
     # The regularization domain is the nominal illuminated disk union, not eval ROI.
     tgv_amp: float = 0.0
+    tgv_phase: float = 0.0       # independent wrapped-gradient phase TGV (radians)
     tgv_alpha0: float = 2.0      # symmetric-gradient weight
     tgv_alpha1: float = 1.0      # gradient-minus-vector weight
     tgv_eps: float = 1e-3        # smoothed vector norm
@@ -159,6 +160,8 @@ class Cfg:
     def __post_init__(self):
         if not math.isfinite(self.tgv_amp) or self.tgv_amp < 0:
             raise ValueError("tgv_amp must be finite and >= 0")
+        if not math.isfinite(self.tgv_phase) or self.tgv_phase < 0:
+            raise ValueError("tgv_phase must be finite and >= 0")
         if any(not math.isfinite(v) or v <= 0 for v in
                (self.tgv_alpha0, self.tgv_alpha1, self.tgv_eps, self.tgv_lr)):
             raise ValueError("TGV alpha0, alpha1, eps and lr must be finite and > 0")
@@ -224,7 +227,7 @@ def main():
                  ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str), ("probe_support_margin", float),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
-                 ("tgv_amp", float), ("tgv_alpha0", float), ("tgv_alpha1", float),
+                 ("tgv_amp", float), ("tgv_phase", float), ("tgv_alpha0", float), ("tgv_alpha1", float),
                  ("tgv_eps", float), ("tgv_inner_steps", int), ("tgv_lr", float),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
@@ -236,8 +239,8 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
-    if cfg.tgv_amp > 0 and a.mode != "net":
-        ap.error("--tgv-amp is implemented only for mode net")
+    if (cfg.tgv_amp > 0 or cfg.tgv_phase > 0) and a.mode != "net":
+        ap.error("--tgv-amp and --tgv-phase are implemented only for mode net")
     cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0
     os.makedirs(cfg.outdir, exist_ok=True)
     {"check": run_check, "run": run, "ad": run_ad, "net": run_net}[a.mode](cfg)

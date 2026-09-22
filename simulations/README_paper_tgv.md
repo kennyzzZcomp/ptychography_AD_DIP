@@ -1,7 +1,61 @@
-# Object-amplitude TGV2 for ProPtyNet_paper net
+# Object-amplitude / phase TGV2 for ProPtyNet_paper net
 
-这项扩展对应命令里的 net（DIP 对照分支）。只对物体振幅加正则。
-默认 --tgv-amp 0，沿用原来的损失和优化器更新。
+这项扩展对应命令里的 net（DIP 对照分支）。振幅与相位有独立开关。
+默认 --tgv-amp 0 --tgv-phase 0，沿用原来的损失和优化器更新。
+
+## 新增：在已有振幅 TGV 上加相位 TGV
+
+沿用你的40%实验：obj-size624、grid4、step35、eval-size96、amp权重0.1。
+同步更新后的代码到 Colab 后直接运行（输出目录另命名，不覆盖原结果）：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py net --preset paper --obj-size 624 --iters 2000 --eval-size 96 --step-px 35 --grid 4 --tgv-amp 1e-1 --tgv-phase 1e-2 --outdir ov40_net_tgv_amp01_phase001
+```
+
+`--tgv-phase 0` 恢复仅振幅 TGV；`--tgv-amp 0 --tgv-phase 1e-2` 只开相位项。
+建议先保持振幅0.1不变，相位试0（已有对照）、1e-3、1e-2、1e-1。
+这些相位权重尚未经完整重建验证，不保证进一步提升。
+其余参数（尤其probe模式/初始化、seed、ROI）保持与已有对照一致。
+
+```python
+import subprocess, sys
+for phase_weight in [1e-3, 1e-2, 1e-1]:
+    subprocess.run([
+        sys.executable, "/content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py", "net",
+        "--preset", "paper", "--obj-size", "624", "--iters", "2000",
+        "--eval-size", "96", "--step-px", "35", "--grid", "4",
+        "--tgv-amp", "0.1", "--tgv-phase", str(phase_weight),
+        "--outdir", f"ov40_net_tgv_amp01_phase{phase_weight:g}",
+    ], check=True)
+```
+
+### 相位项的定义和边界
+
+从网络相位头(c,s)取phi=atan2(s,c)，不经过振幅或probe；零向量附近赋零相位，
+避免atan2(0,0)产生无效梯度。相位使用弧度，**不除以相位均值**。
+对每个相邻差分定义 D_c phi = atan2(sin(D phi), cos(D phi))，然后计算
+
+    R_phase(phi,w) = alpha1 * mean rho(D_c phi - w)
+                   + alpha0 * mean rho(E(w))
+    loss = data_MSE + mean(I_measured) * [lambda_amp * R_amp + lambda_phase * R_phase]
+
+这是 wrapped-gradient TGV2（圆周相位的TGV式扩展），不是对包装后的phi直接做普通
+实数TGV，也不是全局phase unwrapping。在局部相位差小于pi且有一致展开时与实数
+差分相符；相邻真实变化超过pi存在歧义，恰好pi处仍有分支不光滑性。
+不采用cos/sin分别TGV，因为那会处罚本来应允许的线性相位坡度的曲率。
+
+相位项对全局相位平移和逐像素2pi表示变化不敏感。使用与振幅相同的名义照明域，
+不依赖GT和eval ROI。两个辅助向量场与Adam状态相互独立；alpha0/alpha1/eps/
+inner-steps/lr目前共享配置。每个开启的项默认各做5步内迭代，因此双开有额外开销。
+低振幅区域的相位物理上较弱约束，这里仍均匀正则化；不通过减小振幅逃避相位项。
+
+相位辐条本身有真实跳变，过大权重可能抹掉细节；应同时检查相位SSIM、振幅PSNR、
+数据误差和恢复图。不能因为振幅改善就认定相位也改善。
+
+新增hist字段：tgv_phase、tgv_phase_first、tgv_phase_second、tgv_phase_weighted。
+cfg.tgv_phase是权重，hist.tgv_phase是未加权正则值。原振幅hist字段不变。
+相位辅助场保存为tgv_phase_aux.npz，原振幅仍为tgv_aux.npz。
+collect会用phase-TGV标签区分相位权重，CSV包含相位配置及最终损失分量。
 
 ## 数学定义及实现
 
@@ -37,7 +91,7 @@ TGV 直接从幅度头计算，不直接依赖相位输出或 probe。
 
 ## Colab：先在一个 overlap 比较四个权重
 
-先同步本次修改：simulations/ProPtyNet_paper.py、simulations/paper_overlap_colab.py、
+先同步修改：simulations/ProPtyNet_paper.py、simulations/paper_overlap_colab.py、
 functions/paperrepro/solvers_addip.py，以及新文件 functions/paperrepro/tgv.py。
 以下假定代码在 /content/ptychography_AD_DIP，Drive 已挂载。
 
@@ -95,4 +149,6 @@ tgv_aux.npz 保存最终辅助向量场、正则域mask和坐标（并非训练�
 
     python -m unittest discover -s tests -p test_paper_tgv.py -v
 
-仅小型CPU单元和16x16模拟网络接线检查；没有运行完整物理仿真或2000步训练。
+11项测试通过，包括跨±pi相位坡度、2pi不变性、梯度检查、零相位头、振幅单开/
+相位单开/双开接线及汇总标签。仅小型CPU单元和16x16模拟网络接线检查；
+没有运行完整物理仿真或2000步训练。

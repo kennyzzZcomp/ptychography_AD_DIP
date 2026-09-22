@@ -13,7 +13,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from functions.paperrepro.tgv import ObjectAmplitudeTGV, scan_domain, tgv2_terms
+from functions.paperrepro.tgv import (
+    ObjectAmplitudeTGV, ObjectPhaseTGV, phase_from_head, scan_domain, tgv2_terms,
+)
 from functions.paperrepro import solvers_addip
 from simulations.ProPtyNet_paper import Cfg
 from simulations.paper_overlap_colab import _row_from_npz
@@ -29,6 +31,49 @@ def small_cfg(**kw):
 
 
 class TGVTests(unittest.TestCase):
+    def test_phase_wrapped_affine_nullspace(self):
+        y, x = torch.meshgrid(torch.arange(9, dtype=torch.float64),
+                              torch.arange(10, dtype=torch.float64), indexing="ij")
+        phi = 3 + .2*y - .1*x
+        wrapped = torch.atan2(torch.sin(phi), torch.cos(phi))
+        v = torch.stack([torch.full_like(phi, .2), torch.full_like(phi, -.1)])
+        mask = torch.ones_like(phi, dtype=torch.bool)
+        self.assertLess(abs(tgv2_terms(wrapped, v, mask, wrap_phase=True)[0].item()), 1e-12)
+        self.assertGreater(tgv2_terms(wrapped, v, mask)[0].item(), .1)
+
+    def test_phase_periodicity_offset_and_gradcheck(self):
+        torch.manual_seed(5)
+        phi = (torch.randn(5, 6, dtype=torch.float64) * .2).requires_grad_()
+        v = torch.randn(2, 5, 6, dtype=torch.float64, requires_grad=True)
+        mask = torch.ones_like(phi, dtype=torch.bool)
+        f = lambda a, b: tgv2_terms(a, b, mask, wrap_phase=True)[0]
+        shifted = phi + 1.7 + 2*torch.pi*torch.randint(-3, 4, phi.shape)
+        torch.testing.assert_close(f(phi, v), f(shifted, v), atol=1e-6, rtol=1e-6)
+        self.assertTrue(torch.autograd.gradcheck(f, (phi, v)))
+
+    def test_phase_auxiliary_and_zero_head_gradients(self):
+        cfg = small_cfg(tgv_phase=.01)
+        reg = ObjectPhaseTGV(cfg, np.array([[4, 4]]), "cpu")
+        head = torch.zeros(2, 16, 16, requires_grad=True)
+        phase = phase_from_head(head)
+        loss = reg(phase)[0]
+        loss.backward()
+        self.assertEqual(loss.item(), 0)
+        self.assertTrue(torch.isfinite(head.grad).all())
+        # Nonconstant phase has finite nonzero gradients to phase heads only.
+        torch.manual_seed(8)
+        c = torch.ones(16, 16)
+        s = (.2 * torch.randn(16, 16)).requires_grad_()
+        loss = reg(phase_from_head(torch.stack([c, s])))[0]
+        loss.backward()
+        self.assertTrue(torch.isfinite(s.grad).all())
+        self.assertGreater(s.grad.abs().sum().item(), 0)
+
+    def test_phase_config_validation(self):
+        for bad in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                small_cfg(tgv_phase=bad)
+
     def test_affine_nullspace(self):
         y, x = torch.meshgrid(torch.arange(9, dtype=torch.float64),
                               torch.arange(10, dtype=torch.float64), indexing="ij")
@@ -126,6 +171,8 @@ class TGVTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()):
                 off = solvers_addip.run_net(small_cfg(outdir=td))
                 on = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01))
+                phase_only = solvers_addip.run_net(small_cfg(outdir=td, tgv_phase=.01))
+                both = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01, tgv_phase=.02))
                 again = solvers_addip.run_net(small_cfg(outdir=td))
             self.assertNotIn("tgv_amp", off[-1])
             self.assertEqual(off, again)
@@ -134,14 +181,21 @@ class TGVTests(unittest.TestCase):
                 self.assertAlmostEqual(row["loss"], row["data_loss"] + row["tgv_weighted"], places=6)
                 self.assertTrue(np.isfinite(row["tgv_amp"]))
             self.assertTrue((Path(td) / "tgv_aux.npz").exists())
+            self.assertTrue((Path(td) / "tgv_phase_aux.npz").exists())
+            self.assertNotIn("tgv_amp", phase_only[-1])
+            for row in phase_only + both:
+                self.assertAlmostEqual(row["loss"], row["data_loss"] +
+                                       row.get("tgv_weighted", 0) + row["tgv_phase_weighted"], places=6)
+                self.assertTrue(np.isfinite(row["tgv_phase"]))
 
     def test_collector_distinguishes_tgv(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            for weight, name in [(0, "baseline"), (.001, "regularized")]:
+            for weight, phase_weight, name in [(0, 0, "baseline"), (.001, 0, "regularized"),
+                                                (0, .01, "phase"), (.001, .01, "both")]:
                 p = root / name / "net_result.npz"
                 p.parent.mkdir()
-                cfg = small_cfg(tgv_amp=weight)
+                cfg = small_cfg(tgv_amp=weight, tgv_phase=phase_weight)
                 np.savez(p, cfg=json.dumps(asdict(cfg)),
                          hist=json.dumps([dict(it=2, loss=.1, data_loss=.09, tgv_weighted=.01)]),
                          roi=np.array([4, 12, 4, 12]))
@@ -150,6 +204,10 @@ class TGVTests(unittest.TestCase):
             self.assertNotEqual(baseline["condition_label"], reg["condition_label"])
             self.assertEqual(reg["tgv_amp"], .001)
             self.assertEqual(reg["data_loss_final"], .09)
+            phase = _row_from_npz(root / "phase/net_result.npz", root)
+            both = _row_from_npz(root / "both/net_result.npz", root)
+            self.assertEqual(phase["tgv_phase"], .01)
+            self.assertEqual(len({r["condition_label"] for r in (baseline, reg, phase, both)}), 4)
 
 
 if __name__ == "__main__":

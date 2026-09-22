@@ -74,7 +74,7 @@ OVERLAP_CASES: dict[int, tuple[int, int]] = {
 
 CONDITION_ORDER = ("ad_known", "dip_known", "ad_blind", "dip_blind")
 TGV_DEFAULTS = {
-    "tgv_amp": 0.0, "tgv_alpha0": 2.0, "tgv_alpha1": 1.0,
+    "tgv_amp": 0.0, "tgv_phase": 0.0, "tgv_alpha0": 2.0, "tgv_alpha1": 1.0,
     "tgv_eps": 1e-3, "tgv_inner_steps": 5, "tgv_lr": 1e-2,
 }
 DISPLAY_CONDITION_ORDER = (*CONDITION_ORDER, "ptylab_epie")
@@ -525,6 +525,8 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
         label = f"{label} ({probe_mode})"
     if mode == "net" and float(cfg.get("tgv_amp", 0)) > 0:
         label += f" + TGV(lambda={float(cfg['tgv_amp']):g})"
+    if mode == "net" and float(cfg.get("tgv_phase", 0)) > 0:
+        label += f" + phase-TGV(lambda={float(cfg['tgv_phase']):g})"
     step = int(cfg["step_px"])
     grid = int(cfg["grid"])
     target = manifest.get("target_overlap_pct")
@@ -579,7 +581,8 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
     final = hist[-1]
     row.update({key: cfg.get(key, default) for key, default in TGV_DEFAULTS.items()})
     for key in ("data_loss", "relative_data_loss", "tgv_amp", "tgv_first",
-                "tgv_second", "tgv_weighted"):
+                "tgv_second", "tgv_weighted", "tgv_phase", "tgv_phase_first",
+                "tgv_phase_second", "tgv_phase_weighted"):
         # tgv_amp in cfg is lambda; hist.tgv_amp is the unweighted regularizer.
         row[key + "_final"] = final.get(key)
     row["final_at"] = final.get("it", len(hist))
@@ -989,7 +992,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dip-lr-cosine", action="store_true", help="仅给 DIP 开启 cosine LR；默认关闭以保持基础对照")
     for key, default in TGV_DEFAULTS.items():
         run.add_argument("--" + key.replace("_", "-"), type=type(default), default=default,
-                         help="net-only object amplitude TGV2 setting")
+                         help="net-only object amplitude / wrapped-phase TGV2 setting")
     run.add_argument("--dry-run", action="store_true", help="只打印命令，不创建结果或运行实验")
     run.add_argument("--force", action="store_true", help="覆盖同目录的现有单次结果；默认安全地跳过匹配结果")
     run.add_argument("--keep-going", action="store_true", help="某次失败后继续后续任务")

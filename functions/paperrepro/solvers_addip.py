@@ -33,7 +33,7 @@ from functions.paperrepro.evaluate import evaluate, probe_relerr
 from functions.paperrepro.optics import forward_field
 from functions.paperrepro.report import _report_device, _save
 from functions.paperrepro.scene import build_scene
-from functions.paperrepro.tgv import ObjectAmplitudeTGV
+from functions.paperrepro.tgv import ObjectAmplitudeTGV, ObjectPhaseTGV, phase_from_head
 
 PI = math.pi
 
@@ -189,9 +189,10 @@ def run_net(cfg: Cfg):
     mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "net")
 
     tgv = ObjectAmplitudeTGV(cfg, sc.pos, device) if cfg.tgv_amp > 0 else None
+    tgv_phase = ObjectPhaseTGV(cfg, sc.pos, device) if cfg.tgv_phase > 0 else None
     # Fixed measured-data scale: equivalent to relative amplitude MSE + lambda R.
     # Retain the original data-MSE scale and the exact original path when off.
-    data_energy = sqrtIm.square().mean().detach() if tgv is not None else None
+    data_energy = sqrtIm.square().mean().detach() if tgv is not None or tgv_phase is not None else None
     if tgv is not None:
         tr, tc = tgv.roi
         print(f"[net] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
@@ -200,6 +201,13 @@ def run_net(cfg: Cfg):
         print(f"[net] TGV domain: nominal illuminated union in "
               f"[{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "
               f"pixels={int(tgv.mask.sum())}; mean(I)={data_energy.item():.4e}")
+    if tgv_phase is not None:
+        tr, tc = tgv_phase.roi
+        print(f"[net] object phase wrapped-gradient TGV2: lambda={cfg.tgv_phase:g}, "
+              f"alpha0={cfg.tgv_alpha0:g}, alpha1={cfg.tgv_alpha1:g}, "
+              f"inner_steps={cfg.tgv_inner_steps}, eps={cfg.tgv_eps:g}; radians")
+        print(f"[net] phase TGV domain: [{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "
+              f"pixels={int(tgv_phase.mask.sum())}; mean(I)={data_energy.item():.4e}")
 
     c_ns = slice(pad_n, pad_n + M)
 
@@ -208,7 +216,8 @@ def run_net(cfg: Cfg):
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
         # The explicit softplus amplitude bypasses the phase head entirely.
         amp = F.softplus(a_raw[0])[c_ns, c_ns] if tgv is not None else None
-        return O, _probe_of(mode, Pfix, Pr, Pi, Msup), amp
+        phase = phase_from_head(p_raw[0:2])[c_ns, c_ns] if tgv_phase is not None else None
+        return O, _probe_of(mode, Pfix, Pr, Pi, Msup), amp, phase
 
     opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
                                weight_decay=cfg.weight_decay)
@@ -223,7 +232,7 @@ def run_net(cfg: Cfg):
             if opt_prb is not None:
                 for g in opt_prb.param_groups:
                     g["lr"] = cfg.lr_probe * f
-        O, P, amp = decode()
+        O, P, amp, phase = decode()
         Ua = cabs(_fwd(cfg, O, P, post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
         # 不 detach —— 该方向梯度恒为 0，自由度被消掉。
@@ -235,6 +244,10 @@ def run_net(cfg: Cfg):
             reg, reg_first, reg_second = tgv(amp)
             weighted_reg = cfg.tgv_amp * data_energy * reg
             loss = data_loss + weighted_reg
+        if tgv_phase is not None:
+            phase_reg, phase_first, phase_second = tgv_phase(phase)
+            weighted_phase_reg = cfg.tgv_phase * data_energy * phase_reg
+            loss = loss + weighted_phase_reg
 
         opt_net.zero_grad(set_to_none=True)
         if opt_prb is not None:
@@ -258,6 +271,15 @@ def run_net(cfg: Cfg):
                         "tgv_second": reg_second.item(),
                         "tgv_weighted": weighted_reg.item(),
                     }
+                if tgv_phase is not None:
+                    tgv_stats.update({
+                        "data_loss": data_loss.item(),
+                        "relative_data_loss": (data_loss / data_energy.clamp_min(1e-20)).item(),
+                        "tgv_phase": phase_reg.item(),
+                        "tgv_phase_first": phase_first.item(),
+                        "tgv_phase_second": phase_second.item(),
+                        "tgv_phase_weighted": weighted_phase_reg.item(),
+                    })
             m = evaluate(rec[rs, cs], obj[rs, cs])
             rp = probe_relerr(pc, probe)
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
@@ -268,9 +290,15 @@ def run_net(cfg: Cfg):
                     print(f"           data {tgv_stats['data_loss']:.4e} | "
                           f"TGV {tgv_stats['tgv_amp']:.4e} | "
                           f"weighted TGV {tgv_stats['tgv_weighted']:.4e}", flush=True)
+                if tgv_phase is not None:
+                    print(f"           data {tgv_stats['data_loss']:.4e} | "
+                          f"phase TGV {tgv_stats['tgv_phase']:.4e} | "
+                          f"weighted phase TGV {tgv_stats['tgv_phase_weighted']:.4e}", flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="net")
     if tgv is not None:
         tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
+    if tgv_phase is not None:
+        tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     return hist
