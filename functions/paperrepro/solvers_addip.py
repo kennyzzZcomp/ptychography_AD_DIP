@@ -27,6 +27,7 @@ import torch.nn.functional as F
 
 from functions.addip.losses import cabs
 from functions.addip.model import ProPtyUNet as AddipUNet, make_field
+from functions.paperrepro.crosstalk import pinhole_mask
 from functions.paperrepro.evaluate import evaluate, probe_relerr
 from functions.paperrepro.optics import forward_field
 from functions.paperrepro.report import _report_device, _save
@@ -50,6 +51,44 @@ def _fwd(cfg, O, P, post, Q):
     return forward_field(O, P, post, Q, cfg.N, chunk=cfg.fwd_chunk)
 
 
+def _probe_setup(cfg, sc, probe, device, tag):
+    """三种探针参数化的唯一出口。返回 (mode, Pfix, Pr, Pi, Msup)。
+
+    support 档的做法是 P = complex(Pr,Pi) · M。掩膜外的参数梯度恒为 0，
+    永远停在初值 —— 与"只参数化掩膜内"数学等价，但不用改前向和存盘格式。
+    """
+    mode = cfg.probe_mode
+    if mode not in ("pixel", "truth", "support"):
+        raise ValueError(f"probe_mode={mode!r}，只能是 pixel | truth | support")
+    n = cfg.N
+    if mode == "truth":
+        print(f"[{tag}] 探针 = 【真值且冻结】非盲上界对照，不参与优化")
+        return mode, torch.from_numpy(probe.astype(np.complex64)).to(device), None, None, None
+
+    Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
+    Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
+    if mode == "pixel":
+        print(f"[{tag}] 探针 = 自由复数像素 {n}²（{2*n*n} 个未知量），"
+              f"从第 0 步起与物体联合更新")
+        return mode, None, Pr, Pi, None
+
+    m = pinhole_mask(cfg, cfg.probe_support_margin)
+    Msup = torch.from_numpy(m.astype(np.float32)).to(device)
+    k = int(m.sum())
+    print(f"[{tag}] 探针 = 硬支撑掩膜：只在半径 {cfg.probe_support_margin:g}×R "
+          f"= {cfg.probe_support_margin*cfg.probe_diam_px/2:.1f} px 的针孔内参数化，外面恒 0")
+    print(f"[{tag}]        有效未知量 {2*k} 个（自由像素是 {2*n*n} 个，降到 "
+          f"{100*k/(n*n):.2f}%）")
+    return mode, None, Pr, Pi, Msup
+
+
+def _probe_of(mode, Pfix, Pr, Pi, Msup):
+    if mode == "truth":
+        return Pfix
+    P = torch.complex(Pr, Pi)
+    return P if Msup is None else P * Msup
+
+
 # ============================================================================ #
 # 纯 AD ptychography
 # ============================================================================ #
@@ -66,26 +105,19 @@ def run_ad(cfg: Cfg):
     M, n = cfg.obj_size, cfg.N
     Or = nn.Parameter(torch.ones((M, M), device=device))
     Oi = nn.Parameter(torch.zeros((M, M), device=device))
-    truth_P = (cfg.probe_mode == "truth")
-    if truth_P:
-        Pfix = torch.from_numpy(probe.astype(np.complex64)).to(device)
-        Pr = Pi = None
-        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj}])
-    else:
-        Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
-        Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
-        opt = torch.optim.Adam([{"params": [Or, Oi], "lr": cfg.lr_obj},
-                                {"params": [Pr, Pi], "lr": cfg.lr_prb}])
     print(f"[ad] 物体 = 自由复数像素 {M}²（{2*M*M} 个未知量），初值 O ≡ 1·exp(i0)")
-    print(f"[ad] 探针 = " + ("【真值且冻结】非盲上界对照，不参与优化"
-                            if truth_P else f"自由复数像素 {n}²，从第 0 步起与物体联合更新"))
+    mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "ad")
+    groups = [{"params": [Or, Oi], "lr": cfg.lr_obj}]
+    if mode != "truth":
+        groups.append({"params": [Pr, Pi], "lr": cfg.lr_prb})
+    opt = torch.optim.Adam(groups)
     print(f"[ad] 全批量 {cfg.n_pat} 位置/步 × {cfg.iters} 步  "
           f"lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减）")
 
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
         O = torch.complex(Or, Oi)
-        P = Pfix if truth_P else torch.complex(Pr, Pi)
+        P = _probe_of(mode, Pfix, Pr, Pi, Msup)
         Ua = cabs(_fwd(cfg, O, P, post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度，与 run_net 用同一把尺。
         # 【不加这一行 AD 基本跑不动】数据经过 I/I.max() 全局归一，而初值 O≡1、P≡P0
@@ -152,26 +184,18 @@ def run_net(cfg: Cfg):
     print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
           + ("（第 0 步 O ≡ 1·exp(i0)，与 ad 初值相同）" if _a == 0 else ""))
 
-    truth_P = (cfg.probe_mode == "truth")
-    if truth_P:
-        Pfix = torch.from_numpy(probe.astype(np.complex64)).to(device)
-        Pr = Pi = None
-    else:
-        Pr = nn.Parameter(torch.from_numpy(sc.P0.real.copy()).to(device))
-        Pi = nn.Parameter(torch.from_numpy(sc.P0.imag.copy()).to(device))
-    print(f"[net] 探针 = " + ("【真值且冻结】非盲上界对照，不参与优化"
-                             if truth_P else f"自由复数像素 {n}²，从第 0 步起与物体联合更新"))
+    mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "net")
 
     c_ns = slice(pad_n, pad_n + M)
 
     def decode():
         a_raw, p_raw = net(x)
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
-        return O, (Pfix if truth_P else torch.complex(Pr, Pi))
+        return O, _probe_of(mode, Pfix, Pr, Pi, Msup)
 
     opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
                                weight_decay=cfg.weight_decay)
-    opt_prb = None if truth_P else torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
+    opt_prb = None if mode == "truth" else torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
 
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):

@@ -119,10 +119,14 @@ class Cfg:
     # 实测直接跑不出来。disk 只编码"针孔多大"，与 Loss2 的先验强度大致对等。
     probe_init: str = "ones"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
     probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
-    # pixel = 自由复数像素（盲重建）| truth = 冻结在真值上，不参与优化
-    # truth 是【非盲上界】诊断档：它重建不出来 = 数据本身信息不够，与探针无关。
-    # 只对 ad / net 生效；run（论文原版）的探针是网络输出的，无法冻结。
+    # 探针参数化（只对 ad / net 生效；run 的探针是网络输出的，改不了）
+    #   pixel   自由复数像素，2·N² = 524k 个未知量，其中只有针孔内那 ~5.5k 被数据定住
+    #   support 只在针孔内参数化，外面【恒等于 0】。未知量 524k -> 5.5k，直接消掉零空间
+    #   truth   冻结在真值上（非盲上界诊断：它也崩 = 数据本身不够，与探针无关）
     probe_mode: str = "pixel"
+    # support 档的掩膜半径 = margin × 针孔半径。1.2 允许一圈衍射光晕，更接近真实光路。
+    # 与论文 Loss2 的 s1_margin 是两回事，互不影响。
+    probe_support_margin: float = 1.0
     obj_init_alpha: float = 0.0  # net: 0 = 严格相位中性，第 0 步 O ≡ 1，与 ad 同初值
     lr_obj: float = 3e-2         # ad  物体自由像素（1e-2 在本几何下明显偏小）
     lr_prb: float = 3e-2         # ad  探针自由像素
@@ -185,7 +189,7 @@ def main():
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("seed", int), ("device", str), ("outdir", str), ("assets", str),
-                 ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str),
+                 ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str), ("probe_support_margin", float),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
                  ("fwd_chunk", int), ("noise_seed", int)]:
