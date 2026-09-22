@@ -100,6 +100,8 @@ def _probe_of(mode, Pfix, Pr, Pi, Msup):
 # ============================================================================ #
 
 def run_ad(cfg: Cfg):
+    if cfg.tgv_phase > 0:
+        raise ValueError("AD currently supports amplitude TGV only; use --tgv-phase 0")
     device = cfg.dev()
     torch.manual_seed(cfg.seed)
     _report_device(cfg, device)
@@ -120,6 +122,17 @@ def run_ad(cfg: Cfg):
     print(f"[ad] 全批量 {cfg.n_pat} 位置/步 × {cfg.iters} 步  "
           f"lr_obj={cfg.lr_obj:g} lr_prb={cfg.lr_prb:g}（不衰减）")
 
+    tgv = ObjectAmplitudeTGV(cfg, sc.pos, device) if cfg.tgv_amp > 0 else None
+    data_energy = sqrtIm.square().mean().detach() if tgv is not None else None
+    if tgv is not None:
+        tr, tc = tgv.roi
+        print(f"[ad] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
+              f"alpha0={cfg.tgv_alpha0:g}, alpha1={cfg.tgv_alpha1:g}, "
+              f"inner_steps={cfg.tgv_inner_steps}, eps={cfg.tgv_eps:g}")
+        print(f"[ad] TGV domain: nominal illuminated union in "
+              f"[{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "
+              f"pixels={int(tgv.mask.sum())}; mean(I)={data_energy.item():.4e}")
+
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
         O = torch.complex(Or, Oi)
@@ -130,7 +143,14 @@ def run_ad(cfg: Cfg):
         # 的预测幅度差着 1~2 个数量级（paper preset 实测 79×）。不消掉这个自由度，
         # 第 0 步 loss 的 99.9% 是纯尺度误差，Adam 的前几百步全在缩幅度而不是重建结构。
         Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
-        loss = F.mse_loss(Ua, sqrtIm)
+        data_loss = F.mse_loss(Ua, sqrtIm)
+        loss = data_loss
+        if tgv is not None:
+            # Exact complex magnitude, with finite PyTorch subgradient at O=0.
+            # Same normalized amplitude prior/domain/scale as net; no probe term.
+            reg, reg_first, reg_second = tgv(O.abs())
+            weighted_reg = cfg.tgv_amp * data_energy * reg
+            loss = data_loss + weighted_reg
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -142,13 +162,27 @@ def run_ad(cfg: Cfg):
                 pc = P.detach().cpu().numpy()
             m = evaluate(rec[rs, cs], obj[rs, cs])
             rp = probe_relerr(pc, probe)
+            tgv_stats = {}
+            if tgv is not None:
+                tgv_stats = {
+                    "data_loss": data_loss.item(),
+                    "relative_data_loss": (data_loss / data_energy.clamp_min(1e-20)).item(),
+                    "tgv_amp": reg.item(), "tgv_first": reg_first.item(),
+                    "tgv_second": reg_second.item(), "tgv_weighted": weighted_reg.item(),
+                }
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
-                         "relerr_p": rp, **m})
+                         "relerr_p": rp, **m, **tgv_stats})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 _log("ad", it + 1, loss.item(), real, m, rp)
+                if tgv is not None:
+                    print(f"           data {tgv_stats['data_loss']:.4e} | "
+                          f"TGV {tgv_stats['tgv_amp']:.4e} | "
+                          f"weighted TGV {tgv_stats['tgv_weighted']:.4e}", flush=True)
 
     print(f"[ad] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="ad")
+    if tgv is not None:
+        tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
     return hist
 
 

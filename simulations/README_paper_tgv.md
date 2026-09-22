@@ -1,7 +1,75 @@
 # Object-amplitude / phase TGV2 for ProPtyNet_paper net
 
-这项扩展对应命令里的 net（DIP 对照分支）。振幅与相位有独立开关。
+振幅TGV支持 ad（像素优化）和 net（DIP）；相位TGV仅支持 net。振幅与相位有独立开关。
 默认 --tgv-amp 0 --tgv-phase 0，沿用原来的损失和优化器更新。
+
+## 新增：AD + 振幅 TGV，以及四组对照
+
+AD对复数物体的精确幅值abs(O)使用现有ObjectAmplitudeTGV，不另造TV或二阶差分近似。
+与net共用名义照明域、可微均值归一化、辅助场内迭代、alpha/eps以及mean(I)尺度：
+
+    loss_AD = amplitude_MSE + tgv_amp * mean(I_measured) * TGV2(abs(O)/mean_Omega(abs(O)))
+
+不直接正则化相位或probe；二者仍可能通过数据项耦合间接受影响。辅助场独立优化。
+默认关闭时不创建TGV辅助场。AD的lr参数是lr-obj和lr-prb，不是net的lr-net和lr-probe。
+AD不支持tgv-phase>0，会明确报错。保存ad_result.npz与tgv_aux.npz，hist字段与net一致。
+
+沿用独立40%场景，Colab直接运行：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py ad --preset paper --obj-size 624 --iters 2000 --eval-size 96 --step-px 35 --grid 4 --probe-mode pixel --probe-init disk --seed 0 --lr-obj 0.03 --lr-prb 0.03 --tgv-amp 0.1 --tgv-phase 0 --outdir ov40_ad_tgv01
+```
+
+四组统一场景的完整单元格（不跳步；如果输出目录已存在则拒绝覆盖）：
+
+```python
+import subprocess, sys
+from pathlib import Path
+
+script = "/content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py"
+root = Path("/content/drive/MyDrive/ProPtyNet/tgv_four_way_ov40")  # 先挂载Drive
+for mode, weight, name in [("ad", 0, "ad"), ("ad", .1, "ad_tgv"),
+                           ("net", 0, "net"), ("net", .1, "net_tgv")]:
+    out = root / name
+    if out.exists():
+        raise RuntimeError(f"Refusing to overwrite {out}")
+    lr_args = (["--lr-obj", "0.03", "--lr-prb", "0.03"] if mode == "ad"
+               else ["--lr-net", "0.005", "--lr-probe", "0.02"])
+    subprocess.run([
+        sys.executable, script, mode, "--preset", "paper",
+        "--obj-size", "624", "--grid", "4", "--step-px", "35",
+        "--iters", "2000", "--eval-size", "96", "--eval-every", "25",
+        "--probe-mode", "pixel", "--probe-init", "disk", "--seed", "0",
+        "--tgv-amp", str(weight), "--tgv-phase", "0", "--outdir", str(out),
+        *lr_args,
+    ], check=True)
+```
+
+net学习率取自用户提供的成功40%结果文件（0.005 / 0.02）；AD取当前默认0.03 / 0.03，
+不是声称AD已调到最优。先筛查，再给两种表示相近的学习率和正则搜索预算。
+四组scene指纹应完全一致。同一表示的有/无TGV组先保持学习率一致。
+历史AD评价物体取更新后值、net取当前更新前预测的差异本次未修改；不能据单步对齐
+推导严格时间优劣。主比较先看充分迭代下的恢复质量，并保留原始历史数据。
+
+汇总：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/paper_overlap_colab.py collect --root /content/drive/MyDrive/ProPtyNet/tgv_four_way_ov40
+```
+
+批量runner的旧`--tgv-amp`仍只指定net权重，避免改变之前的AD对照。
+在`paper_overlap_colab.py run`中，AD用新增`--ad-tgv-amp 0.1`显式开启；
+alpha0/alpha1/eps/inner-steps/lr共用，phase仅传给net。主脚本直接运行ad时仍用`--tgv-amp`。
+汇总标签现在能区分AD与AD+TGV，断点检查也会核对AD正则配置。
+
+新增AD测试：
+
+```text
+python -m unittest discover -s tests -p test_paper_ad_tgv.py -v
+```
+
+6项小型CPU测试覆盖truth/pixel/support接线、幅值先验一致性、梯度、默认关闭、
+AD相位参数拒绝、batch参数与collect标签。没有在本地运行完整实验。
 
 ## 新增：在已有振幅 TGV 上加相位 TGV
 

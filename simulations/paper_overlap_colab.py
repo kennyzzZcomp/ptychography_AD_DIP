@@ -170,6 +170,14 @@ def _paper_actual_overlap(step_px: int) -> float:
     return 100.0 * (1.0 - step_px / probe_diam_px)
 
 
+def _tgv_settings(args, mode):
+    settings = {key: getattr(args, key) for key in TGV_DEFAULTS}
+    if mode == "ad":
+        # Keep historical --tgv-amp net-only in this batch runner; AD is opt-in.
+        settings.update(tgv_amp=getattr(args, "ad_tgv_amp", 0.0), tgv_phase=0.0)
+    return settings
+
+
 def _expected_cfg(args: argparse.Namespace, step: int, grid: int, mode: str,
                   probe_mode: str, seed: int) -> dict[str, Any]:
     expected = {
@@ -189,8 +197,8 @@ def _expected_cfg(args: argparse.Namespace, step: int, grid: int, mode: str,
         "noise_seed": args.noise_seed,
         "mode": mode,
     }
-    if mode == "net":
-        expected.update({key: getattr(args, key) for key in TGV_DEFAULTS})
+    if mode in ("ad", "net"):
+        expected.update(_tgv_settings(args, mode))
     return expected
 
 
@@ -242,9 +250,9 @@ def _build_command(args: argparse.Namespace, outdir: Path, mode: str,
         cmd.extend(["--snr", str(args.snr)])
     if mode == "net" and args.dip_lr_cosine:
         cmd.append("--lr-cosine")
-    if mode == "net":
-        for key in TGV_DEFAULTS:
-            cmd.extend(["--" + key.replace("_", "-"), str(getattr(args, key))])
+    if mode in ("ad", "net"):
+        for key, value in _tgv_settings(args, mode).items():
+            cmd.extend(["--" + key.replace("_", "-"), str(value)])
     if args.base_ch is not None:
         cmd.extend(["--base-ch", str(args.base_ch)])
     for name in ("lr_obj", "lr_prb", "lr_net", "lr_probe"):
@@ -523,7 +531,7 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
     label = manifest.get("condition_label") or f"{base_label}-{'known' if known else 'blind'}"
     if not known and mode != "epie":
         label = f"{label} ({probe_mode})"
-    if mode == "net" and float(cfg.get("tgv_amp", 0)) > 0:
+    if mode in ("ad", "net") and float(cfg.get("tgv_amp", 0)) > 0:
         label += f" + TGV(lambda={float(cfg['tgv_amp']):g})"
     if mode == "net" and float(cfg.get("tgv_phase", 0)) > 0:
         label += f" + phase-TGV(lambda={float(cfg['tgv_phase']):g})"
@@ -1005,6 +1013,8 @@ def build_parser() -> argparse.ArgumentParser:
     for key, default in TGV_DEFAULTS.items():
         run.add_argument("--" + key.replace("_", "-"), type=type(default), default=default,
                          help="net-only object amplitude / wrapped-phase TGV2 setting")
+    run.add_argument("--ad-tgv-amp", type=float, default=0.0,
+                     help="AD amplitude TGV weight; independent of net --tgv-amp, default off")
     run.add_argument("--dry-run", action="store_true", help="只打印命令，不创建结果或运行实验")
     run.add_argument("--force", action="store_true", help="覆盖同目录的现有单次结果；默认安全地跳过匹配结果")
     run.add_argument("--keep-going", action="store_true", help="某次失败后继续后续任务")
