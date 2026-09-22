@@ -142,10 +142,13 @@ class TGVTests(unittest.TestCase):
         class TinyNet(torch.nn.Module):
             def __init__(self, *args, **kwargs):
                 super().__init__()
+                self.e1 = torch.nn.Module()
+                self.e1.f = torch.nn.Sequential(torch.nn.Conv2d(4, 4, 1))
                 self.head_amp = torch.nn.Conv2d(4, 1, 1)
                 self.head_phs = torch.nn.Conv2d(4, 2, 1)
 
             def forward(self, x):
+                x = self.e1.f(x)
                 return self.head_amp(x)[0], self.head_phs(x)[0]
 
         rng = np.random.default_rng(0)
@@ -154,13 +157,14 @@ class TGVTests(unittest.TestCase):
         scene = SimpleNamespace(
             obj=gt.astype(np.complex64), probe=np.ones((8, 8), np.complex64),
             pos=np.array([[2, 2], [2, 6], [6, 2], [6, 6]]),
-            roi=(slice(4, 12), slice(4, 12)), Q=None, post=None,
+            roi=(slice(4, 12), slice(4, 12)), Q=None,
+            post=torch.tensor([[2, 2], [2, 6], [6, 2], [6, 6]]),
             sqrtIm=meas.sqrt(), Iclt=meas, Imt=meas,
         )
 
         def toy_forward(cfg, obj, probe, post, q):
             field = obj[4:12, 4:12] * probe
-            return torch.fft.fft2(field, norm="ortho").expand(4, -1, -1)
+            return torch.fft.fft2(field, norm="ortho").expand(len(post), -1, -1)
 
         with tempfile.TemporaryDirectory() as td:
             with patch.object(solvers_addip, "AddipUNet", TinyNet), \
@@ -173,9 +177,38 @@ class TGVTests(unittest.TestCase):
                 on = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01))
                 phase_only = solvers_addip.run_net(small_cfg(outdir=td, tgv_phase=.01))
                 both = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01, tgv_phase=.02))
+                timed = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01, tgv_phase=.02,
+                                                       timing_warmup=1))
                 again = solvers_addip.run_net(small_cfg(outdir=td))
+                scheduled = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01,
+                                                             measurement_schedule="0:2,1:1"))
+                full = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01,
+                                                       measurement_schedule="0:1"))
+                joint = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01,
+                    measurement_schedule="0:2,1:1", input_policy="follow_measurements"))
+                full_joint = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01,
+                    measurement_schedule="0:1", input_policy="follow_measurements"))
             self.assertNotIn("tgv_amp", off[-1])
+            self.assertEqual([r["active_patterns"] for r in scheduled], [1, 4])
+            self.assertEqual(scheduled[-1]["training_patterns_cumulative"], 5)
+            self.assertEqual(scheduled[-1]["evaluation_patterns_cumulative"], 4)
+            self.assertAlmostEqual(scheduled[-1]["full_data_loss"], scheduled[-1]["data_loss"])
+            self.assertEqual(full[-1]["training_patterns_cumulative"], 8)
+            self.assertEqual([r["active_input_channels"] for r in joint], [1, 4])
+            self.assertEqual([r["active_input_channels"] for r in scheduled], [4, 4])
+            for reference, recorded in zip(on, full_joint):
+                for key in reference:
+                    self.assertEqual(reference[key], recorded[key])
+            for reference, recorded in zip(on, full):
+                for key in reference:
+                    self.assertEqual(reference[key], recorded[key])
             self.assertEqual(off, again)
+            self.assertEqual(both, timed)
+            timing = json.loads((Path(td) / "net_timing.json").read_text())
+            self.assertEqual(timing["measured_iterations"], 1)
+            for stage in ("network_decode", "physics_and_data_loss", "amplitude_tgv",
+                          "phase_tgv", "outer_backward", "optimizer", "evaluation_and_logging"):
+                self.assertIn(stage, timing["stages"])
             self.assertIn("tgv_weighted", on[-1])
             for row in on:
                 self.assertAlmostEqual(row["loss"], row["data_loss"] + row["tgv_weighted"], places=6)

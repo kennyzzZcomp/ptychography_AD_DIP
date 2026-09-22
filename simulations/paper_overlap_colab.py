@@ -527,6 +527,10 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
         label += f" + TGV(lambda={float(cfg['tgv_amp']):g})"
     if mode == "net" and float(cfg.get("tgv_phase", 0)) > 0:
         label += f" + phase-TGV(lambda={float(cfg['tgv_phase']):g})"
+    if mode == "net" and cfg.get("measurement_schedule"):
+        label += (f" + measurements[{cfg['measurement_schedule']};"
+                  f"{cfg.get('measurement_policy', 'fixed')};"
+                  f"input={cfg.get('input_policy', 'full')}]")
     step = int(cfg["step_px"])
     grid = int(cfg["grid"])
     target = manifest.get("target_overlap_pct")
@@ -579,6 +583,14 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
         return row
 
     final = hist[-1]
+    row.update({key: cfg.get(key, default) for key, default in {
+        "measurement_schedule": "", "measurement_policy": "fixed",
+        "measurement_seed": 0, "timing_warmup": -1,
+        "input_policy": "full",
+    }.items()})
+    for key in ("elapsed_s", "active_patterns", "active_input_channels", "training_patterns_cumulative",
+                "evaluation_patterns_cumulative", "full_data_loss"):
+        row[key + "_final"] = final.get(key)
     row.update({key: cfg.get(key, default) for key, default in TGV_DEFAULTS.items()})
     for key in ("data_loss", "relative_data_loss", "tgv_amp", "tgv_first",
                 "tgv_second", "tgv_weighted", "tgv_phase", "tgv_phase_first",

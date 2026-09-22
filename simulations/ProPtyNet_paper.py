@@ -145,6 +145,11 @@ class Cfg:
     tgv_eps: float = 1e-3        # smoothed vector norm
     tgv_inner_steps: int = 5    # warm-started auxiliary-vector updates per net step
     tgv_lr: float = 1e-2
+    timing_warmup: int = -1     # net only: -1 off; >=0 synchronized stage timings
+    measurement_schedule: str = ""     # empty: legacy; explicit 0:1: timed full baseline
+    measurement_policy: str = "fixed"  # fixed | random | rotate; input stays full
+    measurement_seed: int = 0
+    input_policy: str = "full"  # full | follow_measurements (gathered first conv)
 
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
@@ -158,6 +163,15 @@ class Cfg:
     eval_size: int = 0
 
     def __post_init__(self):
+        if self.input_policy not in ("full", "follow_measurements"):
+            raise ValueError("input_policy must be full or follow_measurements")
+        if self.input_policy == "follow_measurements" and not self.measurement_schedule:
+            raise ValueError("follow_measurements requires explicit measurement_schedule")
+        from functions.paperrepro.sampling import MeasurementSchedule
+        MeasurementSchedule(self.measurement_schedule, self.grid, self.iters,
+                            self.measurement_policy, self.measurement_seed)
+        if self.timing_warmup < -1:
+            raise ValueError("timing_warmup must be -1 (disabled) or >= 0")
         if not math.isfinite(self.tgv_amp) or self.tgv_amp < 0:
             raise ValueError("tgv_amp must be finite and >= 0")
         if not math.isfinite(self.tgv_phase) or self.tgv_phase < 0:
@@ -229,6 +243,10 @@ def main():
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
                  ("tgv_amp", float), ("tgv_phase", float), ("tgv_alpha0", float), ("tgv_alpha1", float),
                  ("tgv_eps", float), ("tgv_inner_steps", int), ("tgv_lr", float),
+                 ("timing_warmup", int),
+                 ("measurement_schedule", str), ("measurement_policy", str),
+                 ("measurement_seed", int),
+                 ("input_policy", str),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
@@ -239,6 +257,10 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if cfg.measurement_schedule and a.mode != "net":
+        ap.error("--measurement-schedule is implemented only for mode net")
+    if cfg.timing_warmup >= 0 and a.mode != "net":
+        ap.error("--timing-warmup is implemented only for mode net")
     if (cfg.tgv_amp > 0 or cfg.tgv_phase > 0) and a.mode != "net":
         ap.error("--tgv-amp and --tgv-phase are implemented only for mode net")
     cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import math
+import json
 import time
 from pathlib import Path
 
@@ -34,6 +35,9 @@ from functions.paperrepro.optics import forward_field
 from functions.paperrepro.report import _report_device, _save
 from functions.paperrepro.scene import build_scene
 from functions.paperrepro.tgv import ObjectAmplitudeTGV, ObjectPhaseTGV, phase_from_head
+from functions.paperrepro.timing import StageTimer
+from functions.paperrepro.sampling import MeasurementSchedule
+from functions.paperrepro.input_channels import install_selected_input
 
 PI = math.pi
 
@@ -172,6 +176,7 @@ def run_net(cfg: Cfg):
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
     net = AddipUNet(cfg.n_pat, cfg.base_ch, n_fields=1, ph_ch=2).to(device)
+    input_layer = install_selected_input(net) if cfg.input_policy == "follow_measurements" else None
     print(f"[net] U-Net(addip 参数化) {sum(p.numel() for p in net.parameters())/1e6:.2f} M "
           f"参数 | 输入 {tuple(x.shape)}")
 
@@ -223,8 +228,31 @@ def run_net(cfg: Cfg):
                                weight_decay=cfg.weight_decay)
     opt_prb = None if mode == "truth" else torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
 
+    timer = StageTimer(device, cfg.timing_warmup)
+    curriculum = MeasurementSchedule(cfg.measurement_schedule, cfg.grid, cfg.iters,
+                                     cfg.measurement_policy, cfg.measurement_seed)
+    use_curriculum = bool(cfg.measurement_schedule)
+    selection_log, cumulative_patterns, evaluation_patterns = [], 0, 0
+    if use_curriculum:
+        print(f"[net] measurement curriculum {cfg.measurement_schedule}, "
+              f"policy={cfg.measurement_policy}; U-Net input policy={cfg.input_policy}")
+        print("[net] Early loss uses subset-wise VarPro (changed early objective); final stage is full.")
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
+        timer.start(it)
+        if use_curriculum:
+            indices, stride = curriculum.select(it)
+            sel = torch.as_tensor(indices, device=device)
+            active_post, target = post[sel], sqrtIm[sel]
+            if input_layer is not None:
+                input_layer.select(None if len(indices) == cfg.n_pat else sel)
+            cumulative_patterns += len(indices)
+            selection_log.append({"iteration": it + 1, "stride": stride,
+                                  "indices": indices.tolist()})
+        else:
+            active_post, target = post, sqrtIm
         if cfg.lr_cosine:
             f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
             for g in opt_net.param_groups:
@@ -232,34 +260,48 @@ def run_net(cfg: Cfg):
             if opt_prb is not None:
                 for g in opt_prb.param_groups:
                     g["lr"] = cfg.lr_probe * f
+        timer.mark("scheduler")
         O, P, amp, phase = decode()
-        Ua = cabs(_fwd(cfg, O, P, post, Q))
+        timer.mark("network_decode")
+        Ua = cabs(_fwd(cfg, O, P, active_post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
         # 不 detach —— 该方向梯度恒为 0，自由度被消掉。
-        Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
-        data_loss = F.mse_loss(Ua, sqrtIm)
+        Ua = Ua * ((Ua * target).sum() / (Ua * Ua).sum().clamp_min(1e-20))
+        data_loss = F.mse_loss(Ua, target)
+        timer.mark("physics_and_data_loss")
         loss = data_loss
         tgv_stats = {}
         if tgv is not None:
             reg, reg_first, reg_second = tgv(amp)
             weighted_reg = cfg.tgv_amp * data_energy * reg
             loss = data_loss + weighted_reg
+            timer.mark("amplitude_tgv")
         if tgv_phase is not None:
             phase_reg, phase_first, phase_second = tgv_phase(phase)
             weighted_phase_reg = cfg.tgv_phase * data_energy * phase_reg
             loss = loss + weighted_phase_reg
+            timer.mark("phase_tgv")
 
         opt_net.zero_grad(set_to_none=True)
         if opt_prb is not None:
             opt_prb.zero_grad(set_to_none=True)
+        timer.mark("zero_grad")
         loss.backward()
+        timer.mark("outer_backward")
         opt_net.step()
         if opt_prb is not None:
             opt_prb.step()
+        timer.mark("optimizer")
 
         if (it + 1) % cfg.eval_every == 0 or it == cfg.iters - 1:
             with torch.no_grad():
-                real = torch.linalg.vector_norm(Ua ** 2 - Icl).item()
+                Ua_eval = Ua
+                if use_curriculum and len(indices) < cfg.n_pat:
+                    Ua_eval = cabs(_fwd(cfg, O, P, post, Q))
+                    Ua_eval = Ua_eval * ((Ua_eval * sqrtIm).sum() /
+                                        Ua_eval.square().sum().clamp_min(1e-20))
+                    evaluation_patterns += cfg.n_pat
+                real = torch.linalg.vector_norm(Ua_eval ** 2 - Icl).item()
                 rec = O.detach().cpu().numpy()
                 pc = P.detach().cpu().numpy()
                 if tgv is not None:
@@ -282,8 +324,18 @@ def run_net(cfg: Cfg):
                     })
             m = evaluate(rec[rs, cs], obj[rs, cs])
             rp = probe_relerr(pc, probe)
+            curriculum_stats = {}
+            if use_curriculum:
+                curriculum_stats = {
+                    "active_patterns": len(indices), "measurement_stride": stride,
+                    "active_input_channels": len(indices) if input_layer is not None else cfg.n_pat,
+                    "training_patterns_cumulative": cumulative_patterns,
+                    "evaluation_patterns_cumulative": evaluation_patterns,
+                    "full_data_loss": F.mse_loss(Ua_eval, sqrtIm).item(),
+                    "elapsed_s": time.time() - t0,
+                }
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
-                         "relerr_p": rp, **m, **tgv_stats})
+                         "relerr_p": rp, **m, **tgv_stats, **curriculum_stats})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 _log("net", it + 1, loss.item(), real, m, rp)
                 if tgv is not None:
@@ -294,6 +346,8 @@ def run_net(cfg: Cfg):
                     print(f"           data {tgv_stats['data_loss']:.4e} | "
                           f"phase TGV {tgv_stats['tgv_phase']:.4e} | "
                           f"weighted phase TGV {tgv_stats['tgv_phase_weighted']:.4e}", flush=True)
+            timer.mark("evaluation_and_logging")
+        timer.finish()
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="net")
@@ -301,4 +355,12 @@ def run_net(cfg: Cfg):
         tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
+    timer.save(Path(cfg.outdir) / "net_timing.json")
+    if use_curriculum:
+        (Path(cfg.outdir) / "measurement_schedule.json").write_text(json.dumps({
+            "schedule": cfg.measurement_schedule, "policy": cfg.measurement_policy,
+            "seed": cfg.measurement_seed, "input": cfg.input_policy,
+            "early_objective": "subset-wise VarPro; not unbiased full-VarPro gradient",
+            "steps": selection_log,
+        }), encoding="utf-8")
     return hist
