@@ -73,6 +73,10 @@ OVERLAP_CASES: dict[int, tuple[int, int]] = {
 }
 
 CONDITION_ORDER = ("ad_known", "dip_known", "ad_blind", "dip_blind")
+TGV_DEFAULTS = {
+    "tgv_amp": 0.0, "tgv_alpha0": 2.0, "tgv_alpha1": 1.0,
+    "tgv_eps": 1e-3, "tgv_inner_steps": 5, "tgv_lr": 1e-2,
+}
 DISPLAY_CONDITION_ORDER = (*CONDITION_ORDER, "ptylab_epie")
 CONDITION_INFO = {
     "ad_known": ("AD-known", "ad", "truth"),
@@ -168,7 +172,7 @@ def _paper_actual_overlap(step_px: int) -> float:
 
 def _expected_cfg(args: argparse.Namespace, step: int, grid: int, mode: str,
                   probe_mode: str, seed: int) -> dict[str, Any]:
-    return {
+    expected = {
         "preset": "paper",
         "step_px": step,
         "grid": grid,
@@ -185,6 +189,9 @@ def _expected_cfg(args: argparse.Namespace, step: int, grid: int, mode: str,
         "noise_seed": args.noise_seed,
         "mode": mode,
     }
+    if mode == "net":
+        expected.update({key: getattr(args, key) for key in TGV_DEFAULTS})
+    return expected
 
 
 def _existing_result_matches(path: Path, expected: dict[str, Any]) -> tuple[bool, str]:
@@ -197,7 +204,7 @@ def _existing_result_matches(path: Path, expected: dict[str, Any]) -> tuple[bool
     for key, want in expected.items():
         if key == "mode":
             continue
-        got = cfg.get(key)
+        got = cfg.get(key, TGV_DEFAULTS.get(key))
         if isinstance(want, float):
             same = got is not None and math.isclose(float(got), want, rel_tol=1e-9, abs_tol=1e-12)
         else:
@@ -235,6 +242,9 @@ def _build_command(args: argparse.Namespace, outdir: Path, mode: str,
         cmd.extend(["--snr", str(args.snr)])
     if mode == "net" and args.dip_lr_cosine:
         cmd.append("--lr-cosine")
+    if mode == "net":
+        for key in TGV_DEFAULTS:
+            cmd.extend(["--" + key.replace("_", "-"), str(getattr(args, key))])
     if args.base_ch is not None:
         cmd.extend(["--base-ch", str(args.base_ch)])
     for name in ("lr_obj", "lr_prb", "lr_net", "lr_probe"):
@@ -513,6 +523,8 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
     label = manifest.get("condition_label") or f"{base_label}-{'known' if known else 'blind'}"
     if not known and mode != "epie":
         label = f"{label} ({probe_mode})"
+    if mode == "net" and float(cfg.get("tgv_amp", 0)) > 0:
+        label += f" + TGV(lambda={float(cfg['tgv_amp']):g})"
     step = int(cfg["step_px"])
     grid = int(cfg["grid"])
     target = manifest.get("target_overlap_pct")
@@ -565,6 +577,11 @@ def _row_from_npz(path: Path, root: Path, recompute_eval_size: int = 0) -> dict[
         return row
 
     final = hist[-1]
+    row.update({key: cfg.get(key, default) for key, default in TGV_DEFAULTS.items()})
+    for key in ("data_loss", "relative_data_loss", "tgv_amp", "tgv_first",
+                "tgv_second", "tgv_weighted"):
+        # tgv_amp in cfg is lambda; hist.tgv_amp is the unweighted regularizer.
+        row[key + "_final"] = final.get(key)
     row["final_at"] = final.get("it", len(hist))
     for metric in FINAL_METRICS:
         row[f"{metric}_final"] = _hist_value(final, metric)
@@ -970,6 +987,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lr-net", type=float, default=None)
     run.add_argument("--lr-probe", type=float, default=None)
     run.add_argument("--dip-lr-cosine", action="store_true", help="仅给 DIP 开启 cosine LR；默认关闭以保持基础对照")
+    for key, default in TGV_DEFAULTS.items():
+        run.add_argument("--" + key.replace("_", "-"), type=type(default), default=default,
+                         help="net-only object amplitude TGV2 setting")
     run.add_argument("--dry-run", action="store_true", help="只打印命令，不创建结果或运行实验")
     run.add_argument("--force", action="store_true", help="覆盖同目录的现有单次结果；默认安全地跳过匹配结果")
     run.add_argument("--keep-going", action="store_true", help="某次失败后继续后续任务")

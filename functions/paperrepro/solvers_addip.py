@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -32,6 +33,7 @@ from functions.paperrepro.evaluate import evaluate, probe_relerr
 from functions.paperrepro.optics import forward_field
 from functions.paperrepro.report import _report_device, _save
 from functions.paperrepro.scene import build_scene
+from functions.paperrepro.tgv import ObjectAmplitudeTGV
 
 PI = math.pi
 
@@ -186,12 +188,27 @@ def run_net(cfg: Cfg):
 
     mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "net")
 
+    tgv = ObjectAmplitudeTGV(cfg, sc.pos, device) if cfg.tgv_amp > 0 else None
+    # Fixed measured-data scale: equivalent to relative amplitude MSE + lambda R.
+    # Retain the original data-MSE scale and the exact original path when off.
+    data_energy = sqrtIm.square().mean().detach() if tgv is not None else None
+    if tgv is not None:
+        tr, tc = tgv.roi
+        print(f"[net] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
+              f"alpha0={cfg.tgv_alpha0:g}, alpha1={cfg.tgv_alpha1:g}, "
+              f"inner_steps={cfg.tgv_inner_steps}, eps={cfg.tgv_eps:g}")
+        print(f"[net] TGV domain: nominal illuminated union in "
+              f"[{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "
+              f"pixels={int(tgv.mask.sum())}; mean(I)={data_energy.item():.4e}")
+
     c_ns = slice(pad_n, pad_n + M)
 
     def decode():
         a_raw, p_raw = net(x)
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
-        return O, _probe_of(mode, Pfix, Pr, Pi, Msup)
+        # The explicit softplus amplitude bypasses the phase head entirely.
+        amp = F.softplus(a_raw[0])[c_ns, c_ns] if tgv is not None else None
+        return O, _probe_of(mode, Pfix, Pr, Pi, Msup), amp
 
     opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
                                weight_decay=cfg.weight_decay)
@@ -206,12 +223,18 @@ def run_net(cfg: Cfg):
             if opt_prb is not None:
                 for g in opt_prb.param_groups:
                     g["lr"] = cfg.lr_probe * f
-        O, P = decode()
+        O, P, amp = decode()
         Ua = cabs(_fwd(cfg, O, P, post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
         # 不 detach —— 该方向梯度恒为 0，自由度被消掉。
         Ua = Ua * ((Ua * sqrtIm).sum() / (Ua * Ua).sum().clamp_min(1e-20))
-        loss = F.mse_loss(Ua, sqrtIm)
+        data_loss = F.mse_loss(Ua, sqrtIm)
+        loss = data_loss
+        tgv_stats = {}
+        if tgv is not None:
+            reg, reg_first, reg_second = tgv(amp)
+            weighted_reg = cfg.tgv_amp * data_energy * reg
+            loss = data_loss + weighted_reg
 
         opt_net.zero_grad(set_to_none=True)
         if opt_prb is not None:
@@ -226,13 +249,28 @@ def run_net(cfg: Cfg):
                 real = torch.linalg.vector_norm(Ua ** 2 - Icl).item()
                 rec = O.detach().cpu().numpy()
                 pc = P.detach().cpu().numpy()
+                if tgv is not None:
+                    tgv_stats = {
+                        "data_loss": data_loss.item(),
+                        "relative_data_loss": (data_loss / data_energy.clamp_min(1e-20)).item(),
+                        "tgv_amp": reg.item(),
+                        "tgv_first": reg_first.item(),
+                        "tgv_second": reg_second.item(),
+                        "tgv_weighted": weighted_reg.item(),
+                    }
             m = evaluate(rec[rs, cs], obj[rs, cs])
             rp = probe_relerr(pc, probe)
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
-                         "relerr_p": rp, **m})
+                         "relerr_p": rp, **m, **tgv_stats})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 _log("net", it + 1, loss.item(), real, m, rp)
+                if tgv is not None:
+                    print(f"           data {tgv_stats['data_loss']:.4e} | "
+                          f"TGV {tgv_stats['tgv_amp']:.4e} | "
+                          f"weighted TGV {tgv_stats['tgv_weighted']:.4e}", flush=True)
 
     print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
     _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="net")
+    if tgv is not None:
+        tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
     return hist

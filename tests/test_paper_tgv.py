@@ -1,0 +1,156 @@
+"""Small CPU checks only: no training on the paper simulation."""
+import contextlib
+import io
+import json
+import tempfile
+import unittest
+from dataclasses import asdict
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from functions.paperrepro.tgv import ObjectAmplitudeTGV, scan_domain, tgv2_terms
+from functions.paperrepro import solvers_addip
+from simulations.ProPtyNet_paper import Cfg
+from simulations.paper_overlap_colab import _row_from_npz
+
+
+def small_cfg(**kw):
+    settings = dict(N=8, obj_size=16, grid=2, step_px=4, iters=2,
+                    eval_every=1, eval_size=8, device="cpu", probe_mode="truth")
+    settings.update(kw)
+    cfg = Cfg(**settings)
+    cfg.probe_diam_px = 6.0
+    return cfg
+
+
+class TGVTests(unittest.TestCase):
+    def test_affine_nullspace(self):
+        y, x = torch.meshgrid(torch.arange(9, dtype=torch.float64),
+                              torch.arange(10, dtype=torch.float64), indexing="ij")
+        u = 3 + .2*y - .1*x
+        v = torch.stack([torch.full_like(u, .2), torch.full_like(u, -.1)])
+        mask = torch.ones_like(u, dtype=torch.bool)
+        total, _, _ = tgv2_terms(u, v, mask)
+        self.assertLess(abs(total.item()), 1e-12)
+        self.assertGreater(tgv2_terms(u, torch.zeros_like(v), mask)[0].item(), .1)
+
+    def test_symmetric_cross_derivative(self):
+        y, x = torch.meshgrid(torch.arange(8, dtype=torch.float64),
+                              torch.arange(8, dtype=torch.float64), indexing="ij")
+        mask = torch.ones_like(x, dtype=torch.bool)
+        # Rotation has antisymmetric gradient, so E(v) is zero.
+        self.assertLess(tgv2_terms(x, torch.stack([-x, y]), mask)[2].item(), 1e-12)
+        shear = tgv2_terms(x, torch.stack([x, torch.zeros_like(x)]), mask)[2]
+        self.assertGreater(shear.item(), .7)
+
+    def test_autograd_and_mask_boundary(self):
+        torch.manual_seed(3)
+        u = torch.randn(5, 6, dtype=torch.float64, requires_grad=True)
+        v = torch.randn(2, 5, 6, dtype=torch.float64, requires_grad=True)
+        mask = torch.ones(5, 6, dtype=torch.bool)
+        mask[0] = False
+        self.assertTrue(torch.autograd.gradcheck(
+            lambda a, b: tgv2_terms(a, b, mask)[0], (u, v)))
+        baseline = tgv2_terms(u, v, mask)[0]
+        altered = u.detach().clone()
+        altered[0] += 1000
+        torch.testing.assert_close(tgv2_terms(altered, v, mask)[0], baseline)
+
+    def test_normalized_amp_scale_and_finite_gradients(self):
+        cfg = small_cfg(tgv_amp=.001)
+        positions = np.array([[2, 2], [2, 6], [6, 2], [6, 6]])
+        torch.manual_seed(7)
+        raw = torch.randn(16, 16, requires_grad=True)
+        amp = F.softplus(raw)
+        a, b = ObjectAmplitudeTGV(cfg, positions, "cpu"), ObjectAmplitudeTGV(cfg, positions, "cpu")
+        reg_a = a(amp)[0]
+        reg_b = b(amp * 7)[0]
+        torch.testing.assert_close(reg_a, reg_b, rtol=1e-5, atol=1e-6)
+        grad, = torch.autograd.grad(reg_a, raw)
+        self.assertTrue(torch.isfinite(grad).all())
+        self.assertGreater(grad.abs().sum().item(), 0)
+        self.assertTrue(torch.isfinite(a.v).all())
+        # Evaluation window does not affect the regularizer's domain.
+        cfg.eval_size = 12
+        other_roi, other_mask = scan_domain(cfg, positions)
+        self.assertEqual(other_roi, a.roi)
+        np.testing.assert_array_equal(other_mask, a.mask.numpy())
+
+    def test_constant_amp_stays_zero(self):
+        cfg = small_cfg()
+        regularizer = ObjectAmplitudeTGV(cfg, np.array([[4, 4]]), "cpu")
+        amp = torch.ones(16, 16, requires_grad=True)
+        loss = regularizer(amp)[0]
+        loss.backward()
+        self.assertEqual(loss.item(), 0)
+        self.assertTrue(torch.isfinite(amp.grad).all())
+        self.assertEqual(amp.grad.abs().sum().item(), 0)
+
+    def test_net_wiring_with_tiny_mock_scene(self):
+        # Test actual run_net control flow with a 16x16 toy network and FFT.
+        # No physical simulator, large U-Net, reconstruction report or GT assets.
+        class TinyNet(torch.nn.Module):
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+                self.head_amp = torch.nn.Conv2d(4, 1, 1)
+                self.head_phs = torch.nn.Conv2d(4, 2, 1)
+
+            def forward(self, x):
+                return self.head_amp(x)[0], self.head_phs(x)[0]
+
+        rng = np.random.default_rng(0)
+        gt = (1 + .1 * rng.random((16, 16))) * np.exp(1j * rng.random((16, 16)))
+        meas = torch.linspace(.1, 1, 4*8*8).reshape(4, 8, 8)
+        scene = SimpleNamespace(
+            obj=gt.astype(np.complex64), probe=np.ones((8, 8), np.complex64),
+            pos=np.array([[2, 2], [2, 6], [6, 2], [6, 6]]),
+            roi=(slice(4, 12), slice(4, 12)), Q=None, post=None,
+            sqrtIm=meas.sqrt(), Iclt=meas, Imt=meas,
+        )
+
+        def toy_forward(cfg, obj, probe, post, q):
+            field = obj[4:12, 4:12] * probe
+            return torch.fft.fft2(field, norm="ortho").expand(4, -1, -1)
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(solvers_addip, "AddipUNet", TinyNet), \
+                 patch.object(solvers_addip, "build_scene", return_value=scene), \
+                 patch.object(solvers_addip, "_fwd", toy_forward), \
+                 patch.object(solvers_addip, "_save"), \
+                 patch.object(solvers_addip, "_report_device"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                off = solvers_addip.run_net(small_cfg(outdir=td))
+                on = solvers_addip.run_net(small_cfg(outdir=td, tgv_amp=.01))
+                again = solvers_addip.run_net(small_cfg(outdir=td))
+            self.assertNotIn("tgv_amp", off[-1])
+            self.assertEqual(off, again)
+            self.assertIn("tgv_weighted", on[-1])
+            for row in on:
+                self.assertAlmostEqual(row["loss"], row["data_loss"] + row["tgv_weighted"], places=6)
+                self.assertTrue(np.isfinite(row["tgv_amp"]))
+            self.assertTrue((Path(td) / "tgv_aux.npz").exists())
+
+    def test_collector_distinguishes_tgv(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for weight, name in [(0, "baseline"), (.001, "regularized")]:
+                p = root / name / "net_result.npz"
+                p.parent.mkdir()
+                cfg = small_cfg(tgv_amp=weight)
+                np.savez(p, cfg=json.dumps(asdict(cfg)),
+                         hist=json.dumps([dict(it=2, loss=.1, data_loss=.09, tgv_weighted=.01)]),
+                         roi=np.array([4, 12, 4, 12]))
+            baseline = _row_from_npz(root / "baseline/net_result.npz", root)
+            reg = _row_from_npz(root / "regularized/net_result.npz", root)
+            self.assertNotEqual(baseline["condition_label"], reg["condition_label"])
+            self.assertEqual(reg["tgv_amp"], .001)
+            self.assertEqual(reg["data_loss_final"], .09)
+
+
+if __name__ == "__main__":
+    unittest.main()
