@@ -51,16 +51,8 @@ net学习率取自用户提供的成功40%结果文件（0.005 / 0.02）；AD取
 历史AD评价物体取更新后值、net取当前更新前预测的差异本次未修改；不能据单步对齐
 推导严格时间优劣。主比较先看充分迭代下的恢复质量，并保留原始历史数据。
 
-汇总：
-
-```python
-!python /content/ptychography_AD_DIP/simulations/paper_overlap_colab.py collect --root /content/drive/MyDrive/ProPtyNet/tgv_four_way_ov40
-```
-
-批量runner的旧`--tgv-amp`仍只指定net权重，避免改变之前的AD对照。
-在`paper_overlap_colab.py run`中，AD用新增`--ad-tgv-amp 0.1`显式开启；
-alpha0/alpha1/eps/inner-steps/lr共用，phase仅传给net。主脚本直接运行ad时仍用`--tgv-amp`。
-汇总标签现在能区分AD与AD+TGV，断点检查也会核对AD正则配置。
+旧批量汇总脚本已清理。各运行目录的 `ad_result.npz` / `net_result.npz`
+保留完整配置与历史指标；直接运行 AD 时仍用 `--tgv-amp`。
 
 新增AD测试：
 
@@ -68,8 +60,8 @@ alpha0/alpha1/eps/inner-steps/lr共用，phase仅传给net。主脚本直接运�
 python -m unittest discover -s tests -p test_paper_ad_tgv.py -v
 ```
 
-6项小型CPU测试覆盖truth/pixel/support接线、幅值先验一致性、梯度、默认关闭、
-AD相位参数拒绝、batch参数与collect标签。没有在本地运行完整实验。
+小型CPU测试覆盖truth/pixel/support接线、幅值先验一致性、梯度、默认关闭及
+AD相位参数拒绝。没有在本地运行完整实验。
 
 ## 新增：在已有振幅 TGV 上加相位 TGV
 
@@ -159,8 +151,8 @@ TGV 直接从幅度头计算，不直接依赖相位输出或 probe。
 
 ## Colab：先在一个 overlap 比较四个权重
 
-先同步修改：simulations/ProPtyNet_paper.py、simulations/paper_overlap_colab.py、
-functions/paperrepro/solvers_addip.py，以及新文件 functions/paperrepro/tgv.py。
+先同步修改：simulations/ProPtyNet_paper.py、
+functions/paperrepro/solvers_addip.py，以及 functions/paperrepro/tgv.py。
 以下假定代码在 /content/ptychography_AD_DIP，Drive 已挂载。
 
 下面沿用最近的 known-probe 实验。做 blind 时，所有组统一改成相同的
@@ -187,22 +179,9 @@ probe-mode（pixel 或 support），不要同时改变 probe 设置和正则权�
 基线。常量初始化时 TGV=0 是正常的，等非平坦结构出现后才产生惩罚。
 主实验应统一选择权重，不按每个 overlap 的 GT 分数各选一次最好权重。
 
-汇总：
-
-    !python /content/ptychography_AD_DIP/simulations/paper_overlap_colab.py collect \
-      --root /content/drive/MyDrive/ProPtyNet/tgv_amp_grid4_eval48
-
-不同 lambda 的 DIP 在曲线和表格中有不同标签。
-不应在同一汇总中混合相同lambda但不同alpha/eps/内迭代设置的重复实验；
-这些调参实验请另建根目录。summary_long.csv保存完整TGV配置及最终损失分量。
-
-## 固定权重跑五个 overlap
-
-    !python /content/ptychography_AD_DIP/simulations/paper_overlap_colab.py run \
-      --root /content/drive/MyDrive/ProPtyNet/tgv_amp_1e-3_grid4_eval48 \
-      --only dip_known --overlaps 80,70,60,50,40 \
-      --obj-size 624 --fixed-grid 4 --eval-size 48 \
-      --iters 2000 --seeds 0 --device cuda --tgv-amp 1e-3
+批量脚本已清理；需要固定权重的其它 overlap 时，沿用上面的主脚本命令，
+逐组显式设置 `--step-px`、`--grid`、`--obj-size`、`--eval-size` 和输出目录。
+不同正则配置请分开存放，便于从各自 NPZ 的 cfg 中核查。
 
 默认其余参数：alpha0=2，alpha1=1，eps=1e-3，inner_steps=5，lr=1e-2。
 都可以使用 --tgv-alpha0、--tgv-alpha1、--tgv-eps、
@@ -217,6 +196,6 @@ tgv_aux.npz 保存最终辅助向量场、正则域mask和坐标（并非训练�
 
     python -m unittest discover -s tests -p test_paper_tgv.py -v
 
-11项测试通过，包括跨±pi相位坡度、2pi不变性、梯度检查、零相位头、振幅单开/
-相位单开/双开接线及汇总标签。仅小型CPU单元和16x16模拟网络接线检查；
+测试覆盖跨±pi相位坡度、2pi不变性、梯度检查、零相位头、振幅单开/
+相位单开/双开接线。仅小型CPU单元和16x16模拟网络接线检查；
 没有运行完整物理仿真或2000步训练。

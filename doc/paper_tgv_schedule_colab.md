@@ -3,7 +3,6 @@
 Update the repository files in Colab before running. New runtime file:
 `functions/paperrepro/tgv_schedule.py`; changed entry point and solver:
 `simulations/ProPtyNet_paper.py`, `functions/paperrepro/solvers_addip.py`.
-Also sync `functions/paperrepro/branching.py` for reviewed old-checkpoint compatibility.
 
 Add this option to the otherwise unchanged normal `net` command:
 
@@ -14,8 +13,7 @@ Add this option to the otherwise unchanged normal `net` command:
 Updates 1–1000 use 0.1; updates 1001 onward use 0.01. Network, probe,
 Adam states, and TGV auxiliary states stay continuous. Learning rates are
 not changed by this option. No schedule means the original constant weight.
-This is not branch E (which resets Adam), and cannot be combined with
-`--resume` or `--checkpoint-out`. It currently applies only to normal `net`.
+It currently applies only to `net`.
 
 For the latest screenshot's roughly 60% configuration (step 24, not 35):
 

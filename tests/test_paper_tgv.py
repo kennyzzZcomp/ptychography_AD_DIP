@@ -4,7 +4,6 @@ import io
 import json
 import tempfile
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,7 +17,6 @@ from functions.paperrepro.tgv import (
 )
 from functions.paperrepro import solvers_addip
 from simulations.ProPtyNet_paper import Cfg
-from simulations.paper_overlap_colab import _row_from_npz
 
 
 def small_cfg(**kw):
@@ -220,28 +218,6 @@ class TGVTests(unittest.TestCase):
                 self.assertAlmostEqual(row["loss"], row["data_loss"] +
                                        row.get("tgv_weighted", 0) + row["tgv_phase_weighted"], places=6)
                 self.assertTrue(np.isfinite(row["tgv_phase"]))
-
-    def test_collector_distinguishes_tgv(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            for weight, phase_weight, name in [(0, 0, "baseline"), (.001, 0, "regularized"),
-                                                (0, .01, "phase"), (.001, .01, "both")]:
-                p = root / name / "net_result.npz"
-                p.parent.mkdir()
-                cfg = small_cfg(tgv_amp=weight, tgv_phase=phase_weight)
-                np.savez(p, cfg=json.dumps(asdict(cfg)),
-                         hist=json.dumps([dict(it=2, loss=.1, data_loss=.09, tgv_weighted=.01)]),
-                         roi=np.array([4, 12, 4, 12]))
-            baseline = _row_from_npz(root / "baseline/net_result.npz", root)
-            reg = _row_from_npz(root / "regularized/net_result.npz", root)
-            self.assertNotEqual(baseline["condition_label"], reg["condition_label"])
-            self.assertEqual(reg["tgv_amp"], .001)
-            self.assertEqual(reg["data_loss_final"], .09)
-            phase = _row_from_npz(root / "phase/net_result.npz", root)
-            both = _row_from_npz(root / "both/net_result.npz", root)
-            self.assertEqual(phase["tgv_phase"], .01)
-            self.assertEqual(len({r["condition_label"] for r in (baseline, reg, phase, both)}), 4)
-
 
 if __name__ == "__main__":
     unittest.main()

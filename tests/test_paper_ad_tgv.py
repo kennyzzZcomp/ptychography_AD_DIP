@@ -1,10 +1,8 @@
 """Tiny CPU checks: no paper scene or full reconstruction."""
 import contextlib
 import io
-import json
 import tempfile
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,7 +11,6 @@ import numpy as np
 import torch
 
 from simulations.ProPtyNet_paper import Cfg
-from simulations.paper_overlap_colab import _row_from_npz, _tgv_settings, TGV_DEFAULTS
 from functions.paperrepro import solvers_addip
 from functions.paperrepro.tgv import ObjectAmplitudeTGV
 
@@ -94,30 +91,6 @@ class ADTGVTests(unittest.TestCase):
     def test_phase_rejected_in_ad(self):
         with self.assertRaisesRegex(ValueError, "amplitude TGV only"):
             solvers_addip.run_ad(config(tgv_phase=.1))
-
-    def test_batch_runner_keeps_ad_opt_in(self):
-        args = SimpleNamespace(**{**TGV_DEFAULTS, "tgv_amp": .1, "tgv_phase": .01})
-        self.assertEqual(_tgv_settings(args, "ad")["tgv_amp"], 0)
-        args.ad_tgv_amp = .2
-        self.assertEqual(_tgv_settings(args, "ad")["tgv_amp"], .2)
-        self.assertEqual(_tgv_settings(args, "ad")["tgv_phase"], 0)
-        self.assertEqual(_tgv_settings(args, "net")["tgv_amp"], .1)
-
-    def test_collector_labels_ad_tgv(self):
-        with tempfile.TemporaryDirectory() as td:
-            labels = []
-            for weight in (0, .1):
-                path = Path(td)/str(weight)/"ad_result.npz"
-                path.parent.mkdir()
-                np.savez(path, cfg=json.dumps(asdict(config(tgv_amp=weight))),
-                         hist=json.dumps([{"it": 3, "loss": .02, "tgv_weighted": .001}]),
-                         roi=np.array([4, 12, 4, 12]))
-                row = _row_from_npz(path, Path(td))
-                labels.append(row["condition_label"])
-                self.assertEqual(row["tgv_amp"], weight)
-            self.assertNotEqual(*labels)
-            self.assertIn("TGV(lambda=0.1)", labels[1])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,12 +19,7 @@ TGV 在四个照明分组中均大幅降低误差，不能据此说它专门补�
 比值残差阈值为真值振幅最大值的 5%；真值振幅最小约 0.2，全部 9216 像素通过。
 诊断依赖 GT，只适用于这次仿真分析，不能直接作为无真值实验的停止准则。
 
-```powershell
-python simulations/diagnose_saved_errors.py --directory C:/Users/kennyzz/Downloads --output-dir doc/error_localization_repeat
-python -m unittest discover -s tests -p test_saved_error_diagnostics.py
-```
-
-输出目录必须不存在，避免覆盖结果。不需要 GPU。
+原诊断脚本和专用测试后来按用户要求清理；已生成的报告、JSON 和图仍保留作历史记录。
 
 ## 1. 累计照明与误差
 

@@ -26,8 +26,6 @@ class ScheduleTests(unittest.TestCase):
                 parse_tgv_schedule(spec, .1, 2000)
         with self.assertRaises(ValueError):
             parse_tgv_schedule('1:.01', 0, 3)
-        with self.assertRaises(ValueError):
-            Cfg(tgv_amp=.1, tgv_amp_schedule='1:.01', checkpoint_out='test.pt')
 
     def test_continuous_net_wiring_and_unchanged_constant_schedule(self):
         old_threads = torch.get_num_threads()

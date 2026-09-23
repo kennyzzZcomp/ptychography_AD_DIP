@@ -10,7 +10,7 @@ This is an external-baseline adapter, not an ePIE reimplementation.  The script:
 2. converts those arrays to PtyLab's documented CPM HDF5 input format;
 3. runs the unmodified ``PtyLab.Engines.ePIE`` with its stock blind settings;
 4. converts the effective probe back to the physical probe convention and saves
-   an ``epie_result.npz`` compatible with paper_overlap_colab.py's collector.
+   an ``epie_result.npz`` for subsequent analysis.
 
 Why PtyLab uses Fraunhofer here
 -------------------------------
@@ -29,7 +29,7 @@ Examples (run from the repository root):
     python simulations/ProPtyNet_paper_epie.py run \
         --step-px 24 --grid 4 --epochs 50 --outdir runs_paper_overlap/ov60/ptylab_epie/seed_0
 
-    # The five overlap cases used by paper_overlap_colab.py; completed NPZ files
+    # Five overlap cases; completed NPZ files
     # are skipped, so the same command safely resumes after a Colab disconnect.
     python simulations/ProPtyNet_paper_epie.py sweep \
         --root runs_paper_overlap --epochs 50
@@ -66,7 +66,9 @@ from functions.paperrepro.evaluate import evaluate, probe_relerr  # noqa: E402
 from functions.paperrepro.optics import forward_ptycho, make_quad_phase  # noqa: E402
 from functions.paperrepro.report import _save  # noqa: E402
 from functions.paperrepro.scene import build_scene  # noqa: E402
-from paper_overlap_colab import OVERLAP_CASES, collect_results  # noqa: E402
+OVERLAP_CASES = {
+    80: (12, 8), 70: (18, 6), 60: (24, 4), 50: (29, 4), 40: (35, 3),
+}
 
 
 def _now() -> str:
@@ -547,8 +549,6 @@ def run_sweep(args: argparse.Namespace) -> int:
         else:
             print(f"    完成: {result}")
 
-    if root.exists() and not args.no_collect:
-        collect_results(root, include_npz=args.include_npz, make_zip=True)
     if failures:
         for path, code in failures:
             print(f"[{code}] {path}")
@@ -599,8 +599,6 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--force", action="store_true")
     sweep.add_argument("--keep-going", action="store_true")
     sweep.add_argument("--verbose-logs", action="store_true")
-    sweep.add_argument("--no-collect", action="store_true")
-    sweep.add_argument("--include-npz", action="store_true", help="include NPZ files in overlap_report.zip")
     return parser
 
 

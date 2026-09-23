@@ -242,19 +242,7 @@ obj_init_alpha0、lr_net .005、lr_probe .02、无lr调度、base32、eval96、e
 - 生成 `doc/low_overlap_saved_audit_20260923.json`：11份结果、0读取错误。
 - 本报告；保留所有旧报告/NPZ/截图，不改算法，不启动Colab任务。
 
-本地轻量复核（使用新的输出文件名）：
-
-```powershell
-python -m unittest discover -s tests -p test_saved_reconstruction_audit.py -v
-python simulations/audit_saved_reconstructions.py --directory C:/Users/kennyzz/Downloads --output doc/paper_saved_audit_recheck.json
-```
-
-Colab只读复核（先上传NPZ到一个专用目录；无需运行重建）：
-
-```python
-%cd /content/ptychography_AD_DIP
-!python simulations/audit_saved_reconstructions.py --directory /content/audit_inputs --output /content/paper_saved_audit.json
-```
+上述审计脚本及专用测试后来按用户要求从仓库清理；本报告和已生成的 JSON 仍作为历史记录保留。
 
 这些测试只验证审计工具的小函数，不是重建质量测试，不证明机制。机器清单中的旧torch/跳步文件只用于来源记录，
 本阶段不延展这些方向。完整Goal保持未完成，第二阶段需用户授权。

@@ -191,9 +191,6 @@ def run_ad(cfg: Cfg):
 # ============================================================================ #
 
 def run_net(cfg: Cfg):
-    if cfg.resume or cfg.checkpoint_out:
-        from functions.paperrepro.branching import run_branch
-        return run_branch(cfg)
     from functions.paperrepro.tgv_schedule import parse_tgv_schedule, tgv_weight
     tgv_stages = parse_tgv_schedule(cfg.tgv_amp_schedule, cfg.tgv_amp, cfg.iters)
     tgv_weight_history = []

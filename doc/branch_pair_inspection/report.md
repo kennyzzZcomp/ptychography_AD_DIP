@@ -54,6 +54,5 @@ A的重建探针有39.91%能量落在GT支撑外，B为34.55%。
 本次只分析已有数组，没有训练、改loss、重新调参或用额外对齐提高正式结果。
 到此结束该诊断，不自动扩展实验。
 
-复现：`python simulations/audit_branch_pair.py --directory C:/Users/kennyzz/Downloads --output doc/branch_pair_inspection_new`
-输出目录必须不存在。原文件不修改。
+原分析脚本已随分支实验代码清理；本目录保留当时生成的研究记录，不能再直接运行该复现命令。
 详细数值与输入哈希：audit.json；同尺度图：object_comparison.png、probe_comparison.png。
