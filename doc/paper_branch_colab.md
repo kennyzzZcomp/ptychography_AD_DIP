@@ -10,6 +10,29 @@
 
 没有自动提交或推送代码；若用git更新Colab，应先自行提交并推送这些修改。
 
+### 旧版本在最后画图时报 KeyError: 'real'
+
+这是报表接口缺失字段，不是训练失败。修复只涉及
+`functions/paperrepro/report.py`：branch历史绘制实际的data_loss，不冒充旧的real误差。
+请同步这个文件到Colab。求解器源码哈希未改变，旧检查点仍可直接续跑。
+报错前已经依次写入.pt、branch_metadata.json和结果.npz；先用下面代码核验.pt，
+通过后直接执行第二格，不重跑第一格，也不要覆盖/修改检查点：
+
+```python
+from pathlib import Path
+import torch
+p = Path('/content/branch40_pixel/prefix/shared_step1000.pt')
+assert p.is_file(), '找不到检查点：先确认路径和Colab运行时是否还在'
+s = torch.load(p, map_location='cpu', weights_only=True)
+assert s['format'] == 'paper-branch-v1' and s['step'] == 1000
+assert s['network'] is not None and s['optimizer_object'] is not None
+print('可续跑：step =', s['step'], 'probe_mode =', s['cfg']['probe_mode'])
+del s
+```
+
+如果某个分支也已经跑完、只在画图时报相同错误，不要重复运行该分支。
+它的NPZ和元数据通常已存在，可供第三格汇总；新的分支使用修复后的report.py。
+
 ## 第一格：共享前1000步
 
 不加硬support。disk只是初始形状，训练中探针全画布可变化。

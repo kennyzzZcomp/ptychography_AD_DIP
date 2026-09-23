@@ -55,11 +55,11 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
          [(np.abs(pa[ps, ps]), "rec probe amp"), (np.angle(pa[ps, ps]), "rec probe phase"),
           (np.abs(probe[ps, ps]), "GT probe amp"), (np.angle(probe[ps, ps]), "GT probe phase")]),
     ]
-    for r, (tag, items) in enumerate(rows):
+    for r, (row_label, items) in enumerate(rows):
         for k, (im, t) in enumerate(items):
             a = ax[r, k]
             a.imshow(im, cmap="gray")
-            a.set_title(f"{t}\n[{tag}]" if k == 0 else t, fontsize=9)
+            a.set_title(f"{t}\n[{row_label}]" if k == 0 else t, fontsize=9)
             a.set_xticks([]); a.set_yticks([])
             if r == 0:      # 在全画布上标出 ROI
                 a.add_patch(plt.Rectangle((cs.start, rs.start), cs.stop - cs.start,
@@ -87,7 +87,17 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
         ax[3, 2].set_xlabel("iteration"); ax[3, 2].legend(fontsize=8)
         ax[3, 2].set_title("object metrics", fontsize=9); ax[3, 2].grid(alpha=.3)
         ax[3, 3].semilogy(it, [h["loss"] for h in hist], label="loss")
-        ax[3, 3].semilogy(it, [h["real"] for h in hist], "--", label="real error")
+        # Legacy solvers record an intensity residual named "real". Branch
+        # checkpoints instead record amplitude-MSE "data_loss". They are NOT
+        # interchangeable: plot available values under their actual names.
+        real_rows = [h for h in hist if "real" in h]
+        data_rows = [h for h in hist if "data_loss" in h]
+        if real_rows:
+            ax[3, 3].semilogy([h["it"] for h in real_rows],
+                             [h["real"] for h in real_rows], "--", label="real error")
+        elif data_rows:
+            ax[3, 3].semilogy([h["it"] for h in data_rows],
+                             [h["data_loss"] for h in data_rows], "--", label="data loss (amplitude MSE)")
         ax[3, 3].set_xlabel("iteration"); ax[3, 3].legend(fontsize=8)
         ax[3, 3].set_title("convergence", fontsize=9); ax[3, 3].grid(alpha=.3)
     else:

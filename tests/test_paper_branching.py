@@ -88,6 +88,28 @@ class BranchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resume(cfg.checkpoint_out, 'invalid_lr', lr_obj=.5)
 
+    def test_real_exporter_and_checkpoint_survives_plot_failure(self):
+        # Do not mock away the reporting interface: this caught the Colab
+        # KeyError('real') that state-only tests previously missed.
+        from functions.paperrepro.report import _save as real_save
+        cfg = self.config('export_failure', 1)
+        with patch('functions.paperrepro.branching._save', side_effect=KeyError('real')):
+            with self.assertRaises(KeyError):
+                run_branch(cfg, toy_scene)
+        state = load_checkpoint(cfg.checkpoint_out)
+        self.assertEqual(state['step'], 1)
+        self.assertNotIn('real', state['history'][-1])
+        for branch in ('continue', 'C'):
+            follow = self.resume(cfg.checkpoint_out, 'export_'+branch, branch=branch, steps=1)
+            with patch('functions.paperrepro.branching._save', real_save):
+                run_branch(follow, toy_scene)
+            tag = 'ad' if branch == 'C' else 'net'
+            self.assertTrue((Path(follow.outdir)/(tag+'_result.png')).is_file())
+            with np.load(Path(follow.outdir)/(tag+'_result.npz'), allow_pickle=False) as z:
+                history = json.loads(str(z['hist']))
+                self.assertIn('data_loss', history[-1])
+                self.assertNotIn('real', history[-1])
+
     def test_reject_unsupported_schedule(self):
         cfg = self.config('bad', 1)
         cfg.lr_cosine = True
