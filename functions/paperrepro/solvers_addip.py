@@ -179,8 +179,13 @@ def run_ad(cfg: Cfg):
                           f"TGV {tgv_stats['tgv_amp']:.4e} | "
                           f"weighted TGV {tgv_stats['tgv_weighted']:.4e}", flush=True)
 
-    print(f"[ad] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
-    _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="ad")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = time.time() - t0
+    print(f"[ad] 用时 {elapsed:.1f}s / {cfg.iters} it "
+          f"({1000 * elapsed / cfg.iters:.2f} ms/it；训练循环，不含数据生成、存盘和画图)")
+    _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos,
+          tag="ad", train_elapsed_s=elapsed)
     if tgv is not None:
         tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
     return hist
@@ -392,8 +397,13 @@ def run_net(cfg: Cfg):
             timer.mark("evaluation_and_logging")
         timer.finish()
 
-    print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
-    _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos, tag="net")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = time.time() - t0
+    print(f"[net] 用时 {elapsed:.1f}s / {cfg.iters} it "
+          f"({1000 * elapsed / cfg.iters:.2f} ms/it；训练循环，不含数据生成、存盘和画图)")
+    _save(cfg, rec, pc, obj, probe, hist, (rs, cs), pos,
+          tag="net", train_elapsed_s=elapsed)
     if tgv is not None:
         tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
     if tgv_phase is not None:

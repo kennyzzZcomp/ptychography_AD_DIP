@@ -284,7 +284,7 @@ def run(cfg: Cfg):
     hist[-1]["train_elapsed_s"] = elapsed
     hist[-1]["mean_iteration_s"] = elapsed / cfg.iters
     print(f"[paper] 用时 {elapsed:.1f}s / {cfg.iters} it "
-          f"({1000*elapsed/cfg.iters:.2f} ms/it)")
+          f"({1000*elapsed/cfg.iters:.2f} ms/it；训练循环，不含数据生成、存盘和画图)")
     if len(hist) > 8:
         tail = np.array([h["real"] for h in hist[-len(hist)//4:]])
         k = np.polyfit(np.arange(len(tail)), tail, 1)[0]
@@ -292,6 +292,6 @@ def run(cfg: Cfg):
               f"({'仍在下降' if k < 0 else '已回升 → 开始拟合噪声'})"
               + ("   （noise=none 时这一项没有意义）" if cfg.noise == "none" else ""))
     _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, (rs, cs), pos,
-          tag="paper")
+          tag="paper", train_elapsed_s=elapsed)
     if tgv is not None:
         tgv.save(Path(cfg.outdir) / "tgv_aux.npz")

@@ -15,7 +15,33 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:                      # 仅类型标注用，运行时不导入，无循环依赖
     from ProPtyNet_paper import Cfg
 
-def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
+def _save_convergence(cfg, hist, tag, plt):
+    """Save ROI metrics against completed optimizer updates, outside training timing."""
+    if not hist:
+        return
+    it = np.asarray([row["it"] for row in hist], dtype=np.int64)
+    psnr = np.asarray([row["psnr_amp"] for row in hist], dtype=np.float64)
+    relerr = np.asarray([row["relerr"] for row in hist], dtype=np.float64)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6.5), sharex=True)
+    for ax, values, ylabel in (
+        (axes[0], psnr, "Object amplitude PSNR (dB)"),
+        (axes[1], relerr, "Object complex relative error"),
+    ):
+        valid = np.isfinite(values)
+        ax.plot(it[valid], values[valid], linewidth=1.8, marker="o", markersize=2.5)
+        ax.set_ylabel(ylabel)
+        ax.grid(alpha=0.25)
+    axes[1].set_xlabel("Iteration")
+    axes[1].set_xlim(0, max(int(it[-1]), 1))
+    fig.suptitle(f"{tag}: reconstruction convergence (evaluation ROI)")
+    fig.tight_layout()
+    path = os.path.join(cfg.outdir, f"{tag}_convergence.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"[{tag}] 训练曲线 -> {path}")
+
+def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper", train_elapsed_s=None):
     """全量存盘 + 三个尺度的对照图。
 
     rec / obj 是【完整画布】，roi 是本次指标使用的评价区。npz 存全量，
@@ -23,11 +49,14 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
     """
     rs, cs = roi
     os.makedirs(cfg.outdir, exist_ok=True)
-    np.savez_compressed(os.path.join(cfg.outdir, f"{tag}_result.npz"),
-                        obj_rec=rec, obj_gt=obj, probe_rec=pc, probe_gt=probe,
-                        roi=np.array([rs.start, rs.stop, cs.start, cs.stop]),
-                        positions=positions, hist=json.dumps(hist),
-                        cfg=json.dumps(asdict(cfg), default=str))
+    result = dict(obj_rec=rec, obj_gt=obj, probe_rec=pc, probe_gt=probe,
+                  roi=np.array([rs.start, rs.stop, cs.start, cs.stop]),
+                  positions=positions, hist=json.dumps(hist),
+                  cfg=json.dumps(asdict(cfg), default=str))
+    if train_elapsed_s is not None:
+        result["train_elapsed_s"] = float(train_elapsed_s)
+        result["mean_iteration_s"] = float(train_elapsed_s) / cfg.iters
+    np.savez_compressed(os.path.join(cfg.outdir, f"{tag}_result.npz"), **result)
     try:
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -107,6 +136,8 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper"):
     f = os.path.join(cfg.outdir, f"{tag}_result.png")
     fig.savefig(f, dpi=130); plt.close(fig)
     print(f"[{tag}] 结果 -> {f}   (npz 里存的是【全画布】未裁剪的 obj_rec/obj_gt)")
+    if tag in ("paper", "ad", "net"):
+        _save_convergence(cfg, hist, tag, plt)
 
 def _report_device(cfg: Cfg, device):
     """设备 + 显存估算。代码本身与设备无关：cfg.dev() 见到 CUDA 就用 CUDA。"""
