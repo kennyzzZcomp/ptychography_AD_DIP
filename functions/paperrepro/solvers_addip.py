@@ -194,6 +194,9 @@ def run_net(cfg: Cfg):
     if cfg.resume or cfg.checkpoint_out:
         from functions.paperrepro.branching import run_branch
         return run_branch(cfg)
+    from functions.paperrepro.tgv_schedule import parse_tgv_schedule, tgv_weight
+    tgv_stages = parse_tgv_schedule(cfg.tgv_amp_schedule, cfg.tgv_amp, cfg.iters)
+    tgv_weight_history = []
     device = cfg.dev()
     torch.manual_seed(cfg.seed)
     if device.type == "cuda":
@@ -278,6 +281,11 @@ def run_net(cfg: Cfg):
             torch.cuda.synchronize(device)
     hist, t0, rec, pc = [], time.time(), None, None
     for it in range(cfg.iters):
+        amp_weight = tgv_weight(cfg.tgv_amp, tgv_stages, it)
+        if tgv_stages:
+            tgv_weight_history.append({"it": it+1, "tgv_amp_weight": amp_weight})
+            if it == 0 or amp_weight != tgv_weight_history[-2]["tgv_amp_weight"]:
+                print(f"[net] update {it+1}: TGV amplitude weight={amp_weight:g} (optimizer/auxiliary state retained)", flush=True)
         timer.start(it)
         if use_curriculum:
             indices, stride = curriculum.select(it)
@@ -310,7 +318,7 @@ def run_net(cfg: Cfg):
         tgv_stats = {}
         if tgv is not None:
             reg, reg_first, reg_second = tgv(amp)
-            weighted_reg = cfg.tgv_amp * data_energy * reg
+            weighted_reg = amp_weight * data_energy * reg
             loss = data_loss + weighted_reg
             timer.mark("amplitude_tgv")
         if tgv_phase is not None:
@@ -349,6 +357,7 @@ def run_net(cfg: Cfg):
                         "tgv_first": reg_first.item(),
                         "tgv_second": reg_second.item(),
                         "tgv_weighted": weighted_reg.item(),
+                        "tgv_amp_weight": amp_weight,
                     }
                 if tgv_phase is not None:
                     tgv_stats.update({
@@ -393,6 +402,13 @@ def run_net(cfg: Cfg):
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     timer.save(Path(cfg.outdir) / "net_timing.json")
+    if tgv_stages:
+        (Path(cfg.outdir) / "tgv_amp_schedule.json").write_text(json.dumps({
+            "schedule": cfg.tgv_amp_schedule, "initial_weight": cfg.tgv_amp,
+            "boundary_convention": "boundary counts completed updates; 1000 changes update 1001",
+            "optimizer_reset": False, "auxiliary_reset": False,
+            "steps": tgv_weight_history,
+        }, indent=2), encoding="utf-8")
     if use_curriculum:
         (Path(cfg.outdir) / "measurement_schedule.json").write_text(json.dumps({
             "schedule": cfg.measurement_schedule, "policy": cfg.measurement_policy,

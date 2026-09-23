@@ -86,21 +86,26 @@ def source_hashes():
 
 
 def compatible_sources(saved, current):
-    """Allow only the reviewed pre-E runner; all other solver hashes stay strict.
+    """Allow reviewed E/scheduler additions; other solver hashes stay strict.
 
     E adds config routing, not different forward/gradient/update calculations.
     Never rewrite the parent checkpoint or bypass arbitrary code mismatches.
     """
     saved = {k.replace('\\', '/'): v for k, v in saved.items()}
     current = {k.replace('\\', '/'): v for k, v in current.items()}
-    if saved == current:
-        return True
-    old_runner = '29d4d19e99ba4812f1e4e33fb0682ee7bf07d2c0289c516f2608a41994e55f1f'
-    key = 'functions/paperrepro/branching.py'
-    if saved.get(key) != old_runner or key not in current:
-        return False
-    return {k: v for k, v in saved.items() if k != key} == {
-        k: v for k, v in current.items() if k != key}
+    # Reviewed additions only: continuous-net scheduling does not change the
+    # _fwd/_probe helpers used by this checkpoint runner. Preserve old A-E files.
+    reviewed = {
+        'functions/paperrepro/branching.py': {
+            '29d4d19e99ba4812f1e4e33fb0682ee7bf07d2c0289c516f2608a41994e55f1f',
+            '122564a4b8acb944db81b24df920ecaef94b079ed9a125cff41314b3e9c7ddf6'},
+        'functions/paperrepro/solvers_addip.py': {
+            '65716ba88a4e40bc813c3626ddf61cfa44c3a979a8d94eac9010012b8b25c599'},
+    }
+    for key, hashes in reviewed.items():
+        if saved.get(key) in hashes and key in current:
+            saved[key] = current[key]
+    return saved == current
 
 
 def data_loss(cfg, obj, probe, scene):

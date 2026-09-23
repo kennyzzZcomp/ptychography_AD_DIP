@@ -140,6 +140,7 @@ class Cfg:
     # L = amplitude-MSE + mean(I) * (tgv_amp * R_amp + tgv_phase * R_phase).
     # The regularization domain is the nominal illuminated disk union, not eval ROI.
     tgv_amp: float = 0.0
+    tgv_amp_schedule: str = ""  # 1000:0.01 => update 1001 begins with lambda=.01
     tgv_phase: float = 0.0       # independent wrapped-gradient phase TGV (radians)
     tgv_alpha0: float = 2.0      # symmetric-gradient weight
     tgv_alpha1: float = 1.0      # gradient-minus-vector weight
@@ -167,6 +168,10 @@ class Cfg:
     branch: str = "continue"    # continue preserves Adam; A/B/C/D reset it
 
     def __post_init__(self):
+        from functions.paperrepro.tgv_schedule import parse_tgv_schedule
+        parse_tgv_schedule(self.tgv_amp_schedule, self.tgv_amp, self.iters)
+        if self.tgv_amp_schedule and (self.resume or self.checkpoint_out):
+            raise ValueError('TGV schedule is for continuous net runs, not checkpoint branches')
         if self.input_policy not in ("full", "follow_measurements"):
             raise ValueError("input_policy must be full or follow_measurements")
         if self.input_policy == "follow_measurements" and not self.measurement_schedule:
@@ -249,6 +254,7 @@ def main():
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
                  ("tgv_amp", float), ("tgv_phase", float), ("tgv_alpha0", float), ("tgv_alpha1", float),
+                 ("tgv_amp_schedule", str),
                  ("tgv_eps", float), ("tgv_inner_steps", int), ("tgv_lr", float),
                  ("timing_warmup", int),
                  ("measurement_schedule", str), ("measurement_policy", str),
@@ -272,6 +278,8 @@ def main():
         ap.error("--branch requires --resume")
 
     cfg = build_cfg(a)
+    if cfg.tgv_amp_schedule and a.mode != "net":
+        ap.error("--tgv-amp-schedule is implemented only for mode net")
     if cfg.measurement_schedule and a.mode != "net":
         ap.error("--measurement-schedule is implemented only for mode net")
     if cfg.timing_warmup >= 0 and a.mode != "net":
