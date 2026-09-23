@@ -32,10 +32,20 @@ class SamplingTests(unittest.TestCase):
             self.assertEqual(len(x), len(set(x)))
 
     def test_invalid_schedules(self):
-        for spec in ("1:2,3:1", "0:2", "0:3,4:1", "0:1,2:2,4:1",
+        for spec in ("1:2,3:1", "0:2", "0:9,4:1", "0:1,2:2,4:1",
                      "0:2,0:1", "0:2,10:1", "bad", "0:0,2:1"):
             with self.subTest(spec=spec), self.assertRaises(ValueError):
                 MeasurementSchedule(spec, 8, 10)
+
+    def test_ten_by_ten_fixed_stride_three(self):
+        plan = MeasurementSchedule("0:3,1000:1", 10, 4000)
+        expected = np.array([10*r+c for r in (0, 3, 6, 9) for c in (0, 3, 6, 9)])
+        for it in (0, 999):
+            np.testing.assert_array_equal(plan.select(it)[0], expected)
+        np.testing.assert_array_equal(plan.select(1000)[0], np.arange(100))
+        for policy in ("rotate", "random"):
+            with self.assertRaisesRegex(ValueError, "divide grid"):
+                MeasurementSchedule("0:3,1000:1", 10, 4000, policy)
 
     def test_actual_forward_subset_matches_full_and_backward(self):
         torch.manual_seed(1)

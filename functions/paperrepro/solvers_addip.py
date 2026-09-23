@@ -196,6 +196,10 @@ def run_ad(cfg: Cfg):
 # ============================================================================ #
 
 def run_net(cfg: Cfg):
+    from functions.paperrepro.lr_schedule import parse_lr_schedule, learning_rates
+    lr_stages = parse_lr_schedule(cfg.lr_schedule, cfg.lr_net, cfg.lr_probe,
+                                 cfg.iters, cfg.lr_cosine)
+    lr_history = []
     from functions.paperrepro.tgv_schedule import parse_tgv_schedule, tgv_weight
     tgv_stages = parse_tgv_schedule(cfg.tgv_amp_schedule, cfg.tgv_amp, cfg.iters)
     tgv_weight_history = []
@@ -258,11 +262,11 @@ def run_net(cfg: Cfg):
 
     c_ns = slice(pad_n, pad_n + M)
 
-    def decode():
+    def decode(amplitude_tgv_active):
         a_raw, p_raw = net(x)
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
         # The explicit softplus amplitude bypasses the phase head entirely.
-        amp = F.softplus(a_raw[0])[c_ns, c_ns] if tgv is not None else None
+        amp = F.softplus(a_raw[0])[c_ns, c_ns] if amplitude_tgv_active else None
         phase = phase_from_head(p_raw[0:2])[c_ns, c_ns] if tgv_phase is not None else None
         return O, _probe_of(mode, Pfix, Pr, Pi, Msup), amp, phase
 
@@ -282,8 +286,10 @@ def run_net(cfg: Cfg):
         if device.type == "cuda":
             torch.cuda.synchronize(device)
     hist, t0, rec, pc = [], time.time(), None, None
+    previous_stage = None
     for it in range(cfg.iters):
         amp_weight = tgv_weight(cfg.tgv_amp, tgv_stages, it)
+        amp_tgv_active = tgv is not None and amp_weight > 0
         if tgv_stages:
             tgv_weight_history.append({"it": it+1, "tgv_amp_weight": amp_weight})
             if it == 0 or amp_weight != tgv_weight_history[-2]["tgv_amp_weight"]:
@@ -300,15 +306,29 @@ def run_net(cfg: Cfg):
                                   "indices": indices.tolist()})
         else:
             active_post, target = post, sqrtIm
+        lr_net, lr_probe = learning_rates(cfg.lr_net, cfg.lr_probe, lr_stages, it)
         if cfg.lr_cosine:
             f = 0.5 * (1 + math.cos(PI * it / max(cfg.iters - 1, 1)))
-            for g in opt_net.param_groups:
-                g["lr"] = cfg.lr_net * f
-            if opt_prb is not None:
-                for g in opt_prb.param_groups:
-                    g["lr"] = cfg.lr_probe * f
+            lr_net, lr_probe = lr_net * f, lr_probe * f
+        for g in opt_net.param_groups:
+            g["lr"] = lr_net
+        if opt_prb is not None:
+            for g in opt_prb.param_groups:
+                g["lr"] = lr_probe
+        if lr_stages:
+            lr_history.append({"it": it + 1, "lr_net": lr_net, "lr_probe": lr_probe})
+        stage = (len(active_post), stride if use_curriculum else 1, amp_weight,
+                 learning_rates(cfg.lr_net, cfg.lr_probe, lr_stages, it))
+        if stage != previous_stage and (use_curriculum or lr_stages):
+            channels = len(active_post) if input_layer is not None else cfg.n_pat
+            print(f"[net] update {it+1}: measurements={len(active_post)}/{cfg.n_pat}, "
+                  f"axis_stride={stage[1]}, effective_step_px={stage[1]*cfg.step_px}, "
+                  f"input_channels={channels}, tgv_amp={amp_weight:g}, "
+                  f"lr_net={lr_net:g}, lr_probe={lr_probe:g}; optimizer state retained",
+                  flush=True)
+        previous_stage = stage
         timer.mark("scheduler")
-        O, P, amp, phase = decode()
+        O, P, amp, phase = decode(amp_tgv_active)
         timer.mark("network_decode")
         Ua = cabs(_fwd(cfg, O, P, active_post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
@@ -318,11 +338,15 @@ def run_net(cfg: Cfg):
         timer.mark("physics_and_data_loss")
         loss = data_loss
         tgv_stats = {}
-        if tgv is not None:
+        # Weight zero disables both auxiliary optimization and the outer penalty.
+        # Keep auxiliary state for possible later reactivation, but do no TGV work.
+        if amp_tgv_active:
             reg, reg_first, reg_second = tgv(amp)
             weighted_reg = amp_weight * data_energy * reg
             loss = data_loss + weighted_reg
             timer.mark("amplitude_tgv")
+        elif tgv is not None:
+            reg = reg_first = reg_second = weighted_reg = data_loss.new_zeros(())
         if tgv_phase is not None:
             phase_reg, phase_first, phase_second = tgv_phase(phase)
             weighted_phase_reg = cfg.tgv_phase * data_energy * phase_reg
@@ -360,6 +384,7 @@ def run_net(cfg: Cfg):
                         "tgv_second": reg_second.item(),
                         "tgv_weighted": weighted_reg.item(),
                         "tgv_amp_weight": amp_weight,
+                        "tgv_amp_active": amp_tgv_active,
                     }
                 if tgv_phase is not None:
                     tgv_stats.update({
@@ -383,6 +408,7 @@ def run_net(cfg: Cfg):
                     "elapsed_s": time.time() - t0,
                 }
             hist.append({"it": it + 1, "loss": loss.item(), "real": real,
+                         "lr_net": lr_net, "lr_probe": lr_probe,
                          "relerr_p": rp, **m, **tgv_stats, **curriculum_stats})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 _log("net", it + 1, loss.item(), real, m, rp)
@@ -409,6 +435,12 @@ def run_net(cfg: Cfg):
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     timer.save(Path(cfg.outdir) / "net_timing.json")
+    if lr_stages:
+        (Path(cfg.outdir) / "lr_schedule.json").write_text(json.dumps({
+            "schedule": cfg.lr_schedule,
+            "boundary_convention": "boundary counts completed updates; 1000 changes update 1001",
+            "optimizer_reset": False, "steps": lr_history,
+        }, indent=2), encoding="utf-8")
     if tgv_stages:
         (Path(cfg.outdir) / "tgv_amp_schedule.json").write_text(json.dumps({
             "schedule": cfg.tgv_amp_schedule, "initial_weight": cfg.tgv_amp,

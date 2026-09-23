@@ -1,5 +1,56 @@
 # 渐进测量约束 pilot：高重叠数据，先稀疏再补全
 
+## 10×10 → 先4×4，再全部100张（2026-09-24）
+
+Colab 拉取代码后，可直接运行可编辑配置脚本：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/run_paper_progressive.py
+```
+
+在 `simulations/run_paper_progressive.py` 顶部修改参数；默认如下：
+
+| 更新次数 | 输入和训练测量 | obj amp TGV | net LR | probe LR |
+|---|---|---|---|---|
+| 1–1000 | 行、列各取0/3/6/9，4×4=16张 | 0.1 | 0.005 | 0.02 |
+| 1001–4000 | 全部10×10=100张 | 0 | 0.0008 | 0.02 |
+
+`TOTAL_ITERS` 是总步数，`SWITCH_AFTER` 是已经完成的更新数；第二阶段从下一次更新开始。
+probe 始终为自由像素，不加support；默认 `PROBE_INIT="disk"`，可自行调整。
+`STEP_PX=12` 时主数据线性重叠约79.7%，子集实际步长36px，约39.1%，不是精确40%。
+10×10/step12需要至少620像素的物体画布，默认624。新旧比较请统一场景、ROI、seed等。
+4×4子集包含主网格四个角，扫描中心的外接范围相同，但照明覆盖/冗余仍不同。
+
+等价直接命令：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py net \
+    --preset paper --obj-size 624 --grid 10 --step-px 12 \
+    --iters 4000 --eval-size 96 --eval-every 25 --seed 0 --device cuda \
+    --probe-mode pixel --probe-init disk \
+    --measurement-schedule "0:3,1000:1" --measurement-policy fixed \
+    --input-policy follow_measurements \
+    --tgv-amp 0.1 --tgv-phase 0 --tgv-amp-schedule "1000:0" \
+    --lr-net 5e-3 --lr-probe 2e-2 --lr-schedule "1000:8e-4:2e-2" \
+    --outdir /content/ov80_grid10_progressive
+```
+
+注意事项：
+
+- 不加 `--lr-cosine`；它与显式 `--lr-schedule` 互斥，避免两个调度静默叠加。
+- 切换保留网络、probe和Adam状态；新通道的加入仍可能使输出跳变，不保证平滑。
+- 第一阶段实际只将16张输入首层卷积，并仅用这16张的测量数据反传。
+  全部100张已加载；全量数据仍用于不反传的评价、TGV固定域和归一化尺度。
+- TGV为0时停止辅助变量更新及TGV损失计算。日志中该阶段TGV值记0表示未计算，
+  不代表当前物体的数学TGV值恰为0；`tgv_amp_active`区分这两种情况。
+- 输出仍有 `net_result.npz`、`net_convergence.png` 及训练循环耗时；
+  另有 `measurement_schedule.json`、`tgv_amp_schedule.json`、`lr_schedule.json`。
+  NPZ的hist保存采样数、实际学习率和TGV状态，便于核对同步切换。
+- 不承诺加速或更好重建。训练时间包含循环内评价，排除场景生成和最终存盘/画图。
+- 启动脚本拒绝覆盖已有输出目录；重跑请修改 `OUTDIR`，不会删除旧结果。
+
+以下保留之前9×9实验的说明，不是本次10×10默认配置。
+
 这是用户“利用低重叠可恢复能力，加速高重叠训练”想法的第一个隔离实验。
 默认**固定全部U-Net输入通道，仅改变物理损失中的测量集合**。因此默认早期并非只看到了
 稀疏数据，也不声称减少采集剂量。新增`--input-policy follow_measurements`可让
@@ -52,7 +103,8 @@ for name, schedule, policy in experiments:
 - `0:1`：显式全量基线，记录时间与计数。
 - `0:3,600:1`：0-based第0–599步stride3，第600步起stride1。
 - 多阶段示例 `0:4,300:2,900:1` 要求grid可被4整除；这不是上面grid9的命令。
-- 每个stride须整除grid，且下一stride整除前一stride，最后必须是1且实际运行到。
+- fixed允许stride不整除grid，取range(0, grid, stride)；random/rotate仍要求整除。
+  下一stride须整除前一stride，最后必须是1且实际运行到。
 - fixed：固定余类0，逐阶段嵌套补全；random：每步同规模均匀无放回抽样；
   rotate：逐步轮换行列余类，stride3每9步覆盖全部81帧。
 - measurement-seed只控制选图，不改变场景与网络初始化。原seed仍同时影响场景探针和网络。

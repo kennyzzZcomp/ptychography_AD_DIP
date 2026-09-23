@@ -133,6 +133,7 @@ class Cfg:
     lr_net: float = 1e-3         # net U-Net
     lr_probe: float = 1e-2       # net 探针自由像素
     lr_cosine: bool = False      # net 两个 lr 一起余弦退火到 0
+    lr_schedule: str = ""       # net: "1000:8e-4:2e-2"; 第1001次更新切换net/probe LR
     weight_decay: float = 0.0    # net DIP 不该有权重衰减
     fwd_chunk: int = 0           # 前向分块，0 = 全批量；显存不够时设 10 / 20
 
@@ -165,6 +166,9 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        from functions.paperrepro.lr_schedule import parse_lr_schedule
+        parse_lr_schedule(self.lr_schedule, self.lr_net, self.lr_probe,
+                          self.iters, self.lr_cosine)
         from functions.paperrepro.tgv_schedule import parse_tgv_schedule
         parse_tgv_schedule(self.tgv_amp_schedule, self.tgv_amp, self.iters)
         if self.input_policy not in ("full", "follow_measurements"):
@@ -245,6 +249,7 @@ def main():
                  ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str), ("probe_support_margin", float),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
+                 ("lr_schedule", str),
                  ("tgv_amp", float), ("tgv_phase", float), ("tgv_alpha0", float), ("tgv_alpha1", float),
                  ("tgv_amp_schedule", str),
                  ("tgv_eps", float), ("tgv_inner_steps", int), ("tgv_lr", float),
@@ -262,6 +267,8 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if cfg.lr_schedule and a.mode != "net":
+        ap.error("--lr-schedule is implemented only for mode net")
     if cfg.tgv_amp_schedule and a.mode != "net":
         ap.error("--tgv-amp-schedule is implemented only for mode net")
     if cfg.measurement_schedule and a.mode != "net":

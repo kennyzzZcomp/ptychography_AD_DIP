@@ -7,8 +7,9 @@ import numpy as np
 class MeasurementSchedule:
     """Schedule syntax: '0:4,500:2,1000:1' = start iteration : axis stride.
 
-    Iterations are zero based. Each stride must divide grid, giving equal
-    cardinality for fixed/random/rotating controls. Final stage must use all.
+    Iterations are zero based. Fixed subsets use range(0, grid, stride), so
+    grid=10, stride=3 selects rows/columns 0,3,6,9 (16 frames). Random/rotate
+    still require divisibility for equal-cardinality controls. Final stage uses all.
     Local RNG never changes scene generation or network initialization.
     """
     def __init__(self, spec, grid, iters, policy="fixed", seed=0):
@@ -30,8 +31,10 @@ class MeasurementSchedule:
         if starts[-1] >= iters:
             raise ValueError("final full-data stage must start before iters")
         strides = [s for _, s in self.stages]
-        if any(s < 1 or grid % s for s in strides):
-            raise ValueError("each stride must be positive and divide grid")
+        if any(s < 1 or s > grid for s in strides):
+            raise ValueError("each stride must satisfy 1 <= stride <= grid")
+        if policy != "fixed" and any(grid % s for s in strides):
+            raise ValueError("random/rotate strides must divide grid")
         if any(a % b for a, b in zip(strides, strides[1:])) or strides[-1] != 1:
             raise ValueError("strides must form nested subsets ending in stride 1")
 
