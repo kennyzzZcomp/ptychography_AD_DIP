@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from simulations.ProPtyNet_paper import Cfg
-from functions.paperrepro.branching import run_branch, load_checkpoint, resume_config
+from functions.paperrepro.branching import run_branch, load_checkpoint, resume_config, compatible_sources
 from simulations.collect_paper_branches import collect
 
 
@@ -68,7 +68,7 @@ class BranchTests(unittest.TestCase):
             torch.testing.assert_close(uninterrupted[key], continued[key], rtol=0, atol=0)
         for key, value in uninterrupted['network'].items():
             torch.testing.assert_close(value, continued['network'][key], rtol=0, atol=0)
-        for branch in ('A', 'B', 'C', 'D'):
+        for branch in ('A', 'B', 'C', 'D', 'E'):
             cfg = self.resume(prefix.checkpoint_out, branch, branch=branch, steps=1)
             history = run_branch(cfg, lambda *_: self.fail('must not simulate'))
             state = load_checkpoint(cfg.checkpoint_out)
@@ -77,6 +77,20 @@ class BranchTests(unittest.TestCase):
             self.assertTrue(np.isfinite(history[0]['data_loss']))
             self.assertEqual(state['tgv_vector'] is None, branch in ('B', 'D'))
             self.assertTrue(state['optimizer_object']['state'])
+            if branch == 'E':
+                self.assertEqual(state['cfg']['tgv_amp'], .01)
+                self.assertEqual(state['cfg']['lr_probe'], .01)
+
+    def test_only_reviewed_runner_hash_is_compatible(self):
+        old = {'functions/paperrepro/branching.py':
+               '29d4d19e99ba4812f1e4e33fb0682ee7bf07d2c0289c516f2608a41994e55f1f',
+               'functions/paperrepro/tgv.py': 'unchanged'}
+        new = dict(old, **{'functions/paperrepro/branching.py': 'new'})
+        self.assertTrue(compatible_sources(old, new))
+        new['functions/paperrepro/tgv.py'] = 'modified'
+        self.assertFalse(compatible_sources(old, new))
+        old['functions/paperrepro/branching.py'] = 'unknown'
+        self.assertFalse(compatible_sources(old, new))
 
     def test_no_overwrite_and_no_scene_override(self):
         cfg = self.config('prefix', 1)

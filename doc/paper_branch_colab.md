@@ -1,5 +1,24 @@
 # Colab：共享前程与表示/TGV分支
 
+## 后续单支 E：将后半程 TGV 降为0.01
+
+同步新的 `simulations/ProPtyNet_paper.py`、`functions/paperrepro/branching.py`，
+并保留此前已修复的 `functions/paperrepro/report.py`。
+E与A/B一样重置优化器，继承原共享检查点的网络、探针、TGV辅助变量与学习率，
+仅将tgv_amp由0.1降为0.01。不重新跑前1000步，不从A/B最终状态开始。
+已对本轮旧runner哈希建立显式兼容，其他模型/物理/TGV源码哈希仍严格检查，不改写旧.pt。
+
+```python
+!python -u /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py net \
+    --resume /content/branch40_pixel/prefix/shared_step1000.pt \
+    --branch E --iters 1000 --device cuda \
+    --outdir /content/branch40_pixel/E
+```
+
+不要另外传 --tgv-amp。启动日志必须显示E、net、start=1000 + 1000、TGV=0.01、probe_mode=pixel。
+E目录必须新建/为空。完成后发送E/net_result.npz和E/branch_metadata.json即可。
+原来的汇总脚本仍只收集continue/A/B/C/D，不会自动包含E；这次不用重跑旧汇总命令。
+
 已实现；完整仿真只由用户手动在 Colab 启动。旧命令不带 checkpoint/resume 时不改变原来的求解路径。
 先把以下文件同步到 Colab 对应仓库（只上传主脚本是不够的）：
 

@@ -55,7 +55,7 @@ def resume_config(args, cfg_type):
     if getattr(args, "lr_obj", None) is not None and branch not in ("C", "D"):
         raise ValueError("--lr-obj override is only allowed for pixel branches C/D")
     if branch != "continue" and state["representation"] != "net":
-        raise ValueError("A/B/C/D must all start from the same NETWORK checkpoint")
+        raise ValueError("A/B/C/D/E must all start from the same NETWORK checkpoint")
     kw = dict(state["cfg"])
     quad_sign = kw.pop("quad_sign", -1.)
     for key in allowed - {"mode", "branch"}:
@@ -64,6 +64,10 @@ def resume_config(args, cfg_type):
             kw[key] = value
     kw["checkpoint_out"] = args.checkpoint_out or str(Path(args.outdir) / "checkpoint.pt")
     kw["branch"] = branch
+    if branch == "E":
+        if not math.isclose(kw["tgv_amp"], .1) or state["tgv_vector"] is None:
+            raise ValueError("E requires the shared TGV=0.1 network checkpoint")
+        kw["tgv_amp"] = .01
     if branch in ("B", "D"):
         kw["tgv_amp"] = 0.
     if branch in ("A", "C") and kw["tgv_amp"] <= 0:
@@ -79,6 +83,24 @@ def source_hashes():
              root/'functions/common/unet.py', root/'functions/paperrepro/tgv.py',
              root/'functions/paperrepro/optics.py', root/'functions/paperrepro/solvers_addip.py']
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+
+
+def compatible_sources(saved, current):
+    """Allow only the reviewed pre-E runner; all other solver hashes stay strict.
+
+    E adds config routing, not different forward/gradient/update calculations.
+    Never rewrite the parent checkpoint or bypass arbitrary code mismatches.
+    """
+    saved = {k.replace('\\', '/'): v for k, v in saved.items()}
+    current = {k.replace('\\', '/'): v for k, v in current.items()}
+    if saved == current:
+        return True
+    old_runner = '29d4d19e99ba4812f1e4e33fb0682ee7bf07d2c0289c516f2608a41994e55f1f'
+    key = 'functions/paperrepro/branching.py'
+    if saved.get(key) != old_runner or key not in current:
+        return False
+    return {k: v for k, v in saved.items() if k != key} == {
+        k: v for k, v in current.items() if k != key}
 
 
 def data_loss(cfg, obj, probe, scene):
@@ -119,7 +141,7 @@ def run_branch(cfg, scene_factory=build_scene):
     if target.exists():
         raise FileExistsError(f"Will not overwrite checkpoint: {target}")
     parent = load_checkpoint(cfg.resume) if cfg.resume else None
-    if parent and parent["sources"] != source_hashes():
+    if parent and not compatible_sources(parent["sources"], source_hashes()):
         raise ValueError("Solver sources differ from checkpoint; use the same code revision for this experiment")
     device = cfg.dev()
     torch.manual_seed(cfg.seed)

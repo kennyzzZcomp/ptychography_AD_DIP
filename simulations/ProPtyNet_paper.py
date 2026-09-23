@@ -258,7 +258,7 @@ def main():
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--checkpoint-out", help="Save full post-update state (net only)")
     ap.add_argument("--resume", help="Resume a full checkpoint; --iters means ADDITIONAL steps")
-    ap.add_argument("--branch", choices=["continue", "A", "B", "C", "D"], default=None)
+    ap.add_argument("--branch", choices=["continue", "A", "B", "C", "D", "E"], default=None)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])

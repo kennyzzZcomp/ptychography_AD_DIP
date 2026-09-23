@@ -1,0 +1,70 @@
+[
+  {
+    "file": "C:\\Users\\kennyzz\\Downloads\\net_result (11).npz",
+    "sha256": "2218178a866e9c2c61f6712a04ed62aac2d349745714053fdf32a7fc0c31254e",
+    "branch": "A",
+    "metrics": {
+      "ssim_amp": 0.7118828510345853,
+      "ssim_phs": 0.6128883882915963,
+      "psnr_amp": 14.435914078475385,
+      "psnr_phs": 12.857701488337213,
+      "relerr": 0.3045940399169922
+    },
+    "amplitude_only_alignment_diagnostic": {
+      "psnr": 14.599803917526067,
+      "ssim": 0.7407730883034458
+    },
+    "wrapped_phase_rmse": 0.3639053320495651,
+    "subsets": {
+      "flat_gt_windows": {
+        "n": 1794,
+        "mean_ssim": 0.7009424484087988,
+        "amp_rmse": 0.043253360442018225,
+        "local_rec_std": 0.01762935687182343
+      },
+      "structured_gt_windows": {
+        "n": 6306,
+        "mean_ssim": 0.7149953153744063,
+        "amp_rmse": 0.17532390011336255,
+        "local_rec_std": 0.1776966125381201
+      }
+    },
+    "probe_relerr": 0.6379845129200559,
+    "probe_outside_gt_support_energy_fraction": 0.3991326221973478,
+    "probe_inside_separately_aligned_relerr": 0.11460238975064854
+  },
+  {
+    "file": "C:\\Users\\kennyzz\\Downloads\\net_result (12).npz",
+    "sha256": "994d947509a7f102f402303056483a235de0819fdad0af91fae4aad1ee6304e5",
+    "branch": "B",
+    "metrics": {
+      "ssim_amp": 0.6445435551397692,
+      "ssim_phs": 0.8255548410256727,
+      "psnr_amp": 16.39494553590283,
+      "psnr_phs": 18.161388027013604,
+      "relerr": 0.20255228877067566
+    },
+    "amplitude_only_alignment_diagnostic": {
+      "psnr": 16.42443398243997,
+      "ssim": 0.6938931720131638
+    },
+    "wrapped_phase_rmse": 0.19795385332467674,
+    "subsets": {
+      "flat_gt_windows": {
+        "n": 1794,
+        "mean_ssim": 0.11310307731515035,
+        "amp_rmse": 0.08240965486902604,
+        "local_rec_std": 0.07644432499526725
+      },
+      "structured_gt_windows": {
+        "n": 6306,
+        "mean_ssim": 0.7957335663022695,
+        "amp_rmse": 0.13520147442831518,
+        "local_rec_std": 0.28464411132533163
+      }
+    },
+    "probe_relerr": 0.5905925010412851,
+    "probe_outside_gt_support_energy_fraction": 0.3454690919870689,
+    "probe_inside_separately_aligned_relerr": 0.0713318997803468
+  }
+]
