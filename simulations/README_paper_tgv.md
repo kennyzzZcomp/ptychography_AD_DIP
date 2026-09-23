@@ -3,6 +3,30 @@
 振幅TGV支持 ad（像素优化）和 net（DIP）；相位TGV仅支持 net。振幅与相位有独立开关。
 默认 --tgv-amp 0 --tgv-phase 0，沿用原来的损失和优化器更新。
 
+## 原 paper `run`：物体振幅 TGV 计时对照
+
+`run` 现在也接受 `--tgv-amp`。它保留原论文的物体/探针网络、强度域
+Loss1 + 探针 Loss2，再对物体实际振幅 `abs(O)` 加同一套 TGV2：
+
+    loss_run = paper_loss + tgv_amp * TGV2(abs(O)/mean_Omega(abs(O)))
+
+`run --tgv-amp 0` 是原基线；非零权重的结果应称为 `paper + TGV`。
+`run` 的原损失是 L2 范数，`ad/net` 是振幅 MSE，因此相同的权重数值
+不表示相同的相对正则强度。此处 `0.1` 先用于测量开启 TGV 的时间，
+不代表已调优的图像质量权重。`run` 仍不支持相位 TGV 或权重调度。
+
+在 Colab 同一 GPU 会话依次运行（输出目录分别新建）：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py run --preset paper --obj-size 624 --grid 8 --step-px 12 --eval-size 96 --eval-every 25 --iters 2000 --seed 0 --device cuda --tgv-amp 0 --outdir ov80_paper_timing_base
+!python /content/ptychography_AD_DIP/simulations/ProPtyNet_paper.py run --preset paper --obj-size 624 --grid 8 --step-px 12 --eval-size 96 --eval-every 25 --iters 2000 --seed 0 --device cuda --tgv-amp 0.1 --outdir ov80_paper_timing_tgv01
+```
+
+终端显示 `[paper] 用时 ... (ms/it)`；最后一条 NPZ history 还保存
+`train_elapsed_s`、`mean_iteration_s`。计时覆盖训练与定期评价，
+不包括场景生成、初始化、最终保存/画图。TGV 运行另存 `tgv_aux.npz`，
+history 记录 `paper_loss`、`tgv_amp` 和 `tgv_weighted`。
+
 ## 新增：AD + 振幅 TGV，以及四组对照
 
 AD对复数物体的精确幅值abs(O)使用现有ObjectAmplitudeTGV，不另造TV或二阶差分近似。

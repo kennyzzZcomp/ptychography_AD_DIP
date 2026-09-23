@@ -136,8 +136,9 @@ class Cfg:
     weight_decay: float = 0.0    # net DIP 不该有权重衰减
     fwd_chunk: int = 0           # 前向分块，0 = 全批量；显存不够时设 10 / 20
 
-    # ad/net amplitude TGV; phase TGV remains net only.
-    # L = amplitude-MSE + mean(I) * (tgv_amp * R_amp + tgv_phase * R_phase).
+    # run/ad/net amplitude TGV; phase TGV remains net only.
+    # run adds tgv_amp * R_amp to the paper L2 objective; ad/net use
+    # amplitude-MSE + mean(I) * (tgv_amp * R_amp + tgv_phase * R_phase).
     # The regularization domain is the nominal illuminated disk union, not eval ROI.
     tgv_amp: float = 0.0
     tgv_amp_schedule: str = ""  # 1000:0.01 => update 1001 begins with lambda=.01
@@ -267,8 +268,8 @@ def main():
         ap.error("--measurement-schedule is implemented only for mode net")
     if cfg.timing_warmup >= 0 and a.mode != "net":
         ap.error("--timing-warmup is implemented only for mode net")
-    if cfg.tgv_amp > 0 and a.mode not in ("ad", "net"):
-        ap.error("--tgv-amp is implemented only for modes ad and net")
+    if cfg.tgv_amp > 0 and a.mode not in ("run", "ad", "net"):
+        ap.error("--tgv-amp is implemented only for modes run, ad and net")
     if cfg.tgv_phase > 0 and a.mode != "net":
         ap.error("--tgv-phase is implemented only for mode net")
     cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import math
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ from functions.paperrepro.optics import forward_ptycho, make_quad_phase
 from functions.paperrepro.report import _report_device, _save
 from functions.paperrepro.sample import make_positions, make_truth, simulate
 from functions.paperrepro.scene import build_scene
+from functions.paperrepro.tgv import ObjectAmplitudeTGV
 
 PI = math.pi
 
@@ -217,6 +219,14 @@ def run(cfg: Cfg):
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=cfg.iters, eta_min=cfg.lr * cfg.lr_final_frac)
+    tgv = ObjectAmplitudeTGV(cfg, pos, device) if cfg.tgv_amp > 0 else None
+    if tgv is not None:
+        tr, tc = tgv.roi
+        print(f"[paper] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
+              f"alpha0={cfg.tgv_alpha0:g}, alpha1={cfg.tgv_alpha1:g}, "
+              f"inner_steps={cfg.tgv_inner_steps}, eps={cfg.tgv_eps:g}; "
+              f"domain=[{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "
+              f"pixels={int(tgv.mask.sum())}")
     rng = np.random.default_rng(cfg.seed)
     hist, t0 = [], time.time()
 
@@ -229,7 +239,12 @@ def run(cfg: Cfg):
 
         O, P, amp_p, amp_s = decode()
         Ic = forward_ptycho(O, P, post[sel], Q, n, chunk=0) * scale
-        loss, l1, l2 = paper_loss(Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
+        paper_term, l1, l2 = paper_loss(Ic, Im[sel], S2[sel], gamma, amp_p, S1, cfg.beta)
+        loss = paper_term
+        if tgv is not None:
+            reg, reg_first, reg_second = tgv(O.abs())
+            weighted_reg = cfg.tgv_amp * reg
+            loss = paper_term + weighted_reg
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -244,15 +259,32 @@ def run(cfg: Cfg):
             wrap, negamp = seam_diag(rec[rs, cs], obj[rs, cs], a_s_roi)
             m["wrap_frac"], m["signmix"] = wrap, negamp
             m["relerr_p"] = probe_relerr(P.detach().cpu().numpy(), probe)
-            hist.append({"it": it + 1, "loss": loss.item(), "real": real, **m})
+            tgv_stats = {}
+            if tgv is not None:
+                tgv_stats = {"paper_loss": paper_term.item(),
+                             "tgv_amp": reg.item(), "tgv_first": reg_first.item(),
+                             "tgv_second": reg_second.item(),
+                             "tgv_weighted": weighted_reg.item()}
+            hist.append({"it": it + 1, "loss": loss.item(), "real": real,
+                         **m, **tgv_stats})
             if (it + 1) % (cfg.eval_every * 4) == 0 or it == cfg.iters - 1:
                 print(f"  it {it+1:5d} | loss {loss.item():.4e} (L1 {l1:.3e} L2 {l2:.3e}) | "
                       f"real {real:.4e} | γ {gamma:.3f} | amp SSIM {m['ssim_amp']:.4f} "
                       f"PSNR {m['psnr_amp']:5.2f} | phs SSIM {m['ssim_phs']:.4f} | "
                       f"relerr {m['relerr']:.4f} | wrap {100*wrap:.1f}% "
                       f"signmix {100*negamp:.1f}%", flush=True)
+                if tgv is not None:
+                    print(f"           paper loss {tgv_stats['paper_loss']:.4e} | "
+                          f"TGV {tgv_stats['tgv_amp']:.4e} | "
+                          f"weighted TGV {tgv_stats['tgv_weighted']:.4e}", flush=True)
 
-    print(f"[net] 用时 {time.time()-t0:.1f}s / {cfg.iters} it")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = time.time() - t0
+    hist[-1]["train_elapsed_s"] = elapsed
+    hist[-1]["mean_iteration_s"] = elapsed / cfg.iters
+    print(f"[paper] 用时 {elapsed:.1f}s / {cfg.iters} it "
+          f"({1000*elapsed/cfg.iters:.2f} ms/it)")
     if len(hist) > 8:
         tail = np.array([h["real"] for h in hist[-len(hist)//4:]])
         k = np.polyfit(np.arange(len(tail)), tail, 1)[0]
@@ -261,3 +293,5 @@ def run(cfg: Cfg):
               + ("   （noise=none 时这一项没有意义）" if cfg.noise == "none" else ""))
     _save(cfg, rec, P.detach().cpu().numpy(), obj, probe, hist, (rs, cs), pos,
           tag="paper")
+    if tgv is not None:
+        tgv.save(Path(cfg.outdir) / "tgv_aux.npz")
