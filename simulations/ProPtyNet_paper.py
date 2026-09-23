@@ -162,6 +162,9 @@ class Cfg:
     # 0 = 根据每次照明覆盖自适应；>0 = 固定画布中心方形评价区。
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
+    checkpoint_out: str = ""    # opt-in full-state branch experiment
+    resume: str = ""
+    branch: str = "continue"    # continue preserves Adam; A/B/C/D reset it
 
     def __post_init__(self):
         if self.input_policy not in ("full", "follow_measurements"):
@@ -211,6 +214,9 @@ class Cfg:
 
 
 def build_cfg(args) -> Cfg:
+    if getattr(args, "resume", None):
+        from functions.paperrepro.branching import resume_config
+        return resume_config(args, Cfg)
     kw = dict(PRESETS[args.preset or "paper"])
     kw["preset"] = args.preset or "paper"
     for k, v in vars(args).items():
@@ -250,12 +256,20 @@ def main():
                  ("input_policy", str),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
+    ap.add_argument("--checkpoint-out", help="Save full post-update state (net only)")
+    ap.add_argument("--resume", help="Resume a full checkpoint; --iters means ADDITIONAL steps")
+    ap.add_argument("--branch", choices=["continue", "A", "B", "C", "D"], default=None)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
     a = ap.parse_args()
+
+    if (a.resume or a.checkpoint_out or a.branch) and a.mode != "net":
+        ap.error("Checkpoint branches use mode net, including pixel branches C/D")
+    if a.branch and not a.resume:
+        ap.error("--branch requires --resume")
 
     cfg = build_cfg(a)
     if cfg.measurement_schedule and a.mode != "net":
@@ -266,7 +280,8 @@ def main():
         ap.error("--tgv-amp is implemented only for modes ad and net")
     if cfg.tgv_phase > 0 and a.mode != "net":
         ap.error("--tgv-phase is implemented only for mode net")
-    cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0
+    if not a.resume:
+        cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0
     os.makedirs(cfg.outdir, exist_ok=True)
     {"check": run_check, "run": run, "ad": run_ad, "net": run_net}[a.mode](cfg)
 

@@ -1,0 +1,599 @@
+{
+  "protocol": "Center96, official global complex alignment; GT-assisted descriptive diagnostics only. No corrected scores.",
+  "periodic_warning": "Tile holdout is not independent sampling. Neighbor periods and GT control are descriptive, not a significance test or proof of ambiguity.",
+  "script_sha256": "481e311fcc9a1ed52e3567829b8573ddfbcc14ed67162a7a6edbfb234aa14b73",
+  "results": [
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (4).npz",
+      "sha256": "1462f35154d7a0582e51d76a417e69703689d86a694a19d8f3e21c598d94aacd",
+      "step_px": 35,
+      "tgv_amp": 0.0,
+      "lr_net": 0.005,
+      "lr_probe": 0.02,
+      "official_metrics": {
+        "ssim_amp": 0.4799709306655298,
+        "ssim_phs": 0.3487100032606715,
+        "psnr_amp": 9.60293715367752,
+        "psnr_phs": 7.6085535883380455,
+        "relerr": 0.4395129355049618
+      },
+      "roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "illumination_error_spearman": -0.3287910954325568,
+      "zero_illumination_pixels": 0,
+      "ratio_valid_pixels": 9216,
+      "gt_min_amp": 0.199999993316902,
+      "illumination_quartiles_low_to_high": [
+        {
+          "n": 2304,
+          "mean_illumination": 0.9115761945793821,
+          "complex_rmse": 0.5067902675512399,
+          "amp_rmse": 0.3370545301263303,
+          "wrapped_phase_rmse": 0.7585806567639523,
+          "error_energy_fraction": 0.42767190151959716
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.1973430141472792,
+          "complex_rmse": 0.3810728219761412,
+          "amp_rmse": 0.26004636846415813,
+          "wrapped_phase_rmse": 0.649896425525717,
+          "error_energy_fraction": 0.2418077063941112
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.503130733192192,
+          "complex_rmse": 0.34828488228580046,
+          "amp_rmse": 0.24312405413524366,
+          "wrapped_phase_rmse": 0.5989756912367692,
+          "error_energy_fraction": 0.20198700660181623
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 2.114166337494906,
+          "complex_rmse": 0.27783111421289497,
+          "amp_rmse": 0.20042323645356816,
+          "wrapped_phase_rmse": 0.5646617212883555,
+          "error_energy_fraction": 0.1285333854844754
+        }
+      ],
+      "structure_strata": {
+        "dark": {
+          "n": 2022,
+          "illumination_error_spearman": -0.3370887156052187
+        },
+        "bright": {
+          "n": 7194,
+          "illumination_error_spearman": -0.3212418813959665
+        },
+        "low_amp_gradient": {
+          "n": 6622,
+          "illumination_error_spearman": -0.34586572928971404
+        },
+        "high_amp_gradient": {
+          "n": 2594,
+          "illumination_error_spearman": -0.29934274113544407
+        }
+      },
+      "periodic_cross_validation": {
+        "33": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.17573946457223166,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1313.150177561921,
+            "constant_sse": 1116.871736579569
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.2341327809884992,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1697.8699635456164,
+            "constant_sse": 1375.7595533486106
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.12012861570286781,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1078.9568333211942,
+            "constant_sse": 963.2437009424682
+          }
+        },
+        "35": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.22099569615399983,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1366.7203262022645,
+            "constant_sse": 1119.349012045891
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.30483652070971545,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1764.168190508647,
+            "constant_sse": 1352.0223894017743
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.20907684802823523,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1163.2059572404578,
+            "constant_sse": 962.061228066203
+          }
+        },
+        "37": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.3631177022253518,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1533.4339445841467,
+            "constant_sse": 1124.9461011919557
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.39120618425637144,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1879.8517995966924,
+            "constant_sse": 1351.238817703727
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.23895444675895283,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1188.6711726151448,
+            "constant_sse": 959.4147514661682
+          }
+        }
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (5).npz",
+      "sha256": "875a581ec058dfab56e3ff782fd1c791bfc5ab526d3c398f46e751d057e23893",
+      "step_px": 35,
+      "tgv_amp": 0.1,
+      "lr_net": 0.005,
+      "lr_probe": 0.02,
+      "official_metrics": {
+        "ssim_amp": 0.9605827945449178,
+        "ssim_phs": 0.957042511894271,
+        "psnr_amp": 26.542715787720823,
+        "psnr_phs": 31.609634330619407,
+        "relerr": 0.04912201951972716
+      },
+      "roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "illumination_error_spearman": -0.11883002486351198,
+      "zero_illumination_pixels": 0,
+      "ratio_valid_pixels": 9216,
+      "gt_min_amp": 0.199999993316902,
+      "illumination_quartiles_low_to_high": [
+        {
+          "n": 2304,
+          "mean_illumination": 0.9115761945793821,
+          "complex_rmse": 0.05454456249839065,
+          "amp_rmse": 0.04994858275583293,
+          "wrapped_phase_rmse": 0.03806053926651755,
+          "error_energy_fraction": 0.3965957054105441
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.1973430141472792,
+          "complex_rmse": 0.045019906503704715,
+          "amp_rmse": 0.039887706833077935,
+          "wrapped_phase_rmse": 0.04169543054108305,
+          "error_energy_fraction": 0.2701806606454131
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.503130733192192,
+          "complex_rmse": 0.0391537597134806,
+          "amp_rmse": 0.03213549796482754,
+          "wrapped_phase_rmse": 0.047409632260956236,
+          "error_energy_fraction": 0.20435817908374923
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 2.114166337494906,
+          "complex_rmse": 0.031091789203536186,
+          "amp_rmse": 0.023589250260063657,
+          "wrapped_phase_rmse": 0.04077067665587317,
+          "error_energy_fraction": 0.12886545486029363
+        }
+      ],
+      "structure_strata": {
+        "dark": {
+          "n": 2022,
+          "illumination_error_spearman": -0.5686502992456504
+        },
+        "bright": {
+          "n": 7194,
+          "illumination_error_spearman": -0.046938602962224185
+        },
+        "low_amp_gradient": {
+          "n": 6622,
+          "illumination_error_spearman": -0.09917531864271008
+        },
+        "high_amp_gradient": {
+          "n": 2594,
+          "illumination_error_spearman": -0.31056250300142296
+        }
+      },
+      "periodic_cross_validation": {
+        "33": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.4315377203674753,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 24.849520388577588,
+            "constant_sse": 17.35862075796279
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.2554656776599289,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 21.43159196525234,
+            "constant_sse": 17.070631516744314
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.12012861570286781,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1078.9568333211942,
+            "constant_sse": 963.2437009424682
+          }
+        },
+        "35": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.45500240216622245,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 25.223045546708768,
+            "constant_sse": 17.335397872303467
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.28514060033703514,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 21.91610863884471,
+            "constant_sse": 17.05347152918295
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.20907684802823523,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1163.2059572404578,
+            "constant_sse": 962.061228066203
+          }
+        },
+        "37": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.4851742672854882,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 25.773298588939802,
+            "constant_sse": 17.353720136860897
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.3368405502630678,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 22.82699250526266,
+            "constant_sse": 17.0753292161662
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.23895444675895283,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1188.6711726151448,
+            "constant_sse": 959.4147514661682
+          }
+        }
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (10).npz",
+      "sha256": "2bc360389525b924f61b13e108bfd00e5b0f430b3257a71ba399f513141620dd",
+      "step_px": 35,
+      "tgv_amp": 0.0,
+      "lr_net": 0.002,
+      "lr_probe": 0.01,
+      "official_metrics": {
+        "ssim_amp": 0.5615187963746331,
+        "ssim_phs": 0.35136176991817625,
+        "psnr_amp": 10.98324998333602,
+        "psnr_phs": 8.172945873490955,
+        "relerr": 0.3908413903700748
+      },
+      "roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "illumination_error_spearman": -0.39208585694760184,
+      "zero_illumination_pixels": 0,
+      "ratio_valid_pixels": 9216,
+      "gt_min_amp": 0.199999993316902,
+      "illumination_quartiles_low_to_high": [
+        {
+          "n": 2304,
+          "mean_illumination": 0.9115761945793821,
+          "complex_rmse": 0.4702911935457097,
+          "amp_rmse": 0.2960962113647086,
+          "wrapped_phase_rmse": 0.7275793265615603,
+          "error_energy_fraction": 0.4657255907319009
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.1973430141472792,
+          "complex_rmse": 0.331427891042139,
+          "amp_rmse": 0.22051806316096995,
+          "wrapped_phase_rmse": 0.6501630164167954,
+          "error_energy_fraction": 0.23129940523467643
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 1.503130733192192,
+          "complex_rmse": 0.2971955030112188,
+          "amp_rmse": 0.2040822418713401,
+          "wrapped_phase_rmse": 0.5365278996542264,
+          "error_energy_fraction": 0.18598626659760067
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 2.114166337494906,
+          "complex_rmse": 0.23570772833391718,
+          "amp_rmse": 0.16181187043578998,
+          "wrapped_phase_rmse": 0.4926306257861873,
+          "error_energy_fraction": 0.11698873743582196
+        }
+      ],
+      "structure_strata": {
+        "dark": {
+          "n": 2022,
+          "illumination_error_spearman": -0.41718033976994495
+        },
+        "bright": {
+          "n": 7194,
+          "illumination_error_spearman": -0.38001523918037117
+        },
+        "low_amp_gradient": {
+          "n": 6622,
+          "illumination_error_spearman": -0.3840026704626259
+        },
+        "high_amp_gradient": {
+          "n": 2594,
+          "illumination_error_spearman": -0.3988437535961629
+        }
+      },
+      "periodic_cross_validation": {
+        "33": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.11838287981782591,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1037.194135070215,
+            "constant_sse": 927.4052328475952
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.17889692900919574,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1310.3594618436107,
+            "constant_sse": 1111.5131693021735
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.12012861570286781,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1078.9568333211942,
+            "constant_sse": 963.2437009424682
+          }
+        },
+        "35": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.09055324843388979,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1011.2488099943259,
+            "constant_sse": 927.2805444819403
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.26145683420887766,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1356.5563498358715,
+            "constant_sse": 1075.388640378357
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.20907684802823523,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1163.2059572404578,
+            "constant_sse": 962.061228066203
+          }
+        },
+        "37": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.24073836396372927,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1150.9172841496047,
+            "constant_sse": 927.6067522187535
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.33002262681470373,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1424.7659094559021,
+            "constant_sse": 1071.2343389736916
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.23895444675895283,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 2,
+            "heldout_sse": 1188.6711726151448,
+            "constant_sse": 959.4147514661682
+          }
+        }
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (8).npz",
+      "sha256": "144f9b8e3ad8ef059de574fee8784d4a3e049e8aeb153fda7753e7c9885db79a",
+      "step_px": 24,
+      "tgv_amp": 0.0,
+      "lr_net": 0.002,
+      "lr_probe": 0.01,
+      "official_metrics": {
+        "ssim_amp": 0.9734575865473989,
+        "ssim_phs": 0.9802562021552903,
+        "psnr_amp": 37.77912558787592,
+        "psnr_phs": 39.257858150840306,
+        "relerr": 0.015350921161896292
+      },
+      "roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "illumination_error_spearman": 0.044343532916545025,
+      "zero_illumination_pixels": 0,
+      "ratio_valid_pixels": 9216,
+      "gt_min_amp": 0.199999993316902,
+      "illumination_quartiles_low_to_high": [
+        {
+          "n": 2304,
+          "mean_illumination": 1.189300192300519,
+          "complex_rmse": 0.013373521592642807,
+          "amp_rmse": 0.0108345454403958,
+          "wrapped_phase_rmse": 0.011861632405525596,
+          "error_energy_fraction": 0.24412946109673048
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 2.03883721931272,
+          "complex_rmse": 0.013667099973762026,
+          "amp_rmse": 0.010772532785955892,
+          "wrapped_phase_rmse": 0.015470609058353667,
+          "error_energy_fraction": 0.2549654703575417
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 2.4570138691310848,
+          "complex_rmse": 0.01318846383779006,
+          "amp_rmse": 0.01006900483786663,
+          "wrapped_phase_rmse": 0.01789737414508196,
+          "error_energy_fraction": 0.23741986389253744
+        },
+        {
+          "n": 2304,
+          "mean_illumination": 3.1789262623915016,
+          "complex_rmse": 0.013893568408867494,
+          "amp_rmse": 0.009595912754545171,
+          "wrapped_phase_rmse": 0.022710907306327584,
+          "error_energy_fraction": 0.2634852046531903
+        }
+      ],
+      "structure_strata": {
+        "dark": {
+          "n": 2022,
+          "illumination_error_spearman": -0.1060056266097928
+        },
+        "bright": {
+          "n": 7194,
+          "illumination_error_spearman": 0.07955455172013086
+        },
+        "low_amp_gradient": {
+          "n": 6622,
+          "illumination_error_spearman": 0.08211640464628134
+        },
+        "high_amp_gradient": {
+          "n": 2594,
+          "illumination_error_spearman": -0.12467543160725456
+        }
+      },
+      "periodic_cross_validation": {
+        "22": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.07536831881248052,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 1.8173847380276833,
+            "constant_sse": 1.6900114186315296
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.09411859222880747,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 1.8395567919970648,
+            "constant_sse": 1.6813138950959052
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.04187449068939264,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 998.2522645555366,
+            "constant_sse": 958.1310162369059
+          }
+        },
+        "24": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.04502998924002766,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 1.7652046043763137,
+            "constant_sse": 1.6891425342348456
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.09942160704637071,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 1.8440552156600005,
+            "constant_sse": 1.6772957742881829
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.08470758436388692,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 8,
+            "heldout_sse": 1040.0130963932907,
+            "constant_sse": 958.7958186935637
+          }
+        },
+        "26": {
+          "relative_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.1201478838314527,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 4,
+            "heldout_sse": 1.8903270306297733,
+            "constant_sse": 1.6875691664603534
+          },
+          "additive_complex_residual": {
+            "heldout_skill_vs_train_constant": -0.12789423731914074,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 4,
+            "heldout_sse": 1.8892789719424936,
+            "constant_sse": 1.6750497603685486
+          },
+          "gt_amplitude_control": {
+            "heldout_skill_vs_train_constant": -0.08660341047147058,
+            "scored_pixels": 9216,
+            "min_train_pixels_per_scored_residue": 4,
+            "heldout_sse": 1043.3841213558158,
+            "constant_sse": 960.2253327210686
+          }
+        }
+      }
+    }
+  ]
+}

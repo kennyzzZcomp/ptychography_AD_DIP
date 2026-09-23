@@ -191,6 +191,9 @@ def run_ad(cfg: Cfg):
 # ============================================================================ #
 
 def run_net(cfg: Cfg):
+    if cfg.resume or cfg.checkpoint_out:
+        from functions.paperrepro.branching import run_branch
+        return run_branch(cfg)
     device = cfg.dev()
     torch.manual_seed(cfg.seed)
     if device.type == "cuda":

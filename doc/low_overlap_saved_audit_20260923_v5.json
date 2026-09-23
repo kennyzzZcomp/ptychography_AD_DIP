@@ -1,0 +1,2642 @@
+{
+  "protocol": "Saved-array audit, center ROI, existing paper evaluate(); no training or historical scene regeneration.",
+  "eval_size": 96,
+  "files": [
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\ad_result (1).npz",
+      "file_sha256": "2cef8af3be0303baff718e53a18494fff317c938bd5aa59dbbc79910e98693df",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "ones",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.001,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov60_ad_sup",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 2.156223614142798e-16,
+        "real": 7.22815411791089e-06,
+        "relerr_p": 0.23755882680416107,
+        "ssim_amp": 0.7668517816042785,
+        "ssim_phs": 0.5683144706102019,
+        "psnr_amp": 23.121650798972475,
+        "psnr_phs": 16.692461883304798,
+        "relerr": 0.24028068780899048
+      },
+      "array_sha256": {
+        "obj_rec": "a2c8c9240f612b19d86540ea89791b89a3b2a0819fa8d47085060089287e4d4a",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "2f9da39914e730e18e40f3292fd348a0b6dbb305a6063bbd0df2cbe81a06bfda",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "1983e4b67d354aa3f61a6dbebe0dea93607689d4585caf1c271eb5e8230e56f1"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.7745308779846592,
+        "ssim_phs": 0.5637353827966352,
+        "psnr_amp": 23.1130353434088,
+        "psnr_phs": 16.44087100472557,
+        "relerr": 0.24599866569042206
+      },
+      "stored_roi": [
+        261,
+        354,
+        256,
+        348
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.7668517816042785,
+        "ssim_phs": 0.5683144751948125,
+        "psnr_amp": 23.121650798972475,
+        "psnr_phs": 16.69246210788612,
+        "relerr": 0.24028068780899048
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.23755882680416107,
+        "gt_support_relative_error_separately_aligned": 0.23755882680416107,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\ad_result (2).npz",
+      "file_sha256": "1221b6b043f745b02340052268e16a6cc8eb3a4e0ac9c38259e796e9e61e22dd",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 35,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.0,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_ad",
+        "eval_every": 25,
+        "eval_size": 0
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.8282489691046067e-05,
+        "real": 2.9339637756347656,
+        "relerr_p": 0.2531548738479614,
+        "ssim_amp": 0.32363733889694435,
+        "ssim_phs": 0.24757433636672346,
+        "psnr_amp": 7.847936261764277,
+        "psnr_phs": 6.41918203893232,
+        "relerr": 0.5445958971977234
+      },
+      "array_sha256": {
+        "obj_rec": "dbe698500f13ed99ac131ee65f74e2e25ecd96b5624fc5ee96f81030a965f750",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "b4a0f5ea9becf4a3fa1520a801e1f96243b08b328c4455f42edd8a4b07c0a4b6",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "188cf3063c816f72142eb973fb242d833970382e59af6fa08d8523046e592d35"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.44593532049459383,
+        "ssim_phs": 0.2607431563488655,
+        "psnr_amp": 8.634648375058307,
+        "psnr_phs": 6.894157979124776,
+        "relerr": 0.5230135917663574
+      },
+      "stored_roi": [
+        241,
+        385,
+        236,
+        367
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.3236373388969443,
+        "ssim_phs": 0.24757433808534035,
+        "psnr_amp": 7.847936261764277,
+        "psnr_phs": 6.419182243448845,
+        "relerr": 0.5445958971977234
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 4,
+        "roi_mean_support_count": 2.33984375,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.16193681828510953
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.2531548738479614,
+        "gt_support_relative_error_separately_aligned": 0.2531548738479614,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.27683502600476156,
+          0.27335005165173576
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.4075369327626328
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\ad_result.npz",
+      "file_sha256": "7b82965edcb0dd3e2cc3a9b74c5676ffaa7a65b60f17d29a287fbea846403275",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 10,
+        "step_px": 10,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "ones",
+        "probe_init_sigma": 0.15,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.001,
+        "lr_probe": 0.001,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "results_paper",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 8.601484296377748e-06,
+        "real": 0.4191671311855316,
+        "relerr_p": 0.4472195506095886,
+        "ssim_amp": 0.6159455733482176,
+        "ssim_phs": 0.7576886891059524,
+        "psnr_amp": 15.98039610805939,
+        "psnr_phs": 16.28247354438698,
+        "relerr": 0.23207247257232666
+      },
+      "array_sha256": {
+        "obj_rec": "c9e87e74435a1c614f9ba605830fad059340b4aecaa7e88adffd8bcd679ad1c5",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "5726d9b9bfd5b18f08c8a0c2656e194c678871b3ada09c7f4f2d91da6248c634",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "58d2cc6b825f28bd0beca4edf35c0435264a48836edbc7e698b8da5e0980704a"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.6282347068740731,
+        "ssim_phs": 0.7586929733624672,
+        "psnr_amp": 16.03828570752342,
+        "psnr_phs": 16.344577199245307,
+        "relerr": 0.23081406950950623
+      },
+      "stored_roi": [
+        256,
+        356,
+        256,
+        351
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.6159455733482178,
+        "ssim_phs": 0.7576886880931648,
+        "psnr_amp": 15.98039610805939,
+        "psnr_phs": 16.282473630281988,
+        "relerr": 0.23207247257232666
+      },
+      "central_coverage": {
+        "roi_min_support_count": 8,
+        "roi_max_support_count": 32,
+        "roi_mean_support_count": 21.67925347222222,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.209010298452944
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.4472195506095886,
+        "gt_support_relative_error_separately_aligned": 0.07762867957353592,
+        "outside_gt_support_energy_fraction": 0.1951551452760042,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.7500592444357602,
+          0.7542492272615354
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.8307248379321808
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_jump_result.npz",
+      "file_sha256": "28ff207730f5b3cd75122c264be8010163a069ab2b1aefeb6bea82b334e13827",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 9,
+        "step_px": 12,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "pixel",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.1,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "0:3,600:1",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "follow_measurements",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov80_joint_progressive",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 0.00011701223411364481,
+        "real": 17.00175666809082,
+        "relerr_p": 0.7714735865592957,
+        "ssim_amp": 0.17793629814241874,
+        "ssim_phs": 0.05411052384441475,
+        "psnr_amp": 7.135923408641337,
+        "psnr_phs": 7.256676439202061,
+        "relerr": 0.6734814643859863,
+        "data_loss": 0.0001159624953288585,
+        "relative_data_loss": 0.12242036312818527,
+        "tgv_amp": 0.011081975884735584,
+        "tgv_first": 0.002446486847475171,
+        "tgv_second": 0.004317744635045528,
+        "tgv_weighted": 1.0497384437258006e-06,
+        "active_patterns": 81,
+        "measurement_stride": 1,
+        "active_input_channels": 81,
+        "training_patterns_cumulative": 118800,
+        "evaluation_patterns_cumulative": 1944,
+        "full_data_loss": 0.0001159624953288585,
+        "elapsed_s": 133.34074306488037
+      },
+      "array_sha256": {
+        "obj_rec": "c8e656e2e200b6b678e45522197df157c84ac1ba88b875380de1b4cf883af134",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "8d929836c03fde419e79aa30be39183835a902b2aa80167c5bbea70b65802deb",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "78cbef05d01e977f7d0fa6e078b567cf761289ece7bf1a9aba57c19fbaac3509"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.17793629814241874,
+        "ssim_phs": 0.05411052313978819,
+        "psnr_amp": 7.135923408641337,
+        "psnr_phs": 7.25667646655457,
+        "relerr": 0.6734814643859863
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.17793629814241874,
+        "ssim_phs": 0.05411052313978819,
+        "psnr_amp": 7.135923408641337,
+        "psnr_phs": 7.25667646655457,
+        "relerr": 0.6734814643859863
+      },
+      "central_coverage": {
+        "roi_min_support_count": 8,
+        "roi_max_support_count": 21,
+        "roi_mean_support_count": 16.28374565972222,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.3186010282365234
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.7714735865592957,
+        "gt_support_relative_error_separately_aligned": 0.32137465476989746,
+        "outside_gt_support_energy_fraction": 0.5485444544078323,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.7058851164927071,
+          0.7098706657340106
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.796869805518617
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (1).npz",
+      "file_sha256": "522db3f5ac67a3605a5d3e65575714b527acd1d268b847c75505b4dc7828680d",
+      "config": {
+        "wlength": 6.328e-07,
+        "N": 128,
+        "N_OBJ": 224,
+        "dx": 1e-05,
+        "dz_true": 0.008,
+        "probe_dia": 48,
+        "z_probe": 0.003,
+        "z_probe_init": 0.0039000000000000003,
+        "probe_aberr": 0.0,
+        "aberr_seed": 7,
+        "scan_pattern": "raster_jitter",
+        "scan_npos": 25,
+        "scan_step": 20,
+        "scan_jitter": 0.2,
+        "scan_seed": 0,
+        "eval_size": 96,
+        "reg_size": 128,
+        "phase_support": 0.05,
+        "poisson": false,
+        "peak_photons": 5000.0,
+        "noise_global_norm": true,
+        "noise_seed": 42,
+        "noise_clip": false,
+        "gauss_snr_db": 0.0,
+        "opt_mode": "alternating",
+        "stages": 8,
+        "obj_epoch": 8,
+        "prb_epoch": 8,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "decay": 0.75,
+        "tv1": 0.0,
+        "tv2": 0.0,
+        "iters": 2000,
+        "lr_net": 0.001,
+        "base_ch": 32,
+        "data_loss": "direct",
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.05,
+        "eval_every": 25,
+        "probe_mode": "pixel",
+        "probe_warmup": 300,
+        "lr_probe": 0.01,
+        "phase_repr": "cossin",
+        "amp_act": "softplus",
+        "phase_span_obj": 6.283185307179586,
+        "phase_span_prb": 3.141592653589793,
+        "scale_mode": "ls",
+        "weight_decay": 0.0,
+        "holdout_frac": 0.0,
+        "holdout_seed": 1234,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "out_fixed"
+      },
+      "keys": [
+        "obj_rec",
+        "probe_rec",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.3398732335190289e-05,
+        "val": "nan",
+        "real": 0.8512200713157654,
+        "psnr_o_amp": 36.272917594196684,
+        "ssim_o_amp": 0.9541206058906944,
+        "psnr_o_phi": 35.822290486824045,
+        "ssim_o_phi": 0.9646779544492935,
+        "rmse_o_phi_rad": 0.025336414575576782,
+        "relerr_o_complex": 0.028068287298083305,
+        "psnr_p_amp": 29.437048507152195,
+        "ssim_p_amp": 0.8973573423955473,
+        "psnr_p_phi": 18.727437875073687,
+        "ssim_p_phi": 0.7740947011146483,
+        "rms_p_phi_rad": 0.6612151861190796,
+        "relerr_p_complex": 0.05923820286989212
+      },
+      "array_sha256": {
+        "obj_rec": "363d30459fb7812a64f4640f08a24810b3f360ccf57d535c715a03d64cc3ad5b",
+        "probe_rec": "409c0f68dc18a2385273659e642c9fe14f48975d4b68d8025021717091997897"
+      },
+      "finite": {
+        "obj_rec": true,
+        "probe_rec": true
+      },
+      "warnings": [
+        "No stored object truth: cannot re-evaluate; history is not newly verified ground truth.",
+        "Actual scan positions absent; do not regenerate from current code to represent an old run.",
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "nominal_geometry": {
+        "configured_diameter_px": 48,
+        "linear_overlap_from_config_only": 0.5833333333333333
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (10).npz",
+      "file_sha256": "2bc360389525b924f61b13e108bfd00e5b0f430b3257a71ba399f513141620dd",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 35,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.002,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.0,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-notgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.3838784070685506e-05,
+        "real": 3.044729471206665,
+        "relerr_p": 0.14890028536319733,
+        "ssim_amp": 0.5615188083370919,
+        "ssim_phs": 0.3513617683044152,
+        "psnr_amp": 10.983251222593648,
+        "psnr_phs": 8.172945759177047,
+        "relerr": 0.39084142446517944
+      },
+      "array_sha256": {
+        "obj_rec": "3fa83af53ccdbeac375dd3f245f18766bcdb4ae8e03760ac3fdececd94968463",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "be590e1d398cdb0cf0b8858a518011ab1a2632d4748e72d53e0f82ef4689a82d",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "188cf3063c816f72142eb973fb242d833970382e59af6fa08d8523046e592d35"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.5615188083370919,
+        "ssim_phs": 0.3513617709012152,
+        "psnr_amp": 10.983251222593648,
+        "psnr_phs": 8.172945958650471,
+        "relerr": 0.39084142446517944
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.5615188083370919,
+        "ssim_phs": 0.3513617709012152,
+        "psnr_amp": 10.983251222593648,
+        "psnr_phs": 8.172945958650471,
+        "relerr": 0.39084142446517944
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 4,
+        "roi_mean_support_count": 2.33984375,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.16193681828510953
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.14890028536319733,
+        "gt_support_relative_error_separately_aligned": 0.14890028536319733,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.27683502600476156,
+          0.27335005165173576
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.4075369327626328
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (2).npz",
+      "file_sha256": "0689cab3d21cd8212c161c2f2cc2fefc6361e9007aefb685c51b62bde781e5fd",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 10,
+        "step_px": 10,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "ones",
+        "probe_init_sigma": 0.15,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.001,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "results_paper",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.4975704516473343e-06,
+        "real": 0.8024548888206482,
+        "relerr_p": 0.9436160326004028,
+        "ssim_amp": 0.8708585679486948,
+        "ssim_phs": 0.9591616947615993,
+        "psnr_amp": 27.416947507913243,
+        "psnr_phs": 27.628537469468014,
+        "relerr": 0.04667060822248459
+      },
+      "array_sha256": {
+        "obj_rec": "1e9863106610f92bd5ed1d9ed8c2159c5b969981fe14a00c70cbdec7b8c67d51",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "871ac7ebad27dbd42c454777a532636ceebb33dfabd74796fa64332fe76c0e4f",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "58d2cc6b825f28bd0beca4edf35c0435264a48836edbc7e698b8da5e0980704a"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.8745015793650364,
+        "ssim_phs": 0.9586807594074164,
+        "psnr_amp": 27.41107200215783,
+        "psnr_phs": 27.78075504596208,
+        "relerr": 0.04620104655623436
+      },
+      "stored_roi": [
+        256,
+        356,
+        256,
+        351
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.8708585679486948,
+        "ssim_phs": 0.9591616910584764,
+        "psnr_amp": 27.416947507913243,
+        "psnr_phs": 27.62853745072799,
+        "relerr": 0.04667060822248459
+      },
+      "central_coverage": {
+        "roi_min_support_count": 8,
+        "roi_max_support_count": 32,
+        "roi_mean_support_count": 21.67925347222222,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.209010298452944
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.9436160326004028,
+        "gt_support_relative_error_separately_aligned": 0.013978774659335613,
+        "outside_gt_support_energy_fraction": 0.8903899304041425,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.7500592444357602,
+          0.7542492272615354
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.8307248379321808
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (3).npz",
+      "file_sha256": "b837b4a3a7e49ca1ace30cbd5cbf55558ca714fc63b6e216745e68436dcf0254",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "ones",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.001,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov60_net_sup",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 9.581410154169134e-08,
+        "real": 0.0496089905500412,
+        "relerr_p": 0.00840015523135662,
+        "ssim_amp": 0.9680870906974507,
+        "ssim_phs": 0.9916226770926381,
+        "psnr_amp": 39.034887466215196,
+        "psnr_phs": 39.1561872963331,
+        "relerr": 0.014371992088854313
+      },
+      "array_sha256": {
+        "obj_rec": "c7a21799bfaa239bcca9cefe7a575fdd9c87dcfab4d6212d5361da05891809ed",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "1770b77e02af2a2bad93bd8b480b1e90ad17b16af196733dfda9c7b50342836b",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "1983e4b67d354aa3f61a6dbebe0dea93607689d4585caf1c271eb5e8230e56f1"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.9675607645111275,
+        "ssim_phs": 0.9910568916200292,
+        "psnr_amp": 38.68000195223623,
+        "psnr_phs": 39.23185786624503,
+        "relerr": 0.014683721587061882
+      },
+      "stored_roi": [
+        261,
+        354,
+        256,
+        348
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.9680870906974507,
+        "ssim_phs": 0.9916226760173594,
+        "psnr_amp": 39.034887466215196,
+        "psnr_phs": 39.156186604461844,
+        "relerr": 0.014371992088854313
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.00840015523135662,
+        "gt_support_relative_error_separately_aligned": 0.008400154300034046,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (4).npz",
+      "file_sha256": "1462f35154d7a0582e51d76a417e69703689d86a694a19d8f3e21c598d94aacd",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 35,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.0,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-notgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.978499858523719e-05,
+        "real": 3.079519033432007,
+        "relerr_p": 0.1777472198009491,
+        "ssim_amp": 0.4799709166220006,
+        "ssim_phs": 0.34871000202126523,
+        "psnr_amp": 9.602936480355723,
+        "psnr_phs": 7.608553529148587,
+        "relerr": 0.4395129680633545
+      },
+      "array_sha256": {
+        "obj_rec": "7665a6a21bf84250ee270f83b6f68f53d58e516d2a96a9b57635da782d8fd564",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "32a1f45e7681887ab2cc172c19c527e1db9d88983b5ac6157d22774b9027f98b",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "188cf3063c816f72142eb973fb242d833970382e59af6fa08d8523046e592d35"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.4799709166220006,
+        "ssim_phs": 0.34871000416661013,
+        "psnr_amp": 9.602936480355723,
+        "psnr_phs": 7.6085537006827675,
+        "relerr": 0.4395129680633545
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.4799709166220006,
+        "ssim_phs": 0.34871000416661013,
+        "psnr_amp": 9.602936480355723,
+        "psnr_phs": 7.6085537006827675,
+        "relerr": 0.4395129680633545
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 4,
+        "roi_mean_support_count": 2.33984375,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.16193681828510953
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.1777472198009491,
+        "gt_support_relative_error_separately_aligned": 0.1777472198009491,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.27683502600476156,
+          0.27335005165173576
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.4075369327626328
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (5).npz",
+      "file_sha256": "875a581ec058dfab56e3ff782fd1c791bfc5ab526d3c398f46e751d057e23893",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 35,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.1,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-tgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.1876745702465996e-05,
+        "real": 0.5571786761283875,
+        "relerr_p": 0.018842512741684914,
+        "ssim_amp": 0.9605827994541378,
+        "ssim_phs": 0.9570425071809907,
+        "psnr_amp": 26.542716494459007,
+        "psnr_phs": 31.609634156844464,
+        "relerr": 0.04912202060222626,
+        "data_loss": 2.5236849978682585e-06,
+        "relative_data_loss": 0.0022180909290909767,
+        "tgv_amp": 0.08220494538545609,
+        "tgv_first": 0.0777243971824646,
+        "tgv_second": 0.002240274101495743,
+        "tgv_weighted": 9.353060704597738e-06
+      },
+      "array_sha256": {
+        "obj_rec": "006c2eb0ad3f8a7b96c2723ecdb435b1c7f73ede0d8209f0740691e4b3273e72",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "48f87c32f7cd3a5fa01c28a7b521884c83c289797022e5e482457913289cf9ab",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "188cf3063c816f72142eb973fb242d833970382e59af6fa08d8523046e592d35"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.9605827994541378,
+        "ssim_phs": 0.957042508422699,
+        "psnr_amp": 26.542716494459007,
+        "psnr_phs": 31.60963532555497,
+        "relerr": 0.04912202060222626
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.9605827994541378,
+        "ssim_phs": 0.957042508422699,
+        "psnr_amp": 26.542716494459007,
+        "psnr_phs": 31.60963532555497,
+        "relerr": 0.04912202060222626
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 4,
+        "roi_mean_support_count": 2.33984375,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.16193681828510953
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.018842512741684914,
+        "gt_support_relative_error_separately_aligned": 0.018842512741684914,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.27683502600476156,
+          0.27335005165173576
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.4075369327626328
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (6).npz",
+      "file_sha256": "1d1b4d1fdce2d005082dfa4a90746bef5ba173e50263aa60779e8554d329efb7",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.0,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-notgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 6.755061622243375e-05,
+        "real": 3.641934633255005,
+        "relerr_p": 0.14053431153297424,
+        "ssim_amp": 0.5886353543253069,
+        "ssim_phs": 0.5918554193777501,
+        "psnr_amp": 12.99760673017416,
+        "psnr_phs": 13.16601869907429,
+        "relerr": 0.33399343490600586
+      },
+      "array_sha256": {
+        "obj_rec": "eb81d73b8cefab512fcb86ac4eee92aa6390f5a9fa87716e71d5dd2072ec6575",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "f6b4cf1872caef4b7189aab2e1d52ae7d6bef4b14bd5984b1a7f5b353214e44e",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "4ed2f9e8e5d0e38eebe7c242b8c37a92a1966718af8e11327404e80d3cb2470b"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.5886353543253069,
+        "ssim_phs": 0.5918554175407266,
+        "psnr_amp": 12.99760673017416,
+        "psnr_phs": 13.166018754419868,
+        "relerr": 0.33399343490600586
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.5886353543253069,
+        "ssim_phs": 0.5918554175407266,
+        "psnr_amp": 12.99760673017416,
+        "psnr_phs": 13.166018754419868,
+        "relerr": 0.33399343490600586
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.14053431153297424,
+        "gt_support_relative_error_separately_aligned": 0.14053431153297424,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (7).npz",
+      "file_sha256": "3371ac620288c9e32f6523982696a430523bc1616abe6c29b73b2db377564080",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.1,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-tgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.595967296452727e-05,
+        "real": 0.772138237953186,
+        "relerr_p": 0.016831649467349052,
+        "ssim_amp": 0.9420130559483315,
+        "ssim_phs": 0.9719251936127096,
+        "psnr_amp": 26.363328128787295,
+        "psnr_phs": 30.811506556343605,
+        "relerr": 0.047381285578012466,
+        "data_loss": 2.3599764062964823e-06,
+        "relative_data_loss": 0.0017660183366388083,
+        "tgv_amp": 0.10176929086446762,
+        "tgv_first": 0.09671289473772049,
+        "tgv_second": 0.0025281994603574276,
+        "tgv_weighted": 1.3599696103483438e-05
+      },
+      "array_sha256": {
+        "obj_rec": "ceab74146fa8a6de110cb06de156e0a6478f29755ad5b37954224bb02b54f9ab",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "8cc8e3953dcdf665ab46ed74bcb18087bd882e770a525230cfe4a2fd8bcb9e20",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "4ed2f9e8e5d0e38eebe7c242b8c37a92a1966718af8e11327404e80d3cb2470b"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.9420130559483315,
+        "ssim_phs": 0.9719251945825376,
+        "psnr_amp": 26.363328128787295,
+        "psnr_phs": 30.81150696620255,
+        "relerr": 0.047381285578012466
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.9420130559483315,
+        "ssim_phs": 0.9719251945825376,
+        "psnr_amp": 26.363328128787295,
+        "psnr_phs": 30.81150696620255,
+        "relerr": 0.047381285578012466
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.016831649467349052,
+        "gt_support_relative_error_separately_aligned": 0.016831649467349052,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (8).npz",
+      "file_sha256": "144f9b8e3ad8ef059de574fee8784d4a3e049e8aeb153fda7753e7c9885db79a",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.002,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.0,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-notgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.6776192524048383e-07,
+        "real": 0.12017083168029785,
+        "relerr_p": 0.0059467824175953865,
+        "ssim_amp": 0.9734575867416986,
+        "ssim_phs": 0.9802562055948346,
+        "psnr_amp": 37.77912649557535,
+        "psnr_phs": 39.25785849628787,
+        "relerr": 0.015350922010838985
+      },
+      "array_sha256": {
+        "obj_rec": "295a1cf92564b3c9051dc1d639b9368aadef10212d8a87b9652e0cc0fba12cd1",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "7c6b0009db6e55be80b689dffe2ddc8b1adc339465b9ec81daaf279995a55e0e",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "4ed2f9e8e5d0e38eebe7c242b8c37a92a1966718af8e11327404e80d3cb2470b"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.9734575867416986,
+        "ssim_phs": 0.9802562084447595,
+        "psnr_amp": 37.77912649557535,
+        "psnr_phs": 39.25785760380455,
+        "relerr": 0.015350922010838985
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.9734575867416986,
+        "ssim_phs": 0.9802562084447595,
+        "psnr_amp": 37.77912649557535,
+        "psnr_phs": 39.25785760380455,
+        "relerr": 0.015350922010838985
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.0059467824175953865,
+        "gt_support_relative_error_separately_aligned": 0.0059467824175953865,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result (9).npz",
+      "file_sha256": "df09de53e696fec5a97edb3fbf1e249dcae946a779b2e6745e31eefcda3b7b7d",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 24,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "support",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.002,
+        "lr_probe": 0.01,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.01,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-tgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.7387787920597475e-06,
+        "real": 0.1509048342704773,
+        "relerr_p": 0.0051184482872486115,
+        "ssim_amp": 0.9833154054073833,
+        "ssim_phs": 0.9918949287445752,
+        "psnr_amp": 38.72843403253806,
+        "psnr_phs": 41.33539859120703,
+        "relerr": 0.013045144267380238,
+        "data_loss": 1.613184963389358e-07,
+        "relative_data_loss": 0.00012071790843037888,
+        "tgv_amp": 0.11804456263780594,
+        "tgv_first": 0.11583112180233002,
+        "tgv_second": 0.0011067218147218227,
+        "tgv_weighted": 1.5774603525642306e-06
+      },
+      "array_sha256": {
+        "obj_rec": "b95114e5eb64df85a8779467ec4dcc53ed709fd1e3c3303d8f9887ae2b51bc12",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "1397e5418b2e70f35e63a0d89f7d12c282a4c0f6f288c24566c9b92f6c7f7a6f",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "4ed2f9e8e5d0e38eebe7c242b8c37a92a1966718af8e11327404e80d3cb2470b"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.9833154054073833,
+        "ssim_phs": 0.9918949249969351,
+        "psnr_amp": 38.72843403253806,
+        "psnr_phs": 41.3353969787056,
+        "relerr": 0.013045144267380238
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.9833154054073833,
+        "ssim_phs": 0.9918949249969351,
+        "psnr_amp": 38.72843403253806,
+        "psnr_phs": 41.3353969787056,
+        "relerr": 0.013045144267380238
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 6,
+        "roi_mean_support_count": 3.6363932291666665,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.06591658578132886
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.0051184482872486115,
+        "gt_support_relative_error_separately_aligned": 0.0051184482872486115,
+        "outside_gt_support_energy_fraction": 0.0,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.49533742622751653,
+          0.4633266410457001
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.5937396110372339
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_result.npz",
+      "file_sha256": "1c3e9ee4100ef234b56224419ee8dcb1e6cfa33d7492e8a46f3d6703801f7361",
+      "config": {
+        "wlength": 6.328e-07,
+        "N": 128,
+        "N_OBJ": 224,
+        "dx": 1e-05,
+        "dz_true": 0.008,
+        "probe_dia": 48,
+        "z_probe": 0.003,
+        "z_probe_init": 0.0039000000000000003,
+        "probe_aberr": 0.0,
+        "aberr_seed": 7,
+        "scan_pattern": "raster_jitter",
+        "scan_npos": 25,
+        "scan_step": 20,
+        "scan_jitter": 0.2,
+        "scan_seed": 0,
+        "eval_size": 96,
+        "reg_size": 128,
+        "phase_support": 0.05,
+        "poisson": false,
+        "peak_photons": 5000.0,
+        "noise_global_norm": true,
+        "noise_seed": 42,
+        "noise_clip": false,
+        "gauss_snr_db": 0.0,
+        "opt_mode": "alternating",
+        "stages": 8,
+        "obj_epoch": 8,
+        "prb_epoch": 8,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "decay": 0.75,
+        "tv1": 0.0,
+        "tv2": 0.0,
+        "iters": 2000,
+        "lr_net": 0.001,
+        "base_ch": 32,
+        "data_loss": "direct",
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.05,
+        "eval_every": 25,
+        "probe_mode": "truth",
+        "probe_warmup": 300,
+        "lr_probe": 0.01,
+        "phase_repr": "cossin",
+        "amp_act": "softplus",
+        "phase_span_obj": 6.283185307179586,
+        "phase_span_prb": 3.141592653589793,
+        "scale_mode": "ls",
+        "weight_decay": 0.0,
+        "holdout_frac": 0.0,
+        "holdout_seed": 1234,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "out_truth"
+      },
+      "keys": [
+        "obj_rec",
+        "probe_rec",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 2.5849476514849812e-05,
+        "val": "nan",
+        "real": 0.9067569375038147,
+        "psnr_o_amp": 32.60342277483644,
+        "ssim_o_amp": 0.9013966694188659,
+        "psnr_o_phi": 34.00704709024816,
+        "ssim_o_phi": 0.9272772848523779,
+        "rmse_o_phi_rad": 0.031225349754095078,
+        "relerr_o_complex": 0.0358559750020504,
+        "psnr_p_amp": 39.24285601077658,
+        "ssim_p_amp": 0.9061410620567275,
+        "psnr_p_phi": "inf",
+        "ssim_p_phi": 1.0,
+        "rms_p_phi_rad": 0.0,
+        "relerr_p_complex": 0.0
+      },
+      "array_sha256": {
+        "obj_rec": "a676ed3e16123df40e6a3e8761b3589480ee2291c29f34bf637e3a3fbe91c02e",
+        "probe_rec": "12b29b2818ead8497cf561d80e1b5b144dec2e136dcab8df3cacb9a8c12fc228"
+      },
+      "finite": {
+        "obj_rec": true,
+        "probe_rec": true
+      },
+      "warnings": [
+        "No stored object truth: cannot re-evaluate; history is not newly verified ground truth.",
+        "Actual scan positions absent; do not regenerate from current code to represent an old run.",
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "nominal_geometry": {
+        "configured_diameter_px": 48,
+        "linear_overlap_from_config_only": 0.5833333333333333
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\net_tgv_result.npz",
+      "file_sha256": "99136ca7d5ac612478250c71635abd0969e4516acd20d883e0e6c34619e40147",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 4,
+        "step_px": 35,
+        "probe_diam_um": 800.0,
+        "obj_size": 624,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "disk",
+        "probe_init_sigma": 0.15,
+        "probe_mode": "pixel",
+        "probe_support_margin": 1.0,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.005,
+        "lr_probe": 0.02,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "tgv_amp": 0.1,
+        "tgv_phase": 0.0,
+        "tgv_alpha0": 2.0,
+        "tgv_alpha1": 1.0,
+        "tgv_eps": 0.001,
+        "tgv_inner_steps": 5,
+        "tgv_lr": 0.01,
+        "timing_warmup": -1,
+        "measurement_schedule": "",
+        "measurement_policy": "fixed",
+        "measurement_seed": 0,
+        "input_policy": "full",
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "ov40_net-tgv",
+        "eval_every": 25,
+        "eval_size": 96
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.7585767636774108e-05,
+        "real": 1.3504220247268677,
+        "relerr_p": 0.6223278641700745,
+        "ssim_amp": 0.899414368792268,
+        "ssim_phs": 0.8283417406867769,
+        "psnr_amp": 20.97955893727417,
+        "psnr_phs": 20.436861375859195,
+        "relerr": 0.13234977424144745,
+        "data_loss": 9.096460416913033e-06,
+        "relative_data_loss": 0.00799496565014124,
+        "tgv_amp": 0.07461332529783249,
+        "tgv_first": 0.06542211025953293,
+        "tgv_second": 0.004595608450472355,
+        "tgv_weighted": 8.489306310366374e-06
+      },
+      "array_sha256": {
+        "obj_rec": "f3418e7b341cc663a3abc620e8984c0348db24150b1f6660fcbfe019c2571dfc",
+        "obj_gt": "1fd028468e30ff10fe519a3b38c32e216ecb001c5487c0748b629178ebcc5745",
+        "probe_rec": "eb6e25fb7ae6b351493dcaa7b014d0589ba9b63e252001613565167dd41afded",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "188cf3063c816f72142eb973fb242d833970382e59af6fa08d8523046e592d35"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.899414368792268,
+        "ssim_phs": 0.8283417413620552,
+        "psnr_amp": 20.97955893727417,
+        "psnr_phs": 20.436861563716846,
+        "relerr": 0.13234977424144745
+      },
+      "stored_roi": [
+        264,
+        360,
+        264,
+        360
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.899414368792268,
+        "ssim_phs": 0.8283417413620552,
+        "psnr_amp": 20.97955893727417,
+        "psnr_phs": 20.436861563716846,
+        "relerr": 0.13234977424144745
+      },
+      "central_coverage": {
+        "roi_min_support_count": 1,
+        "roi_max_support_count": 4,
+        "roi_mean_support_count": 2.33984375,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.16193681828510953
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.6223278641700745,
+        "gt_support_relative_error_separately_aligned": 0.040597472339868546,
+        "outside_gt_support_energy_fraction": 0.38628048990632213,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.27683502600476156,
+          0.27335005165173576
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.4075369327626328
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\paper_result (1).npz",
+      "file_sha256": "f90fac54f314466372e9530c543893b4659d57d5fbfc799d3f53e551138ea390",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 10,
+        "step_px": 10,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.0005,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "probe_init": "ones",
+        "probe_init_sigma": 0.15,
+        "obj_init_alpha": 0.0,
+        "lr_obj": 0.03,
+        "lr_prb": 0.03,
+        "lr_net": 0.001,
+        "lr_probe": 0.001,
+        "lr_cosine": false,
+        "weight_decay": 0.0,
+        "fwd_chunk": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "results_paper",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 1.3734114170074463,
+        "real": 1.295900821685791,
+        "ssim_amp": 0.5985009456243384,
+        "ssim_phs": 0.7078042656492435,
+        "psnr_amp": 15.01213899619302,
+        "psnr_phs": 13.842512631619359,
+        "relerr": 0.302193284034729,
+        "wrap_frac": 0.00010526315789473685,
+        "signmix": 0.0008421052631578948,
+        "relerr_p": 0.1773109883069992
+      },
+      "array_sha256": {
+        "obj_rec": "d06518e91ee59f27eb9500c1d579a8870f41de92f31e03656c232ffc08ad4c18",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "eb9755cd5d68164c395e74ac99e5a54ca901c6b4bc974f373a89754d040cdc8a",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "58d2cc6b825f28bd0beca4edf35c0435264a48836edbc7e698b8da5e0980704a"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.6098193233853781,
+        "ssim_phs": 0.7080830646158827,
+        "psnr_amp": 15.005539377197486,
+        "psnr_phs": 13.92704644958371,
+        "relerr": 0.30103880167007446
+      },
+      "stored_roi": [
+        256,
+        356,
+        256,
+        351
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.5985009456243386,
+        "ssim_phs": 0.7078042637949905,
+        "psnr_amp": 15.01213899619302,
+        "psnr_phs": 13.842512728659248,
+        "relerr": 0.302193284034729
+      },
+      "central_coverage": {
+        "roi_min_support_count": 8,
+        "roi_max_support_count": 32,
+        "roi_mean_support_count": 21.67925347222222,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.209010298452944
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.1773109883069992,
+        "gt_support_relative_error_separately_aligned": 0.1768895983695984,
+        "outside_gt_support_energy_fraction": 0.00015407760791025658,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.7500592444357602,
+          0.7542492272615354
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.8307248379321808
+      }
+    },
+    {
+      "file": "C:\\Users\\kennyzz\\Downloads\\paper_result.npz",
+      "file_sha256": "d0181497cd47a787aad111edc2159ef857f18c0a8589bcb334b4e9be36dc762c",
+      "config": {
+        "preset": "paper",
+        "wlength": 6.32e-07,
+        "N": 512,
+        "det_pixel": 1.504e-05,
+        "z": 0.165,
+        "grid": 10,
+        "step_px": 10,
+        "probe_diam_um": 800.0,
+        "obj_size": 612,
+        "amp_image": "USAF.jpg",
+        "phs_image": "siemens",
+        "obj_phase_rad": 0.8,
+        "noise": "none",
+        "snr_db": 30.0,
+        "noise_seed": 42,
+        "beta": 0.9,
+        "gamma0": 1.0,
+        "gamma_end": 0.02,
+        "s1_margin": 1.0,
+        "base_ch": 32,
+        "phase_span_obj": 3.141592653589793,
+        "phase_span_prb": 3.141592653589793,
+        "iters": 2000,
+        "lr": 0.001,
+        "lr_final_frac": 0.1,
+        "pos_batch": 0,
+        "scale_cal": true,
+        "seed": 0,
+        "device": "auto",
+        "assets": "",
+        "outdir": "results_paper",
+        "eval_every": 25
+      },
+      "keys": [
+        "obj_rec",
+        "obj_gt",
+        "probe_rec",
+        "probe_gt",
+        "roi",
+        "positions",
+        "hist",
+        "cfg"
+      ],
+      "last_saved_history": {
+        "it": 2000,
+        "loss": 5.296880722045898,
+        "real": 5.438392162322998,
+        "ssim_amp": 0.16982214046051283,
+        "ssim_phs": 0.494655457618418,
+        "psnr_amp": 8.670213843328188,
+        "psnr_phs": 9.428490875199643,
+        "relerr": 0.5153569579124451,
+        "wrap_frac": 0.0004210526315789474,
+        "signmix": 0.0008421052631578663
+      },
+      "array_sha256": {
+        "obj_rec": "1be503340e635514771f304b030400666d015742421797b51a0ea2f86dcc3e9a",
+        "obj_gt": "8ae314857aaac0f0f7b2ebbd73bc444fafcaf1d26dbd92659b18985e93116176",
+        "probe_rec": "9a860ea5ee1fb822599b29bbfcf1966daccc72f286ff11fecea7eeac4aeb68a2",
+        "probe_gt": "371da721a04e15be09693bc4ef6726920e32e74c523d2bc471f4b8978497aa04",
+        "positions": "58d2cc6b825f28bd0beca4edf35c0435264a48836edbc7e698b8da5e0980704a"
+      },
+      "finite": {
+        "obj_rec": true,
+        "obj_gt": true,
+        "probe_rec": true,
+        "probe_gt": true,
+        "positions": true
+      },
+      "warnings": [
+        "No saved solver revision; current source audit does not prove the historical execution path."
+      ],
+      "central_roi": [
+        258,
+        354,
+        258,
+        354
+      ],
+      "central_metrics_paper_protocol": {
+        "ssim_amp": 0.16840486712555963,
+        "ssim_phs": 0.49102433562933007,
+        "psnr_amp": 8.743141502126374,
+        "psnr_phs": 9.546410388310587,
+        "relerr": 0.5150325298309326
+      },
+      "stored_roi": [
+        256,
+        356,
+        256,
+        351
+      ],
+      "stored_roi_metrics": {
+        "ssim_amp": 0.16982214046051283,
+        "ssim_phs": 0.4946554568576024,
+        "psnr_amp": 8.670213843328188,
+        "psnr_phs": 9.428491032175522,
+        "relerr": 0.5153569579124451
+      },
+      "central_coverage": {
+        "roi_min_support_count": 8,
+        "roi_max_support_count": 32,
+        "roi_mean_support_count": 21.67925347222222,
+        "roi_unilluminated_fraction": 0.0,
+        "roi_coverage_min_over_max": 0.209010298452944
+      },
+      "probe_diagnostics": {
+        "full_relative_error": 0.42861756682395935,
+        "gt_support_relative_error_separately_aligned": 0.425138384103775,
+        "outside_gt_support_energy_fraction": 0.003625714471037144,
+        "centered_energy_diameters_px": {
+          "0.9": 56.0357029044876,
+          "0.95": 57.688820407423826,
+          "0.99": 58.82176467941097
+        },
+        "gt_support_pixels": 2741,
+        "warning": "GT-assisted diagnostics; masked error has its own complex alignment, not the official full error.",
+        "intensity_autocorrelation_at_step_y_x": [
+          0.7500592444357602,
+          0.7542492272615354
+        ]
+      },
+      "nominal_geometry": {
+        "diameter_px": 59.075412351361706,
+        "dx_m": 1.3542012965425534e-05,
+        "linear_overlap": 0.8307248379321808
+      }
+    }
+  ],
+  "errors": [],
+  "source_sha256": {
+    "simulations\\audit_saved_reconstructions.py": "6849a31ff99024f300a6874d4ffb1c9e9b88f53bf018560e2c1b6ddc4259248e",
+    "functions\\paperrepro\\evaluate.py": "86542e2a4db4d683a027c4f4b1a9aeb75a4c54783b6428cc1fc0758a5b7fbefe",
+    "functions\\common\\metrics.py": "6887b6152886172891bdafeb4dcf450659ff9991543f266f4b02909ffc9faeaa"
+  }
+}
