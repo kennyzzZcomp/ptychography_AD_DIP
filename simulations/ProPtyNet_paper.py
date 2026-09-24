@@ -107,7 +107,7 @@ class Cfg:
     # ---- 优化 ----
     iters: int = 2000
     lr: float = 5e-4             # 论文: 5e-4 ~ 5e-3
-    lr_final_frac: float = 0.1   # cosine 衰减到 lr 的这个比例; 1.0 = 不衰减
+    lr_final_frac: float = 1   # cosine 衰减到 lr 的这个比例; 1.0 = 不衰减
     pos_batch: int = 0           # 0 = 全 batch（论文写法）; >0 = 每步随机取这么多位置
 
     # ---- ad / net 两条对照算法（与 run 共用同一份仿真数据，见 paperrepro/scene.py）----
