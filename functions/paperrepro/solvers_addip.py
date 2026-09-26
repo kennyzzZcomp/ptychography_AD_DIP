@@ -221,11 +221,20 @@ def run_net(cfg: Cfg):
     x = F.pad(x, (pad_n, NS - M - pad_n, pad_n, NS - M - pad_n))
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
-    net = AddipUNet(cfg.n_pat, cfg.base_ch, n_fields=1, ph_ch=2,
-                   skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold).to(device)
+    if cfg.network_type == "complex":
+        from functions.addip.complex_model import ComplexProPtyUNet
+        if cfg.skip_mode != "concat" or cfg.measurement_schedule or cfg.input_policy != "full":
+            raise ValueError("complex backbone supports full input and concat skips only")
+        net = ComplexProPtyUNet(cfg.n_pat, cfg.complex_base_ch, cfg.complex_activation).to(device)
+        print(f"[net] complex backbone: width={cfg.complex_base_ch} complex channels; "
+              f"activation={cfg.complex_activation}; covariance BN; real amplitude/cos-sin readout")
+    else:
+        net = AddipUNet(cfg.n_pat, cfg.base_ch, n_fields=1, ph_ch=2,
+                       skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold).to(device)
     print(f"[net] skip_mode={cfg.skip_mode}; wavelet initial threshold={cfg.wavelet_threshold:g}")
     input_layer = install_selected_input(net) if cfg.input_policy == "follow_measurements" else None
-    print(f"[net] U-Net(addip 参数化) {sum(p.numel() for p in net.parameters())/1e6:.2f} M "
+    network_parameters = sum(p.numel() for p in net.parameters())
+    print(f"[net] U-Net({cfg.network_type}, addip 参数化) {network_parameters/1e6:.2f} M "
           f"参数 | 输入 {tuple(x.shape)}")
 
     # 相位中性初始化：alpha=0 时第 0 步 O ≡ 1·exp(i0)，与 ad 的初值逐位相同
@@ -440,6 +449,14 @@ def run_net(cfg: Cfg):
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     timer.save(Path(cfg.outdir) / "net_timing.json")
+    (Path(cfg.outdir) / "network_metadata.json").write_text(json.dumps({
+        "network_type": cfg.network_type, "real_parameter_count": network_parameters,
+        "base_channels": cfg.complex_base_ch if cfg.network_type == "complex" else cfg.base_ch,
+        "channel_type": "complex" if cfg.network_type == "complex" else "real",
+        "activation": cfg.complex_activation if cfg.network_type == "complex" else "leaky_relu",
+        "readout": "real softplus amplitude and normalized cos/sin phase",
+        "skip_mode": cfg.skip_mode,
+    }, indent=2), encoding="utf-8")
     if cfg.skip_mode == "wavelet":
         (Path(cfg.outdir) / "wavelet_skip.json").write_text(json.dumps({
             "mode": cfg.skip_mode, "initial_threshold": cfg.wavelet_threshold,

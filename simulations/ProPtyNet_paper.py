@@ -98,6 +98,9 @@ class Cfg:
 
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
+    network_type: str = "real"   # net only; original default preserved
+    complex_base_ch: int = 23    # complex channels, NOT real scalar channels
+    complex_activation: str = "modrelu"
     skip_mode: str = "concat"   # net only: concat / wavelet / wavelet-identity
     wavelet_threshold: float = 0.01  # initial soft threshold in encoder feature units
     # 论文 Fig.1: S = amp_s·exp(jπ·phs_s), P = amp_p·exp(jπ·phs_p)
@@ -168,6 +171,15 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.network_type not in ("real", "complex"):
+            raise ValueError("network_type must be real or complex")
+        if self.complex_base_ch < 1 or self.complex_activation not in ("modrelu", "crelu"):
+            raise ValueError("Invalid complex width or activation")
+        if self.network_type == "complex":
+            if self.skip_mode != "concat":
+                raise ValueError("complex backbone currently requires skip_mode=concat (no wavelet)")
+            if self.measurement_schedule or self.input_policy != "full":
+                raise ValueError("complex backbone does not yet support progressive / selected input")
         from functions.paperrepro.lr_schedule import parse_lr_schedule
         parse_lr_schedule(self.lr_schedule, self.lr_net, self.lr_probe,
                           self.iters, self.lr_cosine)
@@ -264,6 +276,9 @@ def main():
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
     ap.add_argument("--skip-mode", choices=["concat", "wavelet", "wavelet-identity"])
     ap.add_argument("--wavelet-threshold", type=float)
+    ap.add_argument("--network-type", choices=["real", "complex"])
+    ap.add_argument("--complex-base-ch", type=int)
+    ap.add_argument("--complex-activation", choices=["modrelu", "crelu"])
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
@@ -271,6 +286,8 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if cfg.network_type != "real" and a.mode != "net":
+        ap.error("--network-type complex is implemented only for mode net")
     if cfg.skip_mode != "concat" and a.mode != "net":
         ap.error("--skip-mode wavelet variants are implemented only for mode net")
     if not math.isfinite(cfg.wavelet_threshold) or cfg.wavelet_threshold <= 0:

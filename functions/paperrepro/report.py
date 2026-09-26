@@ -141,6 +141,11 @@ def _save(cfg, rec, pc, obj, probe, hist, roi, positions, tag="paper", train_ela
 
 def _report_device(cfg: Cfg, device):
     """设备 + 显存估算。代码本身与设备无关：cfg.dev() 见到 CUDA 就用 CUDA。"""
+    if getattr(cfg, "network_type", "real") == "complex":
+        name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+        print(f"[G] device {device} ({name}); complex backbone")
+        print("    Memory: original real-U-Net estimate is not applicable; measure on target GPU.")
+        return
     NS, J, n, b = cfg.net_size, cfg.n_pat, cfg.N, cfg.base_ch
     mb = lambda x: x / 2 ** 20
     unet = mb(J * NS * NS * 4)
