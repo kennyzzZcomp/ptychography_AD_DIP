@@ -221,7 +221,9 @@ def run_net(cfg: Cfg):
     x = F.pad(x, (pad_n, NS - M - pad_n, pad_n, NS - M - pad_n))
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
-    net = AddipUNet(cfg.n_pat, cfg.base_ch, n_fields=1, ph_ch=2).to(device)
+    net = AddipUNet(cfg.n_pat, cfg.base_ch, n_fields=1, ph_ch=2,
+                   skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold).to(device)
+    print(f"[net] skip_mode={cfg.skip_mode}; wavelet initial threshold={cfg.wavelet_threshold:g}")
     input_layer = install_selected_input(net) if cfg.input_policy == "follow_measurements" else None
     print(f"[net] U-Net(addip 参数化) {sum(p.numel() for p in net.parameters())/1e6:.2f} M "
           f"参数 | 输入 {tuple(x.shape)}")
@@ -289,6 +291,9 @@ def run_net(cfg: Cfg):
     previous_stage = None
     for it in range(cfg.iters):
         amp_weight = tgv_weight(cfg.tgv_amp, tgv_stages, it)
+        if cfg.skip_mode == "wavelet":
+            for skip in net.skip_filters:
+                skip.capture_stats = it == cfg.iters - 1
         amp_tgv_active = tgv is not None and amp_weight > 0
         if tgv_stages:
             tgv_weight_history.append({"it": it+1, "tgv_amp_weight": amp_weight})
@@ -435,6 +440,13 @@ def run_net(cfg: Cfg):
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     timer.save(Path(cfg.outdir) / "net_timing.json")
+    if cfg.skip_mode == "wavelet":
+        (Path(cfg.outdir) / "wavelet_skip.json").write_text(json.dumps({
+            "mode": cfg.skip_mode, "initial_threshold": cfg.wavelet_threshold,
+            "bands": ["LH", "HL", "HH"],
+            "description": "Final training forward, before final optimizer update; thresholds in feature units; LL unchanged",
+            "levels_shallow_to_deep": [skip.last_stats for skip in net.skip_filters],
+        }, indent=2), encoding="utf-8")
     if lr_stages:
         (Path(cfg.outdir) / "lr_schedule.json").write_text(json.dumps({
             "schedule": cfg.lr_schedule,

@@ -98,6 +98,8 @@ class Cfg:
 
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
+    skip_mode: str = "concat"   # net only: concat / wavelet / wavelet-identity
+    wavelet_threshold: float = 0.01  # initial soft threshold in encoder feature units
     # 论文 Fig.1: S = amp_s·exp(jπ·phs_s), P = amp_p·exp(jπ·phs_p)
     # 两个都默认 π = 论文原版基线（振幅 Conv2d+LeakyReLU，相位 Conv2d+tanh，输出头不动）。
     # 拆成两个只是为了做消融时能单独放宽样品那一路（论文正文建议样品放到 2π）。
@@ -260,6 +262,8 @@ def main():
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
+    ap.add_argument("--skip-mode", choices=["concat", "wavelet", "wavelet-identity"])
+    ap.add_argument("--wavelet-threshold", type=float)
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
@@ -267,6 +271,10 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if cfg.skip_mode != "concat" and a.mode != "net":
+        ap.error("--skip-mode wavelet variants are implemented only for mode net")
+    if not math.isfinite(cfg.wavelet_threshold) or cfg.wavelet_threshold <= 0:
+        ap.error("--wavelet-threshold must be finite and > 0")
     if cfg.lr_schedule and a.mode != "net":
         ap.error("--lr-schedule is implemented only for mode net")
     if cfg.tgv_amp_schedule and a.mode != "net":
