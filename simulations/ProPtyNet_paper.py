@@ -118,16 +118,14 @@ class Cfg:
     # ---- ad / net 两条对照算法（与 run 共用同一份仿真数据，见 paperrepro/scene.py）----
     #   ad  : 物体 = 自由复数像素，振幅域损失
     #   net : 物体 = 未训练 U-Net（softplus 振幅 + cos/sin 相位），振幅域损失
-    # 三者的迭代数都用上面的 iters，探针初值都用下面这两项。
-    # 【默认 disk】ones 时 err_P0 ≈ 0.996（与真值几乎不相关），而论文那一路另有
-    # Eq.(5) Loss2 把探针按回针孔里 —— 给 ad/net 用 ones 等于让它们既没初值也没约束，
-    # 实测直接跑不出来。disk 只编码"针孔多大"，与 Loss2 的先验强度大致对等。
+    # ad/net use probe_init; paper run retains its own constant network-head init.
     probe_init: str = "ones"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
     probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
     # 探针参数化（只对 ad / net 生效；run 的探针是网络输出的，改不了）
     #   pixel   自由复数像素，2·N² = 524k 个未知量，其中只有针孔内那 ~5.5k 被数据定住
     #   support 只在针孔内参数化，外面【恒等于 0】。未知量 524k -> 5.5k，直接消掉零空间
     #   truth   冻结在真值上（非盲上界诊断：它也崩 = 数据本身不够，与探针无关）
+    #   shared  net only: shared real U-Net + linear real/imag probe head, ones init
     probe_mode: str = "pixel"
     # support 档的掩膜半径 = margin × 针孔半径。1.2 允许一圈衍射光晕，更接近真实光路。
     # 与论文 Loss2 的 s1_margin 是两回事，互不影响。
@@ -136,7 +134,7 @@ class Cfg:
     lr_obj: float = 3e-2         # ad  物体自由像素（1e-2 在本几何下明显偏小）
     lr_prb: float = 3e-2         # ad  探针自由像素
     lr_net: float = 1e-3         # net U-Net
-    lr_probe: float = 1e-2       # net 探针自由像素
+    lr_probe: float = 1e-2       # net probe pixels OR shared probe head (not backbone)
     lr_cosine: bool = False      # net 两个 lr 一起余弦退火到 0
     lr_schedule: str = ""       # net: "1000:8e-4:2e-2"; 第1001次更新切换net/probe LR
     weight_decay: float = 0.0    # net DIP 不该有权重衰减
@@ -171,6 +169,15 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.probe_mode not in ("pixel", "support", "truth", "shared"):
+            raise ValueError("probe_mode must be pixel, support, truth or shared")
+        if self.probe_mode == "shared":
+            if self.network_type != "real" or self.skip_mode != "concat":
+                raise ValueError("shared probe requires real network and concat skips")
+            if self.probe_init != "ones" or self.obj_init_alpha != 0:
+                raise ValueError("shared probe control requires probe_init=ones and obj_init_alpha=0")
+            if self.measurement_schedule or self.input_policy != "full":
+                raise ValueError("shared probe control currently requires full measurements/input, no progressive schedule")
         if self.network_type not in ("real", "complex"):
             raise ValueError("network_type must be real or complex")
         if self.complex_base_ch < 1 or self.complex_activation not in ("modrelu", "crelu"):
@@ -286,6 +293,8 @@ def main():
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if cfg.probe_mode == "shared" and a.mode != "net":
+        ap.error("--probe-mode shared is implemented only for mode net (internal control, not paper run)")
     if cfg.network_type != "real" and a.mode != "net":
         ap.error("--network-type complex is implemented only for mode net")
     if cfg.skip_mode != "concat" and a.mode != "net":

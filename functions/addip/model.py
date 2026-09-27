@@ -51,7 +51,7 @@ class ProPtyUNet(nn.Module):
             WaveletSkip(wavelet_threshold, identity=skip_mode == "wavelet-identity")
             for _ in range(3)])
 
-    def forward(self, x):
+    def forward_features(self, x):
         x1 = self.e1(x)
         x2 = self.e2(self.pool(x1))
         x3 = self.e3(self.pool(x2))
@@ -59,7 +59,44 @@ class ProPtyUNet(nn.Module):
         y = self.d3(torch.cat([self.u3(xb), self.skip_filters[2](x3)], 1))
         y = self.d2(torch.cat([self.u2(y), self.skip_filters[1](x2)], 1))
         y = self.d1(torch.cat([self.u1(y), self.skip_filters[0](x1)], 1))
+        return y
+
+    def forward(self, x):
+        y = self.forward_features(x)
         return self.head_amp(y)[0], self.head_phs(y)[0]     # (F,H,W), (F*ph,H,W)
+
+
+class SharedProbeUNet(ProPtyUNet):
+    """Internal net control: same object backbone/readout, linear real/imag probe.
+
+    Construct the extra head AFTER the original modules so paired seeds give
+    exactly the same initial object/backbone weights as ProPtyUNet.
+    """
+    def __init__(self, in_ch, base=32):
+        super().__init__(in_ch, base, n_fields=1, ph_ch=2, skip_mode="concat")
+        self.head_probe = nn.Conv2d(base, 2, 3, padding=1)
+        with torch.no_grad():
+            self.head_probe.weight.zero_()
+            self.head_probe.bias.copy_(torch.tensor([1., 0.]))
+
+    def forward(self, x):
+        y = self.forward_features(x)
+        return self.head_amp(y)[0], self.head_phs(y)[0], self.head_probe(y)[0]
+
+
+def shared_probe_field(raw, obj_size, probe_size):
+    """Unpad to object canvas, then centrally crop to the detector-sized probe.
+
+    Two-stage cropping matches the existing object/probe coordinate convention,
+    including odd padding differences. No amplitude/phase activation or mask.
+    """
+    if raw.ndim != 3 or raw.shape[0] != 2 or raw.shape[1] != raw.shape[2]:
+        raise ValueError("probe head must have shape (2, H, H)")
+    if not 0 < probe_size <= obj_size <= raw.shape[-1]:
+        raise ValueError("invalid shared probe crop sizes")
+    start = (raw.shape[-1] - obj_size) // 2 + (obj_size - probe_size) // 2
+    crop = raw[:, start:start+probe_size, start:start+probe_size]
+    return torch.complex(crop[0], crop[1])
 
 def make_field(amp_raw, phs_raw):
     """原始头 -> 复数场。振幅 softplus，相位 cos/sin 单位圆。

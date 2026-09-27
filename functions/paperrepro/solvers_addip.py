@@ -3,7 +3,8 @@
 
 与 functions/paperrepro/solvers.py 的 run()（论文原版 ProPtyNet）共用：
     同一份物体/探针真值、同一组扫描位置、同一个 Fresnel 前向、同一份噪声实现、
-    同一个探针初值、同一个评价函数与同一块评价 ROI、同一个迭代数。
+    同一个评价函数与同一块评价 ROI、同一个迭代数。
+    注意：ad/net 使用 scene.P0；paper run 仍采用自己的常数探针输出头初始化。
 差别【只有】三处，这三处正是要比的东西：
     物体参数化   ad = 自由复数像素 | net = U-Net(softplus 振幅 + cos/sin 相位)
                  paper = U-Net(LeakyReLU 振幅 + π·tanh 相位)
@@ -28,7 +29,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from functions.addip.losses import cabs
-from functions.addip.model import ProPtyUNet as AddipUNet, make_field
+from functions.addip.model import (ProPtyUNet as AddipUNet, SharedProbeUNet,
+                                   make_field, shared_probe_field)
 from functions.paperrepro.crosstalk import pinhole_mask
 from functions.paperrepro.evaluate import evaluate, probe_relerr
 from functions.paperrepro.optics import forward_field
@@ -195,6 +197,39 @@ def run_ad(cfg: Cfg):
 # DIP：未训练 U-Net 做物体先验，探针仍是自由像素
 # ============================================================================ #
 
+def _initialize_object_heads(net, alpha):
+    """Identical neutral object initialization for pixel and shared controls."""
+    with torch.no_grad():
+        net.head_amp.weight[0].mul_(alpha)
+        net.head_phs.weight[0:2].mul_(alpha)
+        net.head_amp.bias[0] = math.log(math.e - 1.0)
+        net.head_phs.bias[0:2] = 0.0
+        net.head_phs.bias[0] = 1.0
+
+
+def _net_optimizers(cfg, net, mode, Pr, Pi):
+    if mode == "shared":
+        probe_params = list(net.head_probe.parameters())
+        probe_ids = {id(p) for p in probe_params}
+        object_params = [p for p in net.parameters() if id(p) not in probe_ids]
+    else:
+        object_params = list(net.parameters())
+        probe_params = [] if mode == "truth" else [Pr, Pi]
+    # Shared backbone receives BOTH pathways' gradients, at lr_net only.
+    # As for pixel mode, probe-specific parameters have no weight decay.
+    return (torch.optim.Adam(object_params, lr=cfg.lr_net, weight_decay=cfg.weight_decay),
+            torch.optim.Adam(probe_params, lr=cfg.lr_probe) if probe_params else None)
+
+
+def _initial_field_stats(O, P):
+    def stats(field):
+        a = field.detach().abs()
+        return {"amplitude_min": a.min().item(), "amplitude_max": a.max().item(),
+                "phase_rms_rad": torch.angle(field.detach()).square().mean().sqrt().item(),
+                "max_abs_difference_from_one": (field.detach()-1).abs().max().item()}
+    return {"object": stats(O), "probe": stats(P)}
+
+
 def run_net(cfg: Cfg):
     from functions.paperrepro.lr_schedule import parse_lr_schedule, learning_rates
     lr_stages = parse_lr_schedule(cfg.lr_schedule, cfg.lr_net, cfg.lr_probe,
@@ -221,7 +256,9 @@ def run_net(cfg: Cfg):
     x = F.pad(x, (pad_n, NS - M - pad_n, pad_n, NS - M - pad_n))
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
-    if cfg.network_type == "complex":
+    if cfg.probe_mode == "shared":
+        net = SharedProbeUNet(cfg.n_pat, cfg.base_ch).to(device)
+    elif cfg.network_type == "complex":
         from functions.addip.complex_model import ComplexProPtyUNet
         if cfg.skip_mode != "concat" or cfg.measurement_schedule or cfg.input_policy != "full":
             raise ValueError("complex backbone supports full input and concat skips only")
@@ -239,16 +276,16 @@ def run_net(cfg: Cfg):
 
     # 相位中性初始化：alpha=0 时第 0 步 O ≡ 1·exp(i0)，与 ad 的初值逐位相同
     _a = float(cfg.obj_init_alpha)
-    with torch.no_grad():
-        net.head_amp.weight[0].mul_(_a)
-        net.head_phs.weight[0:2].mul_(_a)
-        net.head_amp.bias[0] = math.log(math.e - 1.0)   # softplus(b) = 1
-        net.head_phs.bias[0:2] = 0.0
-        net.head_phs.bias[0] = 1.0                      # (c, sn) = (1, 0) -> phi = 0
+    _initialize_object_heads(net, _a)
     print(f"[net] 物体输出头 = 相位中性初始化 alpha={_a:g}"
           + ("（第 0 步 O ≡ 1·exp(i0)，与 ad 初值相同）" if _a == 0 else ""))
 
-    mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "net")
+    if cfg.probe_mode == "shared":
+        mode, Pfix, Pr, Pi, Msup = "shared", None, None, None, None
+        print("[net] 探针 = 共享 U-Net 的线性双通道头 P=Pr+iPi；中心裁剪，无 support；初值 P=1+0i")
+        print("[net] 内部结构对照（不是 paper run）：主干+物体头用 lr_net；探针头用 lr_probe；主干接收两条路径梯度")
+    else:
+        mode, Pfix, Pr, Pi, Msup = _probe_setup(cfg, sc, probe, device, "net")
 
     tgv = ObjectAmplitudeTGV(cfg, sc.pos, device) if cfg.tgv_amp > 0 else None
     tgv_phase = ObjectPhaseTGV(cfg, sc.pos, device) if cfg.tgv_phase > 0 else None
@@ -274,16 +311,23 @@ def run_net(cfg: Cfg):
     c_ns = slice(pad_n, pad_n + M)
 
     def decode(amplitude_tgv_active):
-        a_raw, p_raw = net(x)
+        outputs = net(x)
+        a_raw, p_raw = outputs[:2]
+        P = (shared_probe_field(outputs[2], M, n) if mode == "shared"
+             else _probe_of(mode, Pfix, Pr, Pi, Msup))
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
         # The explicit softplus amplitude bypasses the phase head entirely.
         amp = F.softplus(a_raw[0])[c_ns, c_ns] if amplitude_tgv_active else None
         phase = phase_from_head(p_raw[0:2])[c_ns, c_ns] if tgv_phase is not None else None
-        return O, _probe_of(mode, Pfix, Pr, Pi, Msup), amp, phase
+        return O, P, amp, phase
 
-    opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
-                               weight_decay=cfg.weight_decay)
-    opt_prb = None if mode == "truth" else torch.optim.Adam([Pr, Pi], lr=cfg.lr_probe)
+    opt_net, opt_prb = _net_optimizers(cfg, net, mode, Pr, Pi)
+    probe_parameters = sum(p.numel() for g in opt_prb.param_groups for p in g["params"]) if opt_prb else 0
+    total_parameters = network_parameters + (probe_parameters if mode != "shared" else 0)
+    print(f"[net] trainable parameters: network={network_parameters}, "
+          f"probe-specific={probe_parameters}, total={total_parameters}; "
+          f"lr_net={cfg.lr_net:g}, lr_probe={cfg.lr_probe:g}, cosine={cfg.lr_cosine}")
+    initial_fields = None
 
     timer = StageTimer(device, cfg.timing_warmup)
     curriculum = MeasurementSchedule(cfg.measurement_schedule, cfg.grid, cfg.iters,
@@ -344,6 +388,13 @@ def run_net(cfg: Cfg):
         timer.mark("scheduler")
         O, P, amp, phase = decode(amp_tgv_active)
         timer.mark("network_decode")
+        if it == 0:
+            initial_fields = _initial_field_stats(O, P)
+            print("[net] actual initialization (before first update): " + json.dumps(initial_fields))
+            if mode == "shared" and any(v["max_abs_difference_from_one"] > 1e-6
+                                        for v in initial_fields.values()):
+                raise RuntimeError("Shared control failed O=P=1 initialization check")
+            timer.mark("initialization_audit")
         Ua = cabs(_fwd(cfg, O, P, active_post, Q))
         # 全局幅度标度 O->aO, P->P/a 是规范自由度。每步解析求最优标量（VarPro），
         # 不 detach —— 该方向梯度恒为 0，自由度被消掉。
@@ -456,6 +507,14 @@ def run_net(cfg: Cfg):
         "activation": cfg.complex_activation if cfg.network_type == "complex" else "leaky_relu",
         "readout": "real softplus amplitude and normalized cos/sin phase",
         "skip_mode": cfg.skip_mode,
+        "probe_mode": mode,
+        "probe_readout": "linear real/imag shared head, center crop" if mode == "shared" else mode,
+        "probe_specific_parameters": probe_parameters,
+        "total_trainable_parameters": total_parameters,
+        "probe_parameters_included_in_network_count": mode == "shared",
+        "lr_net_applies_to": "shared backbone + object heads" if mode == "shared" else "object network",
+        "lr_probe_applies_to": "probe head only" if mode == "shared" else "probe pixels (unless truth)",
+        "initial_fields": initial_fields,
     }, indent=2), encoding="utf-8")
     if cfg.skip_mode == "wavelet":
         (Path(cfg.outdir) / "wavelet_skip.json").write_text(json.dumps({
