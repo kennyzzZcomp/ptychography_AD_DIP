@@ -1,0 +1,120 @@
+"""Run with python -m multiwave.run_simulation, or directly by file path."""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, replace
+from datetime import datetime
+import json
+from pathlib import Path
+import platform
+import sys
+import numpy as np
+import torch
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from multiwave.config import Config, METHODS, SCENES
+from multiwave.physics import MultiwaveOperator
+from multiwave.scene import simulate
+from multiwave.reconstruct import reconstruct
+from multiwave.report import plot_scene, plot_result, save_summary
+
+
+@torch.no_grad()
+def audit_scene(cfg, scene):
+    op = scene.operator
+    larger = MultiwaveOperator(replace(cfg, pad_factor=2*cfg.pad_factor), op.probes, op.positions)
+    reference = larger(scene.objects)
+    difference = float((reference-scene.clean).norm()/reference.norm())
+    return {"padding_relative_intensity_difference": difference,
+            "padding_checked": [cfg.pad_factor, 2*cfg.pad_factor],
+            "transfer_retained_frequency_fraction": (op.transfer.abs() > 0).float().mean((-1, -2)).cpu().tolist(),
+            "probe_powers": op.probes.abs().square().sum((-1, -2)).cpu().tolist(),
+            "train_count": len(scene.train), "holdout_count": len(scene.holdout),
+            "roi_pixels": int(scene.roi.sum()),
+            "mean_detected_photons_per_scan": float(scene.clean.sum((-1, -2)).mean()*cfg.photons_per_scan),
+            "known_probes": True, "fixed_spectral_weights": True,
+            "holdout_excluded_from_network_input": True}
+
+
+def run_experiment(cfg, methods=METHODS, outdir=None):
+    cfg.validate()
+    methods = tuple(methods)
+    allowed = METHODS + ("pixel_common", "unet_common")
+    if not methods or len(set(methods)) != len(methods) or any(m not in allowed for m in methods):
+        raise ValueError(f"methods must be distinct members of {allowed}")
+    torch.set_num_threads(cfg.threads)
+    device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
+    if device == "auto":
+        device = "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but unavailable; use --device cpu or auto")
+    if device == "cuda":
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+    out = Path(outdir) if outdir is not None else Path(__file__).parent/"results"/datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    if out.exists() and any(out.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite a nonempty run directory: {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    scene = simulate(cfg, device)
+    audit = audit_scene(cfg, scene)
+    if audit["padding_relative_intensity_difference"] > .01:
+        print("WARNING: padding intensity difference exceeds 1%; increase --pad-factor before interpreting results.", flush=True)
+    metadata = {"config": asdict(cfg), "methods": methods, "actual_device": device,
+                "python": sys.version, "torch": torch.__version__, "numpy": np.__version__,
+                "platform": platform.platform(), "audit": audit,
+                "timestamp": datetime.now().astimezone().isoformat(), "command": sys.argv}
+    (out/"config.json").write_text(json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8")
+    arr = lambda t: t.detach().cpu().numpy()
+    np.savez_compressed(out/"data.npz", objects=arr(scene.objects), opd_um=arr(scene.opd_um),
+                        optical_depth=arr(scene.optical_depth), probes=arr(scene.operator.probes),
+                        positions_px=arr(scene.operator.positions),
+                        positions_m=arr(scene.operator.positions)*cfg.pixel_um*1e-6,
+                        intensity_clean=arr(scene.clean), intensity_measured=arr(scene.measured),
+                        train_indices=arr(scene.train), holdout_indices=arr(scene.holdout),
+                        roi=arr(scene.roi), markers=arr(scene.markers),
+                        wavelengths_nm=np.array(cfg.wavelengths_nm), weights=np.array(cfg.weights))
+    print(f"Device={device}, {len(cfg.weights)} wavelengths, "
+          f"train/holdout={len(scene.train)}/{len(scene.holdout)}, "
+          f"padding difference={audit['padding_relative_intensity_difference']:.3g}", flush=True)
+    plot_scene(scene, cfg, out)
+    results = []
+    for method in methods:
+        result = reconstruct(cfg, scene, method)
+        np.savez_compressed(out/f"{method}_fields.npz", **{k: result[k] for k in
+                            ("objects", "optical_depth", "opd_um", "predicted_intensity")})
+        torch.save({"method": method, "config": asdict(cfg), "state_dict": result["state_dict"]},
+                   out/f"{method}_model.pth")
+        plot_result(result, scene, cfg, out)
+        results.append(result)
+    summary = save_summary(results, cfg, audit, out)
+    print(f"Saved: {out.resolve()}", flush=True)
+    return out.resolve(), summary
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--preset", choices=("smoke", "standard"), default="smoke")
+    p.add_argument("--methods", nargs="+", choices=METHODS+("pixel_common", "unet_common"), default=list(METHODS))
+    p.add_argument("--scene", choices=SCENES)
+    p.add_argument("--wavelengths-nm", nargs="+", type=float)
+    p.add_argument("--weights", nargs="+", type=float)
+    p.add_argument("--outdir", type=Path)
+    p.add_argument("--device", choices=("auto", "cpu", "cuda"))
+    for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed"):
+        p.add_argument("--"+name.replace("_", "-"), type=int)
+    for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
+                 "opd_scale_um", "holdout_fraction"):
+        p.add_argument("--"+name.replace("_", "-"), type=float)
+    args = p.parse_args()
+    cfg = Config.preset(args.preset)
+    for key, value in vars(args).items():
+        if hasattr(cfg, key) and value is not None:
+            setattr(cfg, key, tuple(value) if key in ("weights", "wavelengths_nm") else value)
+    run_experiment(cfg, args.methods, args.outdir)
+
+
+if __name__ == "__main__":
+    main()
