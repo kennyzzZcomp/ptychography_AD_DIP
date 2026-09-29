@@ -1,11 +1,20 @@
-run_id,experiment,train_amplitude_nrmse,holdout_clean_amplitude_nrmse,roi_object_relative_error,mean_probe_relative_error,elapsed_s_including_evaluation,photons_per_scan
-A1,AD fixed,0.0073,0.05,0.0223,0.0343,,0
-U1,UNet fixed initial,0.0088,0.0109,0.0269,0.0378,,0
-U2,UNet lr decay,0.0138,0.0205,0.0474,0.0747,,0
-W1,DWT UNet,0.00653,0.0103,0.02427,,133.45,0
-U3,UNet fixed repeat,0.00895,0.0133,0.03046,,128.84,0
-AT1,AD TGV 0.001,0.00717,0.04413,0.01911,0.0289,141.51,0
-UT1,UNet TGV 0.001,0.00975,0.01195,0.02981,0.0449,149.64,0
-N1,AD Poisson 8000,0.7779,0.4378,0.4301,0.8964,,8000
-N2,DWT UNet Poisson 8000,0.7798,0.4472,0.4558,0.8981,,8000
-WT1,DWT UNet TGV 0.001 (user confirmed),0.0068,0.0095,0.0249,0.0392,,0
+run_id,experiment,train_amplitude_nrmse,holdout_clean_amplitude_nrmse,roi_object_relative_error,mean_probe_relative_error,elapsed_s_including_evaluation,photons_per_scan,loss,train_data_loss,noise_seed
+A1,AD fixed,0.0073,0.05,0.0223,0.0343,,0,amplitude,,
+U1,UNet fixed initial,0.0088,0.0109,0.0269,0.0378,,0,amplitude,,
+U2,UNet lr decay,0.0138,0.0205,0.0474,0.0747,,0,amplitude,,
+W1,DWT UNet,0.00653,0.0103,0.02427,,133.45,0,amplitude,,
+U3,UNet fixed repeat,0.00895,0.0133,0.03046,,128.84,0,amplitude,,
+AT1,AD TGV 0.001,0.00717,0.04413,0.01911,0.0289,141.51,0,amplitude,,
+UT1,UNet TGV 0.001,0.00975,0.01195,0.02981,0.0449,149.64,0,amplitude,,
+N1,AD Poisson 8000,0.7779,0.4378,0.4301,0.8964,,8000,amplitude,,
+N2,DWT UNet Poisson 8000,0.7798,0.4472,0.4558,0.8981,,8000,amplitude,,
+WT1,DWT UNet TGV 0.001 (user confirmed),0.0068,0.0095,0.0249,0.0392,,0,amplitude,,
+NP1,DWT UNet Poisson loss 8000,0.91509,0.35245,0.30594,,48.61,8000,poisson,,
+NP2,AD Poisson loss 8000,0.91384,0.4277,0.37683,,32.43,8000,poisson,,
+NP3,DWT UNet Poisson loss 20000,0.7284,0.2454,0.2339,0.3365,,20000,poisson,0.84897,23 (default; config not archived)
+NP4,AD Poisson loss 20000,0.7277,0.3495,0.3052,0.4348,,20000,poisson,0.8411,23 (default; config not archived)
+NP5,AD Poisson 20000 seed24,0.7296,0.3435,0.2853,0.4231,,20000,poisson,0.84454,24
+NP6,DWT UNet Poisson 20000 seed24,0.7288,0.27,0.2281,0.3314,,20000,poisson,0.85295,24
+NP7,UNet concat Poisson 20000 seed24,0.7311,0.2737,0.2287,0.3283,,20000,poisson,0.85157,24
+NP8,AD Poisson 80000 seed25,0.4823,0.2564,0.2451,0.2966,,80000,poisson,0.39101,25
+NP9,UNet concat Poisson 80000 seed24,0.482,0.1805,0.1519,0.2382,,80000,poisson,0.39154,24

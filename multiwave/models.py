@@ -27,7 +27,11 @@ class SharedAmplitudeModel(nn.Module):
             bias = a0
         self.net = None
         if method == "unet_shared_amp":
-            self.net = ProPtyUNet(input_stack.shape[1], cfg.base_channels, n_fields=1, ph_ch=1)
+            net_class = ProPtyUNet
+            if cfg.unet_detail == "residual":
+                from .detail import DetailUNet
+                net_class = DetailUNet
+            self.net = net_class(input_stack.shape[1], cfg.base_channels, n_fields=1, ph_ch=1)
             del self.net.head_phs
             if cfg.unet_skip == "dwt_concat":
                 from .wavelet import DWTConcatSkip
@@ -43,7 +47,10 @@ class SharedAmplitudeModel(nn.Module):
         if self.net is None:
             raw = self.raw_amp
         else:
-            raw = self.net.head_amp(self.net.forward_features(self.input_stack))[0]
+            if hasattr(self.net, "forward_amplitude_raw"):
+                raw = self.net.forward_amplitude_raw(self.input_stack)[0]
+            else:
+                raw = self.net.head_amp(self.net.forward_features(self.input_stack))[0]
         amplitude = (F.softplus(raw) if self.parameterization == "softplus" else
                      raw if self.parameterization == "direct" else torch.sigmoid(raw))
         amplitude = amplitude.expand(self.count, -1, -1)

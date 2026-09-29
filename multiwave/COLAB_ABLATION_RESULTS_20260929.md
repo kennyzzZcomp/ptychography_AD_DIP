@@ -1,5 +1,72 @@
 # Colab：AD、U-Net、学习率衰减与 DWT/TGV 实验记录
 
+## 去掉 DWT 的对照：20000 光子、noise-seed 24
+
+NP7 为用户提供的原 U-Net 截图日志：concat、Poisson、20000 光子、noise-seed 24、1000 次、base_channels 16、softplus、pixel probes。最终 loss=0.85157，train=0.7311，heldout=0.2737，object=0.2287，probe=0.3283。Colab 目录末级 `20260929_122810_509670`。耗时及完整配置/指标 JSON 未提供，数值按截图精度记录。
+
+| 同一标称 seed 24 设置 | 物体误差 | probe 误差 | holdout clean | Poisson 目标 |
+|---|---:|---:|---:|---:|
+| AD (NP5) | 0.2853 | 0.4231 | 0.3435 | 0.84454 |
+| 原 U-Net (NP7) | 0.2287 | 0.3283 | 0.2737 | 0.85157 |
+| DWT-U-Net (NP6) | 0.2281 | 0.3314 | 0.2700 | 0.85295 |
+
+原 U-Net 相比 AD 的物体误差低约 19.8%；DWT 相比原 U-Net 的物体误差仅低约 0.26%，绝对差 0.0006，同时原 U-Net 的 probe 误差稍低。该次消融没有显示 DWT 明确的额外收益，不能把此前约 20% 的网络组合收益归功于 DWT。主线建议使用更简单的 concat U-Net+Poisson，将 DWT 保留为消融选项；不删除实现，不声称 DWT 在所有条件下无效。
+
+截图归档 `results/colab_ablation_evidence_20260929/unet_concat_poisson_20000_seed24.png`，来源/hash 见同目录 `unet_concat_poisson_20000_seed24_provenance.json`。用户反馈 seed 25 结果类似，但尚无具体数值，未编造或计入三次统计。
+
+## 20000 光子成对重复：noise-seed 24
+
+用户提供两张含命令及日志的截图，明确设置 noise-seed=24、loss=poisson、20000 光子、1000 次、TGV=0。最终读数：
+
+| 方法 | Poisson 目标 | train 振幅 NRMSE | holdout clean | 物体相对误差 | probe 相对误差 |
+|---|---:|---:|---:|---:|---:|
+| NP5：AD | 0.84454 | 0.7296 | 0.3435 | 0.2853 | 0.4231 |
+| NP6：DWT-U-Net | 0.85295 | 0.7288 | 0.2700 | 0.2281 | 0.3314 |
+
+物体误差相对降低约 20.0%。与前一对 20000 光子（默认 noise-seed 23，未取得配置文件核验）的 23.4% 降幅方向一致。两对的最终物体误差均值 AD=0.29525、DWT=0.23100；仅为两个实例的描述，不宣称统计显著或跨样品泛化。依然固定第 1000 次，没有按真值选最好迭代。AD 的 Poisson 训练目标略低，但物体/probe 误差更高；支持当前整体方法的恢复收益，不单独证明 DWT 模块收益。细节仍模糊，高频指标尚未提供。
+
+AD Colab 目录末级 `20260929_122147_215162`，DWT 为 `20260929_122236_932347`。截图归档在 `results/colab_ablation_evidence_20260929/` 的 `ad_poisson_20000_seed24.png` / `dwt_poisson_20000_seed24.png`，来源/hash 见 `poisson_20000_seed24_provenance.json`。耗时、完整 metrics/config 未提供。
+
+## 最新补录：20000 光子，Poisson 损失
+
+用户提供两张含运行命令、日志及细节图的截图。1000 次更新、pixel probes、softplus、TGV=0。以下为截图日志最终读数（非完整精度 JSON），耗时未提供。
+
+| 编号/方法 | Poisson 训练目标 | train 振幅 NRMSE | holdout clean 振幅 NRMSE | ROI 物体误差 | probe 误差 |
+|---|---:|---:|---:|---:|---:|
+| NP3：DWT-U-Net | 0.84897 | 0.7284 | 0.2454 | 0.2339 | 0.3365 |
+| NP4：像素 AD | 0.8411 | 0.7277 | 0.3495 | 0.3052 | 0.4348 |
+
+NP3 Colab 目录末级 `20260929_121602_924591`；NP4 为 `20260929_121513_636600`。截图归档 `results/colab_ablation_evidence_20260929/dwt_poisson_20000.png` 和 `ad_poisson_20000.png`，来源/SHA256 见同目录 `poisson_20000_provenance.json`。未取得 config.json、原始数组及高频指标，不能声称已逐位核对测量或环境。
+
+本次 DWT-U-Net 相比 AD：ROI 物体误差相对低约 23.4%，probe 误差低约 22.6%，留出误差低约 29.8%。AD 的训练 Poisson 目标反而略低。因此“训练数据拟合更好”不等于“物体/探针恢复更准”；结果与网络参数化约束可能带来的正则化作用一致，但不能仅凭一次对照确定机制。
+
+与 8000 光子的 NP1/NP2 并列：8000 时 AD/DWT 物体误差为 0.37683/0.30594（DWT 相对低 18.8%）；20000 时为 0.3052/0.2339（相对低 23.4%）。两个已测光子档位均呈现相同方向，仍不是多噪声重复的统计结论，也不能独立归因于 DWT。
+
+后半程留出误差回升：DWT 500 次约 0.1700，到 1000 次 0.2454；AD 150 次约 0.2270，到 1000 次 0.3495。同时物体误差总体仍改善或趋平，故不能将留出指标单独当作物体误差，也不据此改用真值挑最优迭代。保留预定 1000 次终点。两组中央细条纹仍模糊，尚无高质量高频恢复结论。不启动更新稳定性诊断。
+
+## 最新配对结果：8000 光子 AD+Poisson 与 DWT-U-Net+Poisson
+
+用户新增 AD+Poisson（NP2）：8000 光子/扫描、1000 次、pixel probes、equal_power、TGV=0。数据来自用户粘贴报告；完整 config/metrics、运行目录和 probe/高频误差尚未提供。截图归档 `results/colab_ablation_evidence_20260929/ad_poisson_8000.png`，来源/hash 见同目录 `ad_poisson_8000_provenance.json`。
+
+| 8000 光子，1000 次 | 训练振幅 NRMSE | 留出干净振幅 NRMSE | ROI 物体误差 | 含评价耗时 s |
+|---|---:|---:|---:|---:|
+| NP2：AD+Poisson | 0.91384 | 0.42770 | 0.37683 | 32.43 |
+| NP1：DWT-U-Net+Poisson | 0.91509 | 0.35245 | 0.30594 | 48.61 |
+
+网络组合的 ROI 物体误差相对低约 18.8%，留出误差低约 17.6%，报告耗时约为 AD 的 1.50 倍。训练振幅 NRMSE 略高，但不是实际优化的 Poisson 目标。当前支持：在这次标称相同低光子条件和更新预算下，DWT-U-Net+Poisson 的物体精度优于像素 AD+Poisson。两者仍有明显噪声、条纹损失与伪影；不能称为高质量重建、稳定统计优势、等耗时优势或独立的 DWT 增益。
+
+后续优先以相同数据做成对噪声重复，并在 80000 光子补一档；完整报告，不按真值挑种子或迭代。每对方法使用同一 noise_seed，网络种子可先固定。若要归因于 DWT，再补原 U-Net+Poisson。此为建议，未启动新实验，不开展更新稳定性诊断。下文“缺少 AD+Poisson”为 NP1 当时记录，现在已由 NP2 补齐。
+
+## 最新补录：8000 光子 DWT-U-Net + Poisson
+
+用户回传报告：1000 次、pixel probes、equal_power、dwt_concat、TGV=0、loss=poisson、photons_per_scan=8000；padding difference=8.85e-05。编号 NP1，train 振幅 NRMSE=0.91509，holdout clean 振幅 NRMSE=0.35245，ROI 物体相对误差=0.30594，耗时（含评价）48.61 s。probe 指标、高频指标、实际 Poisson 目标数值、完整配置和运行目录未提供。指标来自用户报告，不从截图估计。
+
+与相同标称光子预算的 N2（DWT+振幅损失，物体误差 0.4558）相比，物体误差相对下降约 32.9%；比 N1（AD+振幅损失，0.4301）低约 28.9%。说明这次完整组合优于已报告的振幅损失基线，但缺少 AD+Poisson，尚不能证明网络优于采用相同 Poisson 损失的像素方法。截图仍显示中心细节丢失与较强伪影，不能称为高质量恢复。
+
+train 振幅 NRMSE 上升不否定物体误差改善：Poisson 运行优化的是另一个目标，train 列不是 Poisson NLL。耗时缺少相同设备/软件核验，不用于加速结论。下一组固定 8000 光子、1000 次、softplus、pixel probes、种子 17/23/31，使用 pixel_shared_amp、loss=poisson、concat、TV/TGV=0、lr_pixel=0.03、lr_probe=0.01。不新增更新稳定性实验。
+
+截图保存为 `results/colab_ablation_evidence_20260929/dwt_poisson_8000.png`，路径与 SHA256 见同目录 `dwt_poisson_8000_provenance.json`。
+
 记录日期：2026-09-29。以下数值来自用户在当前聊天中粘贴的运行日志/报告和截图，未取得这些 1000 次实验的完整 config.json、metrics.json 或原始重建数组。保留原始报告精度，不补造缺失指标，不将不同运行合并成一次实验。
 
 ## 共同任务和可比性
@@ -96,3 +163,16 @@ N1/N2 属于 8000 光子 Poisson 实验，不与前述无噪声指标混比。�
 ```
 
 若希望分别运行，用 `--methods pixel_shared_amp` 跑 AD+TGV，或 `--methods unet_shared_amp` 跑 U-Net+TGV，其余参数保持不变。保存两份 metrics.json 和 config.json，后续可补全中心/高频/probe 指标与耗时。TGV 作用范围和算法详见 [DWT_TGV_EXPERIMENTS.md](DWT_TGV_EXPERIMENTS.md)。
+
+## 80000 光子与通道数反馈
+
+用户明确反馈加宽通道已经试过、没有改善；该实验的完整配置和数字未提供，作为定性反馈记录，不杜撰宽度 32 结果。本次截图中两条命令实际均为 base_channels=16。
+
+| 编号 | 方法 | noise_seed | Poisson loss | train | heldout | object | probe |
+|---|---|---:|---:|---:|---:|---:|---:|
+| NP8 | AD，80000 光子 | 25 | 0.39101 | 0.4823 | 0.2564 | 0.2451 | 0.2966 |
+| NP9 | 原 U-Net，80000 光子 | 24 | 0.39154 | 0.4820 | 0.1805 | 0.1519 | 0.2382 |
+
+两组不是相同噪声种子的严格配对，不能直接作为算法收益的配对统计。NP9 与先前 20000 光子 seed24 原 U-Net（0.2287）相比物体误差更低，但中心细节仍未恢复完整。记录为截图终点读数；耗时及高频指标未提供。截图与 SHA256 归档 results/colab_ablation_evidence_20260929/poisson_80000_provenance.json。AD 目录末级 20260929_124220_839359；U-Net 20260929_124121_978700。
+
+后续候选机制：全分辨率残差细节分支，保留现有主干并增加直达振幅输出的浅层分支，以物理 Poisson 损失训练。仅为建议，尚未实现或验证，不宣称当前模糊已定位为下采样造成，也不把测量域浅层特征等同于物体边缘。

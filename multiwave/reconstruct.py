@@ -198,6 +198,9 @@ def reconstruct(cfg, scene, method, progress_callback=None):
     return {"method": method, "initial": initial, "final": final, "history": history,
             "loss": cfg.loss,
             "unet_skip": cfg.unet_skip if method.startswith("unet") else None,
+            "unet_detail": cfg.unet_detail if method.startswith("unet") else None,
+            "detail_parameter_count": (sum(p.numel() for p in model.net.detail_head.parameters())
+                                       if model.net is not None and hasattr(model.net, "detail_head") else 0),
             "tgv_weight": cfg.tgv_weight,
             "tgv_state_dict": regularizer.state_dict() if regularizer is not None else None,
             "tgv_auxiliary_parameter_count": regularizer.v.numel() if regularizer is not None else 0,

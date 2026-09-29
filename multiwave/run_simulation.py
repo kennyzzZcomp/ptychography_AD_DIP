@@ -54,6 +54,8 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
         raise ValueError("DWT/TGV options require shared_amp methods")
     if cfg.unet_skip != "concat" and "unet_shared_amp" not in methods:
         raise ValueError("--unet-skip requires unet_shared_amp in --methods")
+    if cfg.unet_detail != "none" and ("unet_shared_amp" not in methods or any(m not in METHODS for m in methods)):
+        raise ValueError("--unet-detail requires shared_amp methods including unet_shared_amp")
     torch.set_num_threads(cfg.threads)
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
@@ -119,6 +121,8 @@ def main():
     p.add_argument("--pixel-parameterization", choices=("sigmoid", "softplus", "direct"))
     p.add_argument("--unet-activation", choices=("sigmoid", "softplus"))
     p.add_argument("--unet-skip", choices=("concat", "dwt_concat"))
+    p.add_argument("--unet-detail", choices=("none", "residual"),
+                   help="optional full-resolution signed residual amplitude branch")
     p.add_argument("--loss", choices=("amplitude", "poisson"),
                    help="training data loss; poisson requires a positive photon budget")
     p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))

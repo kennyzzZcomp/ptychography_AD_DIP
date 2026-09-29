@@ -46,6 +46,7 @@ class Config:
     tv_weight: float = 0.0
     loss: str = "amplitude"
     unet_skip: str = "concat"
+    unet_detail: str = "none"
     tgv_weight: float = 0.0
     tgv_alpha0: float = 2.0
     tgv_alpha1: float = 1.0
@@ -72,6 +73,10 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if self.unet_detail not in ("none", "residual"):
+            raise ValueError("unet_detail must be none or residual")
+        if self.unet_detail != "none" and self.scene != "usaf_zero_phase":
+            raise ValueError("detail branch requires shared zero-phase amplitude scene")
         if self.loss not in ("amplitude", "poisson"):
             raise ValueError("loss must be amplitude or poisson")
         if self.loss == "poisson" and self.photons_per_scan <= 0:

@@ -48,7 +48,7 @@ def plot_result(result, scene, cfg, out):
         axes[3].set_title(f"Center-row amplitude (row {row})", fontsize=9)
         axes[3].set_ylim(-.05, 1.05); axes[3].set_xlabel("Object pixel")
         axes[3].legend(fontsize=8); axes[3].grid(alpha=.3)
-        fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | TGV={cfg.tgv_weight:g} | phase fixed to zero")
+        fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | TGV={cfg.tgv_weight:g} | phase fixed to zero")
         fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
         plt.close(fig)
         plot_usaf_detail(result, scene, cfg, out)
@@ -103,7 +103,7 @@ def plot_usaf_detail(result, scene, cfg, out):
     axes[1, 2].set_title(f'Zoom profile: row {row}', fontsize=9)
     for ax in axes.flat:
         ax.set_xlabel('Object pixel')
-    fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | TGV={cfg.tgv_weight:g} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
+    fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | TGV={cfg.tgv_weight:g} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
     fig.savefig(out/f"{result['method']}_detail.png", dpi=180)
     plt.close(fig)
 
@@ -172,7 +172,7 @@ def save_summary(results, cfg, audit, out):
         lines.append(f"| {r['method']} | {f[keys[0]]:.5f} | {f[keys[1]]:.5f} | {f[keys[2]]:.5f} | {r['elapsed_s_including_evaluation']:.2f} |")
     lines += ["", f"训练损失：`{cfg.loss}`。表中 train/holdout 仍为统一的振幅 NRMSE，不是 Poisson 目标值。",
               "Poisson 使用减去饱和模型常数的 NLL，并按训练观测总计数归一化；JSON 另存 train_data_loss 和 train_total_objective。",
-              "", f"U-Net skip：`{cfg.unet_skip}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
+              "", f"U-Net skip：`{cfg.unet_skip}`；全分辨率残差分支：`{cfg.unet_detail}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
               "TGV 只在训练扫描窗口并集内的有效差分模板上作用，不使用真值或评价 ROI；采用像素单位差分，辅助场为近似优化。",
               "", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
               "", ("USAF 主线：各波长共享一个实数振幅，物体相位固定为零；不进行光谱物体分离。振幅区域对比度不是 USAF 线组分辨率。"

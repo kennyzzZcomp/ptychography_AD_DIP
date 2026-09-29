@@ -87,6 +87,8 @@ python -m unittest discover -s multiwave/tests -v
 
 ## 输出
 
+可选全分辨率残差分支：`--unet-detail residual`，默认 none。结构与 80000 光子对照指令见 [FULLRES_DETAIL.md](FULLRES_DETAIL.md)。
+
 Poisson 负对数似然已支持 `--loss poisson`（默认仍为 amplitude）；模型和 Colab 指令见 [POISSON_LOSS.md](POISSON_LOSS.md)。
 
 当前 Colab 的 AD、U-Net 重跑、学习率衰减及 DWT 结果记录见 [COLAB_ABLATION_RESULTS_20260929.md](COLAB_ABLATION_RESULTS_20260929.md)。
