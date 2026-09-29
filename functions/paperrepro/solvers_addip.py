@@ -255,6 +255,20 @@ def run_net(cfg: Cfg):
     x = F.pad(Im[None], (pad_o,) * 4)
     x = F.pad(x, (pad_n, NS - M - pad_n, pad_n, NS - M - pad_n))
     x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+    from functions.paperrepro.coarse_object import half_input, lift_field
+    half_until = cfg.half_res_until
+    x_half, half_crop = half_input(x) if half_until else (None, None)
+    coarse_active = bool(half_until)
+    if half_until:
+        print(f"[net] half-resolution object: input {tuple(x_half.shape)}, "
+              f"unpadded output {half_crop[2:]}; full network from update {half_until+1}. "
+              "Complex bilinear lift; original probe, propagation, measurements and TGV grid retained.")
+
+    # Keep the simulated measurements fixed while independently changing only
+    # the network initialization.  None preserves the historical RNG path.
+    if cfg.network_seed is not None:
+        torch.manual_seed(cfg.network_seed)
+        print(f"[net] scene seed={cfg.seed}; independent network seed={cfg.network_seed}")
 
     if cfg.probe_mode == "shared":
         net = SharedProbeUNet(cfg.n_pat, cfg.base_ch).to(device)
@@ -311,10 +325,17 @@ def run_net(cfg: Cfg):
     c_ns = slice(pad_n, pad_n + M)
 
     def decode(amplitude_tgv_active):
-        outputs = net(x)
+        outputs = net(x_half if coarse_active else x)
         a_raw, p_raw = outputs[:2]
         P = (shared_probe_field(outputs[2], M, n) if mode == "shared"
              else _probe_of(mode, Pfix, Pr, Pi, Msup))
+        if coarse_active:
+            field = lift_field(make_field(a_raw[0], p_raw[0:2]), half_crop, (NS, NS))
+            O = field[c_ns, c_ns]
+            # Regularize the actual full-grid field seen by the physical model.
+            amp = O.abs() if amplitude_tgv_active else None
+            phase = torch.angle(O) if tgv_phase is not None else None
+            return O, P, amp, phase
         O = make_field(a_raw[0], p_raw[0:2])[c_ns, c_ns]
         # The explicit softplus amplitude bypasses the phase head entirely.
         amp = F.softplus(a_raw[0])[c_ns, c_ns] if amplitude_tgv_active else None
@@ -343,6 +364,10 @@ def run_net(cfg: Cfg):
     hist, t0, rec, pc = [], time.time(), None, None
     previous_stage = None
     for it in range(cfg.iters):
+        coarse_active = it < half_until
+        if half_until and it == half_until:
+            print(f"[net] update {it+1}: restore full spatial input {tuple(x.shape)}; "
+                  "weights, Adam moments and normalization buffers retained; field continuity not guaranteed.", flush=True)
         amp_weight = tgv_weight(cfg.tgv_amp, tgv_stages, it)
         if cfg.skip_mode == "wavelet":
             for skip in net.skip_filters:
@@ -515,6 +540,11 @@ def run_net(cfg: Cfg):
         "lr_net_applies_to": "shared backbone + object heads" if mode == "shared" else "object network",
         "lr_probe_applies_to": "probe head only" if mode == "shared" else "probe pixels (unless truth)",
         "initial_fields": initial_fields,
+        "half_res_until": half_until,
+        "half_network_input_shape": list(x_half.shape) if half_until else None,
+        "half_unpadded_output_shape": list(half_crop[2:]) if half_until else None,
+        "coarse_lift": "bilinear real/imag, align_corners=False" if half_until else None,
+        "physics_resolution_changed": False,
     }, indent=2), encoding="utf-8")
     if cfg.skip_mode == "wavelet":
         (Path(cfg.outdir) / "wavelet_skip.json").write_text(json.dumps({

@@ -15,6 +15,7 @@ OBJ_SIZE = 624               # must fit N + (GRID-1)*STEP_PX = 620
 EVAL_SIZE = 96
 TOTAL_ITERS = 4000           # total, not 4000 additional stage-2 updates
 SWITCH_AFTER = 1000          # stage 2 begins at update 1001
+HALF_RES_STAGE1 = False      # optional: half spatial object network, unchanged physical forward
 STAGE1_STRIDE = 3            # skip TWO positions: row/col indices 0,3,6,9
 STAGE1_TGV = 0.1
 STAGE2_TGV = 0.0
@@ -45,6 +46,8 @@ def build_command():
         "lr-schedule": f"{SWITCH_AFTER}:{STAGE2_LR_NET}:{STAGE2_LR_PROBE}",
         "outdir": OUTDIR,
     }
+    if HALF_RES_STAGE1:
+        options["half-res-until"] = SWITCH_AFTER
     return [sys.executable, "-u", str(script), "net",
             *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
 

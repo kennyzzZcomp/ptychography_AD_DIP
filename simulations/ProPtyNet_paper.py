@@ -157,10 +157,12 @@ class Cfg:
     measurement_policy: str = "fixed"  # fixed | random | rotate; input stays full
     measurement_seed: int = 0
     input_policy: str = "full"  # full | follow_measurements (gathered first conv)
+    half_res_until: int = 0  # net: completed updates before restoring full spatial input
 
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
     seed: int = 0
+    network_seed: int | None = None  # net-only: hold scene fixed while varying U-Net initialization
     device: str = "auto"
     assets: str = ""
     outdir: str = "results_paper"
@@ -169,6 +171,10 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.half_res_until < 0 or (self.half_res_until and self.half_res_until >= self.iters):
+            raise ValueError("half_res_until must be 0 (off) or between 1 and iters-1")
+        if self.half_res_until and (self.network_type != "real" or self.probe_mode == "shared"):
+            raise ValueError("half resolution currently requires real object network and independent probe")
         if self.probe_mode not in ("pixel", "support", "truth", "shared"):
             raise ValueError("probe_mode must be pixel, support, truth or shared")
         if self.probe_mode == "shared":
@@ -266,7 +272,7 @@ def main():
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("eval_size", int),
-                 ("seed", int), ("device", str), ("outdir", str), ("assets", str),
+                 ("seed", int), ("network_seed", int), ("device", str), ("outdir", str), ("assets", str),
                  ("probe_init", str), ("probe_init_sigma", float), ("probe_mode", str), ("probe_support_margin", float),
                  ("obj_init_alpha", float), ("lr_obj", float), ("lr_prb", float),
                  ("lr_net", float), ("lr_probe", float), ("weight_decay", float),
@@ -277,7 +283,7 @@ def main():
                  ("timing_warmup", int),
                  ("measurement_schedule", str), ("measurement_policy", str),
                  ("measurement_seed", int),
-                 ("input_policy", str),
+                 ("input_policy", str), ("half_res_until", int),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
@@ -295,6 +301,8 @@ def main():
     cfg = build_cfg(a)
     if cfg.probe_mode == "shared" and a.mode != "net":
         ap.error("--probe-mode shared is implemented only for mode net (internal control, not paper run)")
+    if cfg.network_seed is not None and a.mode != "net":
+        ap.error("--network-seed is implemented only for mode net")
     if cfg.network_type != "real" and a.mode != "net":
         ap.error("--network-type complex is implemented only for mode net")
     if cfg.skip_mode != "concat" and a.mode != "net":
@@ -307,6 +315,8 @@ def main():
         ap.error("--tgv-amp-schedule is implemented only for mode net")
     if cfg.measurement_schedule and a.mode != "net":
         ap.error("--measurement-schedule is implemented only for mode net")
+    if cfg.half_res_until and a.mode != "net":
+        ap.error("--half-res-until is implemented only for mode net")
     if cfg.timing_warmup >= 0 and a.mode != "net":
         ap.error("--timing-warmup is implemented only for mode net")
     if cfg.tgv_amp > 0 and a.mode not in ("run", "ad", "net"):
