@@ -19,7 +19,7 @@ from multiwave.config import Config, METHODS, SCENES, LEGACY_METHODS
 from multiwave.physics import MultiwaveOperator
 from multiwave.scene import simulate
 from multiwave.reconstruct import reconstruct
-from multiwave.report import plot_scene, plot_result, save_summary
+from multiwave.report import plot_scene, plot_result, plot_probes, save_summary
 
 
 @torch.no_grad()
@@ -35,12 +35,15 @@ def audit_scene(cfg, scene):
             "train_count": len(scene.train), "holdout_count": len(scene.holdout),
             "roi_pixels": int(scene.roi.sum()),
             "mean_detected_photons_per_scan": float(scene.clean.sum((-1, -2)).mean()*cfg.photons_per_scan),
-            "known_probes": True, "fixed_spectral_weights": True,
+            "known_probes": cfg.probe_mode == "known", "spectral_mode": cfg.spectral_mode,
+            "explicit_spectral_weights": cfg.spectral_mode == "weighted",
             "holdout_excluded_from_network_input": True}
 
 
 def run_experiment(cfg, methods=METHODS, outdir=None):
     cfg.validate()
+    if cfg.probe_mode == "pixel" and cfg.scene != "usaf_zero_phase":
+        raise ValueError("blind pixel probes are currently scoped to the zero-phase USAF task")
     methods = tuple(methods)
     allowed = METHODS + LEGACY_METHODS
     if not methods or len(set(methods)) != len(methods) or any(m not in allowed for m in methods):
@@ -68,6 +71,9 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
                 "python": sys.version, "torch": torch.__version__, "numpy": np.__version__,
                 "platform": platform.platform(), "audit": audit,
                 "timestamp": datetime.now().astimezone().isoformat(), "command": sys.argv}
+    if cfg.spectral_mode == "equal_power":
+        metadata["config"].pop("weights")
+        metadata["probe_power_per_mode"] = cfg.probe_power
     if cfg.scene == "usaf_zero_phase":
         asset = Path(cfg.usaf_path) if cfg.usaf_path else Path(__file__).resolve().parents[1]/"USAF.jpg"
         metadata["object_model"] = "one_shared_real_amplitude_zero_phase"
@@ -82,8 +88,8 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
                         intensity_clean=arr(scene.clean), intensity_measured=arr(scene.measured),
                         train_indices=arr(scene.train), holdout_indices=arr(scene.holdout),
                         roi=arr(scene.roi), markers=arr(scene.markers),
-                        wavelengths_nm=np.array(cfg.wavelengths_nm), weights=np.array(cfg.weights))
-    print(f"Device={device}, {len(cfg.weights)} wavelengths, "
+                        wavelengths_nm=np.array(cfg.wavelengths_nm), mixing_coefficients=np.array(cfg.mixing_coefficients))
+    print(f"Device={device}, probes={cfg.probe_mode}, spectrum={cfg.spectral_mode}, {len(cfg.wavelengths_nm)} wavelengths, "
           f"train/holdout={len(scene.train)}/{len(scene.holdout)}, "
           f"padding difference={audit['padding_relative_intensity_difference']:.3g}", flush=True)
     plot_scene(scene, cfg, out)
@@ -91,10 +97,12 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
     for method in methods:
         result = reconstruct(cfg, scene, method)
         np.savez_compressed(out/f"{method}_fields.npz", **{k: result[k] for k in
-                            ("objects", "optical_depth", "opd_um", "predicted_intensity")})
-        torch.save({"method": method, "config": asdict(cfg), "state_dict": result["state_dict"]},
+                            ("objects", "optical_depth", "opd_um", "predicted_intensity", "probes", "initial_probes")})
+        torch.save({"method": method, "config": metadata["config"], "state_dict": result["state_dict"],
+                    "probe_state_dict": result["probe_state_dict"]},
                    out/f"{method}_model.pth")
         plot_result(result, scene, cfg, out)
+        plot_probes(result, scene, cfg, out)
         results.append(result)
     summary = save_summary(results, cfg, audit, out)
     print(f"Saved: {out.resolve()}", flush=True)
@@ -109,15 +117,19 @@ def main():
     p.add_argument("--usaf-path", type=str)
     p.add_argument("--wavelengths-nm", nargs="+", type=float)
     p.add_argument("--weights", nargs="+", type=float)
+    p.add_argument("--probe-mode", choices=("pixel", "known"))
+    p.add_argument("--spectral-mode", choices=("equal_power", "weighted"))
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
                  "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
-                 "opd_scale_um", "holdout_fraction", "usaf_fill"):
+                 "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe"):
         p.add_argument("--"+name.replace("_", "-"), type=float)
     args = p.parse_args()
+    if args.weights is not None and args.spectral_mode != "weighted":
+        p.error("--weights is legacy-only: explicitly select --spectral-mode weighted. Default blind mode has no spectral weights.")
     cfg = Config.preset(args.preset)
     for key, value in vars(args).items():
         if hasattr(cfg, key) and value is not None:

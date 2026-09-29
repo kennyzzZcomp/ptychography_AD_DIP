@@ -39,13 +39,13 @@ def propagate_padded(field, transfer):
 
 
 class MultiwaveOperator(nn.Module):
-    """Known probes; object [L,M,M], detector [J,N,N], coords [row,col]."""
+    """Object [L,M,M], detector [J,N,N]; optional estimated probes override truth."""
     def __init__(self, cfg, probes, positions):
         super().__init__()
         self.n = cfg.patch_size
         self.object_size = cfg.object_size
         self.chunk = cfg.chunk
-        if probes.shape != (len(cfg.weights), self.n, self.n):
+        if probes.shape != (len(cfg.wavelengths_nm), self.n, self.n):
             raise ValueError("probe shape does not match configuration")
         if positions.ndim != 2 or positions.shape[1] != 2:
             raise ValueError("positions must have shape [J,2]")
@@ -56,7 +56,7 @@ class MultiwaveOperator(nn.Module):
         device = probes.device
         self.register_buffer("probes", probes)
         self.register_buffer("positions", positions.to(device=device, dtype=torch.long))
-        self.register_buffer("weights", torch.tensor(cfg.weights, device=device,
+        self.register_buffer("weights", torch.tensor(cfg.mixing_coefficients, device=device,
                                                      dtype=probes.real.dtype))
         self.register_buffer("transfer", torch.stack([
             asm_transfer(self.n*cfg.pad_factor, cfg.pixel_um*1e-6, w*1e-9,
@@ -66,7 +66,10 @@ class MultiwaveOperator(nn.Module):
         self.register_buffer("rows", self.positions[:, :1]+a)
         self.register_buffer("cols", self.positions[:, 1:]+a)
 
-    def components(self, objects, indices=None):
+    def components(self, objects, indices=None, probes=None):
+        probes = self.probes if probes is None else probes
+        if probes.shape != self.probes.shape:
+            raise ValueError("replacement probe shape mismatch")
         if objects.shape != (len(self.weights), self.object_size, self.object_size):
             raise ValueError("object shape does not match configuration")
         rows = self.rows if indices is None else self.rows[indices]
@@ -75,17 +78,18 @@ class MultiwaveOperator(nn.Module):
         for start in range(0, len(rows), self.chunk):
             r, c = rows[start:start+self.chunk], cols[start:start+self.chunk]
             patches = objects[:, r[:, :, None], c[:, None, :]]
-            wave = propagate_padded(patches*self.probes[:, None], self.transfer[:, None])
+            wave = propagate_padded(patches*probes[:, None], self.transfer[:, None])
             outputs.append(wave.abs().square())
         return torch.cat(outputs, dim=1)
 
-    def forward(self, objects, indices=None):
-        return (self.components(objects, indices)*self.weights[:, None, None, None]).sum(0)
+    def forward(self, objects, indices=None, probes=None):
+        return (self.components(objects, indices, probes)*self.weights[:, None, None, None]).sum(0)
 
-    def illumination(self, indices):
+    def illumination(self, indices, probes=None):
         """Training-only exposure map; contains no object truth."""
         result = torch.zeros(self.object_size, self.object_size, device=self.probes.device)
-        power = (self.probes.abs().square()*self.weights[:, None, None]).sum(0)
+        probes = self.probes if probes is None else probes
+        power = (probes.abs().square()*self.weights[:, None, None]).sum(0)
         for row, col in self.positions[indices].tolist():
             result[row:row+self.n, col:col+self.n] += power
         return result

@@ -16,7 +16,7 @@ class MultiwaveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.cfg = replace(Config.preset("smoke"), scene="spectral_absorption")
+        cls.cfg = replace(Config.preset("smoke"), scene="spectral_absorption", spectral_mode="weighted", probe_mode="known")
         cls.scene = simulate(cls.cfg)
 
     def test_zero_distance_is_identity_on_padded_grid(self):

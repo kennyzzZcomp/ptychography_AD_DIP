@@ -1,3 +1,7 @@
+# 历史已知探针验证
+
+当前默认已变为等功率盲探针；新结果见 [BLIND_VALIDATION.md](BLIND_VALIDATION.md)。下面是原加权已知探针结果，重跑需显式 --probe-mode known --spectral-mode weighted。
+
 # 零相位共享 USAF 验证记录
 
 本记录对应当前主线；原共同 OPD／独立吸收验证已保存在 backups/opd_spectral_20260929_150116.zip。

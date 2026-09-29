@@ -6,6 +6,7 @@ import torch
 from pathlib import Path
 
 from .physics import MultiwaveOperator
+from .probes import initial_probe_field
 
 
 @dataclass
@@ -25,7 +26,7 @@ class Scene:
 
 
 def phantom(cfg, device):
-    m, count = cfg.object_size, len(cfg.weights)
+    m, count = cfg.object_size, len(cfg.wavelengths_nm)
     if cfg.scene == "usaf_zero_phase":
         from PIL import Image
         path = Path(cfg.usaf_path) if cfg.usaf_path else Path(__file__).resolve().parents[1]/"USAF.jpg"
@@ -79,15 +80,16 @@ def phantom(cfg, device):
 def known_probes(cfg, device):
     """Finite, smooth aperture plus an achromatic OPD phase screen at sample.
 
-    Each mode has sum(|P|^2)=1. Weights then set incident photon fractions.
-    These calibrated probes are deliberately KNOWN in the first pilot.
+    Equal-power mode: each probe has power 1/L, intensities add directly.
+    Legacy weighted mode: each power is 1 and fixed weights set fractions.
+    These are simulation truth; the blind solver initializes independently.
     """
     n = cfg.patch_size
     a = torch.arange(n, device=device)-(n-1)/2
     y, x = torch.meshgrid(a, a, indexing="ij")
     r = torch.sqrt(x*x+y*y)
     amp = (1-(r/(.46*n))**8).clamp_min(0).square()*torch.exp(-(r/(.34*n))**2)
-    amp = amp / amp.square().sum().sqrt()
+    amp = amp / amp.square().sum().sqrt()*cfg.probe_power**.5
     plate_opd = .10*torch.sin(2*math.pi*x/(.43*n))*torch.cos(2*math.pi*y/(.51*n))
     plate_opd += .04*(x*x-y*y)/(.46*n)**2
     return torch.stack([torch.polar(amp, 2*math.pi*plate_opd/(w*1e-3))
@@ -118,7 +120,10 @@ def simulate(cfg, device="cpu"):
         measured = torch.tensor(counts/cfg.photons_per_scan, device=device, dtype=clean.dtype)
     else:
         measured = clean.clone()
-    exposure = op.illumination(train)
+    # Use a nominal initialization footprint, never true probe shape, for the
+    # default blind task's evaluation/regularization region and its known control.
+    nominal = initial_probe_field(cfg, device) if cfg.spectral_mode == "equal_power" else None
+    exposure = op.illumination(train, nominal)
     roi = exposure > .20*exposure.max()
     # The holdout measurements never enter the U-Net input or training loss.
     inp = measured[train]/measured[train].max().clamp_min(1e-12)

@@ -16,7 +16,7 @@ class SharedAmplitudeModel(nn.Module):
         super().__init__()
         if method not in ("pixel_shared_amp", "unet_shared_amp"):
             raise ValueError(f"unsupported amplitude method: {method}")
-        self.count = len(cfg.weights)
+        self.count = len(cfg.wavelengths_nm)
         self.register_buffer("input_stack", input_stack)
         a0 = math.exp(-.1)
         bias = math.log(a0/(1-a0))
@@ -60,7 +60,7 @@ class ObjectModel(nn.Module):
         self.register_buffer("wavelength_um", torch.tensor(cfg.wavelengths_nm,
                              dtype=torch.float32, device=input_stack.device)*1e-3)
         self.register_buffer("input_stack", input_stack)
-        count = len(cfg.weights)
+        count = len(cfg.wavelengths_nm)
         amp_count = 1 if self.coupling == "common" else count
         phase_count = count if self.coupling == "independent" else 1
         bias = math.log(math.expm1(.1))  # all methods start at A=exp(-0.1), phase=0

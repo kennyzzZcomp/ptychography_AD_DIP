@@ -15,7 +15,7 @@ def plot_scene(scene, cfg, out):
     panels = [(np.abs(obj[0]), "True amplitude, first wavelength", "gray", 0, 1),
               (arrays(scene.opd_um[0])*1000, "True OPD, first wavelength (nm)", "viridis", None, None),
               (roi, "Evaluation ROI (training illumination)", "gray", 0, 1),
-              (arrays(scene.operator.probes[0].abs()), "Known probe amplitude", "viridis", 0, None),
+              (arrays(scene.operator.probes[0].abs()), "True probe amplitude (simulation)", "viridis", 0, None),
               (arrays(scene.clean[0]), "Mixed intensity, scan 0", "magma", 0, None),
               (arrays(scene.measured[0]), "Observed intensity, scan 0", "magma", 0, None)]
     for ax, (arr, title, cmap, vmin, vmax) in zip(axes.flat, panels):
@@ -49,7 +49,7 @@ def plot_result(result, scene, cfg, out):
         fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
         plt.close(fig)
         return
-    lcount = len(cfg.weights)
+    lcount = len(cfg.wavelengths_nm)
     fig, axes = plt.subplots(lcount, 4, figsize=(13, 3*lcount), squeeze=False,
                              constrained_layout=True)
     for l in range(lcount):
@@ -68,6 +68,31 @@ def plot_result(result, scene, cfg, out):
     plt.close(fig)
 
 
+def plot_probes(result, scene, cfg, out):
+    import matplotlib.pyplot as plt
+    truth = scene.operator.probes.cpu().numpy()
+    estimated, initial = result["probes"], result["initial_probes"]
+    count = len(truth)
+    fig, axes = plt.subplots(count, 5, figsize=(15, 3*count), squeeze=False, constrained_layout=True)
+    for l in range(count):
+        piston = np.angle(np.vdot(estimated[l], truth[l]))
+        aligned = estimated[l]*np.exp(1j*piston)
+        vmax = max(np.abs(truth[l]).max(), np.abs(estimated[l]).max(), np.abs(initial[l]).max())
+        mask = np.abs(truth[l]) < .05*np.abs(truth[l]).max()
+        panels = [(np.abs(truth[l]), 'True amplitude', 'viridis', 0, vmax),
+                  (np.abs(initial[l]), 'Initial amplitude (zero phase)', 'viridis', 0, vmax),
+                  (np.abs(estimated[l]), 'Recovered amplitude', 'viridis', 0, vmax),
+                  (np.ma.masked_where(mask, np.angle(truth[l])), 'True phase', 'twilight', -np.pi, np.pi),
+                  (np.ma.masked_where(mask, np.angle(aligned)), 'Recovered phase (piston aligned)', 'twilight', -np.pi, np.pi)]
+        for ax, (arr, title, cmap, vmin, high) in zip(axes[l], panels):
+            im = ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=high)
+            ax.set_title(f'{cfg.wavelengths_nm[l]:g} nm | {title}', fontsize=8)
+            ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.6)
+    fig.suptitle(f"{result['method']} | probe mode: {cfg.probe_mode}")
+    fig.savefig(out/f"{result['method']}_probes.png", dpi=140)
+    plt.close(fig)
+
+
 def save_summary(results, cfg, audit, out):
     import matplotlib.pyplot as plt
     summary = {}
@@ -79,7 +104,7 @@ def save_summary(results, cfg, audit, out):
     for result in results:
         method = result["method"]
         serial = {k: v for k, v in result.items() if k not in
-                  ("objects", "optical_depth", "opd_um", "predicted_intensity", "state_dict")}
+                  ("objects", "optical_depth", "opd_um", "predicted_intensity", "state_dict", "probes", "initial_probes", "probe_state_dict")}
         summary[method] = serial
         (out/f"{method}_metrics.json").write_text(json.dumps(serial, indent=2, allow_nan=False), encoding="utf-8")
         for channel in result["final"]["channels"]:
@@ -97,9 +122,9 @@ def save_summary(results, cfg, audit, out):
         writer.writeheader(); writer.writerows(rows)
     (out/"summary.json").write_text(json.dumps({"audit": audit, "methods": summary},
                                              indent=2, allow_nan=False), encoding="utf-8")
-    lines = ["# 仿真运行记录", "", f"场景：`{cfg.scene}`；波长（nm）：`{cfg.wavelengths_nm}`；固定权重：`{cfg.weights}`。",
+    lines = ["# 仿真运行记录", "", f"场景：`{cfg.scene}`；波长（nm）：`{cfg.wavelengths_nm}`；探针：`{cfg.probe_mode}`；光谱模式：`{cfg.spectral_mode}`。",
              f"每位置入射光子数：`{cfg.photons_per_scan}`（0 表示无噪声）；迭代数：`{cfg.iterations}`。", "",
-             "探针、权重、扫描坐标已知。使用最终迭代，不根据真值或留出误差选取最优迭代。", "",
+             "pixel 模式联合优化独立复数像素探针；known 模式固定真值探针。equal_power 模式直接相加强度，每探针功率固定为 1/L，不估计光谱权重。使用最终迭代，不根据真值或留出误差选取最优迭代。", "",
              "| 方法 | 训练振幅 NRMSE | 留出干净数据 NRMSE | 物体相对误差 | 耗时 s（含评价） |",
              "|---|---:|---:|---:|---:|"]
     for r in results:

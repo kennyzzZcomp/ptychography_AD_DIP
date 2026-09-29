@@ -6,6 +6,7 @@ import torch
 
 from .models import ObjectModel, SharedAmplitudeModel, masked_tv, amplitude_tv
 from .physics import amplitude_loss
+from .probes import PixelProbes, probe_metrics
 
 
 def field_metrics(objects, tau, opd, scene, cfg):
@@ -57,15 +58,17 @@ def field_metrics(objects, tau, opd, scene, cfg):
 
 
 @torch.no_grad()
-def evaluate(model, scene, cfg):
+def evaluate(model, scene, cfg, probe_model=None):
     # Keep BatchNorm in its fitting mode; changing to running stats changes DIP output.
     objects, tau, opd = model()
-    pred = scene.operator(objects)
+    probes = scene.operator.probes if probe_model is None else probe_model()
+    pred = scene.operator(objects, probes=probes)
     metrics = field_metrics(objects, tau, opd, scene, cfg)
+    metrics["probes"] = probe_metrics(probes, scene.operator.probes, cfg.wavelengths_nm)
     for label, ids in (("train", scene.train), ("holdout", scene.holdout)):
         metrics[f"{label}_observed_amplitude_nrmse"] = float(amplitude_loss(pred[ids], scene.measured[ids]).sqrt())
         metrics[f"{label}_clean_amplitude_nrmse"] = float(amplitude_loss(pred[ids], scene.clean[ids]).sqrt())
-    return metrics, objects, tau, opd, pred
+    return metrics, objects, tau, opd, pred, probes
 
 
 def reconstruct(cfg, scene, method):
@@ -74,16 +77,22 @@ def reconstruct(cfg, scene, method):
     model_class = SharedAmplitudeModel if shared_amp else ObjectModel
     model = model_class(cfg, method, scene.input_stack).to(scene.objects.device)
     lr = cfg.lr_net if method.startswith("unet") else cfg.lr_pixel
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    probe_model = PixelProbes(cfg, scene.objects.device) if cfg.probe_mode == "pixel" else None
+    groups = [{"params": model.parameters(), "lr": lr}]
+    if probe_model is not None:
+        groups.append({"params": probe_model.parameters(), "lr": cfg.lr_probe})
+    optimizer = torch.optim.Adam(groups)
+    initial_probes = (scene.operator.probes if probe_model is None else probe_model()).detach().cpu().numpy().copy()
     history = []
 
     def record(iteration):
-        metrics, *fields = evaluate(model, scene, cfg)
+        metrics, *fields = evaluate(model, scene, cfg, probe_model)
         history.append({"iteration": iteration, **metrics})
         print(f"{method:19s} {iteration:4d}/{cfg.iterations} "
               f"train={metrics['train_observed_amplitude_nrmse']:.4f} "
               f"heldout={metrics['holdout_clean_amplitude_nrmse']:.4f} "
-              f"object={metrics['mean_complex_relative_error']:.4f}", flush=True)
+              f"object={metrics['mean_complex_relative_error']:.4f} "
+              f"probe={np.mean([p['complex_relative_error'] for p in metrics['probes']]):.4f}", flush=True)
         return metrics, fields
 
     initial, _ = record(0)
@@ -93,7 +102,8 @@ def reconstruct(cfg, scene, method):
     for iteration in range(1, cfg.iterations+1):
         optimizer.zero_grad(set_to_none=True)
         objects, tau, opd = model()
-        prediction = scene.operator(objects, scene.train)
+        probes = None if probe_model is None else probe_model()
+        prediction = scene.operator(objects, scene.train, probes=probes)
         loss = amplitude_loss(prediction, scene.measured[scene.train])
         if cfg.tv_weight:
             prior = amplitude_tv(objects.abs(), scene.roi) if shared_amp else masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
@@ -112,7 +122,11 @@ def reconstruct(cfg, scene, method):
     arrays = [v.detach().cpu().numpy() for v in fields]
     return {"method": method, "initial": initial, "final": final, "history": history,
             "elapsed_s_including_evaluation": elapsed,
-            "parameter_count": sum(p.numel() for p in model.parameters()),
+            "parameter_count": sum(p.numel() for p in model.parameters()) + (sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0),
+            "probe_mode": cfg.probe_mode,
+            "probe_learning_rate": cfg.lr_probe if probe_model is not None else None,
+            "probe_state_dict": None if probe_model is None else {k: v.detach().cpu() for k, v in probe_model.state_dict().items()},
+            "probes": arrays[4], "initial_probes": initial_probes,
             "learning_rate": lr, "objects": arrays[0], "optical_depth": arrays[1],
             "opd_um": arrays[2], "predicted_intensity": arrays[3],
             "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()

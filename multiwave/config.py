@@ -19,6 +19,9 @@ class Config:
     distance_mm: float = 1.5
     wavelengths_nm: tuple = (515.0, 633.0)
     weights: tuple = (0.65, 0.35)
+    spectral_mode: str = "equal_power"  # no explicit weights; power is in probe amplitude
+    probe_mode: str = "pixel"  # known remains an oracle control
+    lr_probe: float = 0.01
     pad_factor: int = 2
     photons_per_scan: float = 200000.0  # 0 = noiseless, otherwise incident photons
     scene: str = "usaf_zero_phase"
@@ -65,7 +68,7 @@ class Config:
             raise ValueError("scan must fit object_size, and grid must be >=3")
         if self.pad_factor < 2:
             raise ValueError("pad_factor >=2 is required for this finite-window pilot")
-        for name in ("pixel_um", "distance_mm", "lr_pixel", "lr_net", "opd_scale_um"):
+        for name in ("pixel_um", "distance_mm", "lr_pixel", "lr_net", "lr_probe", "opd_scale_um"):
             v = getattr(self, name)
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -81,7 +84,11 @@ class Config:
             raise ValueError("wavelengths must be finite and positive")
         if len(set(self.wavelengths_nm)) != len(self.wavelengths_nm):
             raise ValueError("wavelengths must be distinct")
-        if len(self.weights) != len(self.wavelengths_nm):
+        if self.spectral_mode not in ("equal_power", "weighted"):
+            raise ValueError("spectral_mode must be equal_power or weighted")
+        if self.probe_mode not in ("known", "pixel"):
+            raise ValueError("probe_mode must be known or pixel")
+        if self.spectral_mode == "weighted" and len(self.weights) != len(self.wavelengths_nm):
             raise ValueError("one weight is required per wavelength")
         if any(not math.isfinite(v) or v <= 0 for v in self.weights):
             raise ValueError("weights must be finite and positive")
@@ -94,3 +101,11 @@ class Config:
         if self.device not in ("auto", "cpu", "cuda"):
             raise ValueError("device must be auto, cpu or cuda")
         return self
+
+    @property
+    def probe_power(self):
+        return 1/len(self.wavelengths_nm) if self.spectral_mode == "equal_power" else 1.0
+
+    @property
+    def mixing_coefficients(self):
+        return (1.,)*len(self.wavelengths_nm) if self.spectral_mode == "equal_power" else self.weights

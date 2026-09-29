@@ -13,7 +13,7 @@ class USAFTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.cfg = Config.preset("smoke")
+        cls.cfg = replace(Config.preset("smoke"), spectral_mode="weighted", probe_mode="known")
         cls.scene = simulate(cls.cfg)
 
     def test_default_is_exactly_shared_zero_phase(self):

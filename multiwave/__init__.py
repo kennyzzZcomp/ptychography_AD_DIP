@@ -1,1 +1,1 @@
-"""Zero-phase USAF, one shared amplitude, wavelength-dependent known probes."""
+"""Zero-phase shared USAF, independent complex pixel probes, known-probe control."""
