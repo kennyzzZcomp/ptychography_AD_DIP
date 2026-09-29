@@ -119,6 +119,8 @@ def main():
     p.add_argument("--pixel-parameterization", choices=("sigmoid", "softplus", "direct"))
     p.add_argument("--unet-activation", choices=("sigmoid", "softplus"))
     p.add_argument("--unet-skip", choices=("concat", "dwt_concat"))
+    p.add_argument("--loss", choices=("amplitude", "poisson"),
+                   help="training data loss; poisson requires a positive photon budget")
     p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
     p.add_argument("--usaf-path", type=str)

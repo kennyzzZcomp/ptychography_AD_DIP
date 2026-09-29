@@ -1,0 +1,11 @@
+run_id,experiment,train_amplitude_nrmse,holdout_clean_amplitude_nrmse,roi_object_relative_error,mean_probe_relative_error,elapsed_s_including_evaluation,photons_per_scan
+A1,AD fixed,0.0073,0.05,0.0223,0.0343,,0
+U1,UNet fixed initial,0.0088,0.0109,0.0269,0.0378,,0
+U2,UNet lr decay,0.0138,0.0205,0.0474,0.0747,,0
+W1,DWT UNet,0.00653,0.0103,0.02427,,133.45,0
+U3,UNet fixed repeat,0.00895,0.0133,0.03046,,128.84,0
+AT1,AD TGV 0.001,0.00717,0.04413,0.01911,0.0289,141.51,0
+UT1,UNet TGV 0.001,0.00975,0.01195,0.02981,0.0449,149.64,0
+N1,AD Poisson 8000,0.7779,0.4378,0.4301,0.8964,,8000
+N2,DWT UNet Poisson 8000,0.7798,0.4472,0.4558,0.8981,,8000
+WT1,DWT UNet TGV 0.001 (user confirmed),0.0068,0.0095,0.0249,0.0392,,0

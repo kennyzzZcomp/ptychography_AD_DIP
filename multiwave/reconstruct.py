@@ -6,6 +6,7 @@ import torch
 
 from .models import ObjectModel, SharedAmplitudeModel, masked_tv, amplitude_tv
 from .physics import amplitude_loss
+from .losses import poisson_loss, poisson_nll_sum, poisson_normalizer
 from .probes import PixelProbes, probe_metrics
 
 
@@ -19,9 +20,14 @@ def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
     p = probes.detach().requires_grad_(probes.requires_grad)
     denominator = scene.measured[scene.train].mean().clamp_min(1e-12)
     elements = scene.measured[scene.train].numel()
+    count_normalizer = (poisson_normalizer(scene.measured[scene.train], cfg.photons_per_scan)
+                        if cfg.loss == "poisson" else None)
     for ids in scene.train.split(cfg.chunk):
         pred = scene.operator(a, ids, probes=p)
-        loss = ((pred+1e-12).sqrt()-(scene.measured[ids]+1e-12).sqrt()).square().sum()/elements/denominator
+        if cfg.loss == "poisson":
+            loss = poisson_nll_sum(pred, scene.measured[ids], cfg.photons_per_scan)/count_normalizer
+        else:
+            loss = ((pred+1e-12).sqrt()-(scene.measured[ids]+1e-12).sqrt()).square().sum()/elements/denominator
         if not torch.isfinite(loss):
             raise FloatingPointError("non-finite chunk loss")
         loss.backward()
@@ -100,6 +106,9 @@ def evaluate(model, scene, cfg, probe_model=None):
     for label, ids in (("train", scene.train), ("holdout", scene.holdout)):
         metrics[f"{label}_observed_amplitude_nrmse"] = float(amplitude_loss(pred[ids], scene.measured[ids]).sqrt())
         metrics[f"{label}_clean_amplitude_nrmse"] = float(amplitude_loss(pred[ids], scene.clean[ids]).sqrt())
+    metrics["train_data_loss"] = float(poisson_loss(pred[scene.train], scene.measured[scene.train], cfg.photons_per_scan)
+                                       if cfg.loss == "poisson" else
+                                       amplitude_loss(pred[scene.train], scene.measured[scene.train]))
     return metrics, objects, tau, opd, pred, probes
 
 
@@ -127,16 +136,24 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         metrics, *fields = evaluate(model, scene, cfg, probe_model)
         metrics["object_learning_rate"] = optimizer.param_groups[0]["lr"]
         metrics["probe_learning_rate"] = optimizer.param_groups[1]["lr"] if probe_model is not None else None
+        metrics["train_total_objective"] = metrics["train_data_loss"]
+        if cfg.tv_weight:
+            with torch.no_grad():
+                penalty = (amplitude_tv(fields[0].abs(), scene.roi) if shared_amp else
+                           masked_tv(fields[1], fields[2], scene.roi, cfg.opd_scale_um))
+            metrics["train_total_objective"] += float(cfg.tv_weight*penalty)
         if regularizer is not None:
             with torch.no_grad():
                 total, first, second = regularizer.terms(fields[0][0].real)
             metrics.update(tgv_penalty=float(total), tgv_first_order=float(first),
                            tgv_second_order=float(second), tgv_weighted_penalty=float(cfg.tgv_weight*total),
                            tgv_aux_learning_rate=cfg.tgv_lr)
+            metrics["train_total_objective"] += metrics["tgv_weighted_penalty"]
         history.append({"iteration": iteration, **metrics})
         if progress_callback is not None:
             progress_callback(method, iteration, metrics)
         print(f"{method:19s} {iteration:4d}/{cfg.iterations} "
+              f"loss[{cfg.loss}]={metrics['train_data_loss']:.5g} "
               f"train={metrics['train_observed_amplitude_nrmse']:.4f} "
               f"heldout={metrics['holdout_clean_amplitude_nrmse']:.4f} "
               f"object={metrics['mean_complex_relative_error']:.4f} "
@@ -159,7 +176,8 @@ def reconstruct(cfg, scene, method, progress_callback=None):
             backward_shared_data(objects, probes, scene, cfg, regularizer)
         else:
             prediction = scene.operator(objects, scene.train, probes=probes)
-            loss = amplitude_loss(prediction, scene.measured[scene.train])
+            loss = (poisson_loss(prediction, scene.measured[scene.train], cfg.photons_per_scan)
+                    if cfg.loss == "poisson" else amplitude_loss(prediction, scene.measured[scene.train]))
             if cfg.tv_weight:
                 loss = loss + cfg.tv_weight*masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
             if not torch.isfinite(loss):
@@ -178,6 +196,7 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         raise FloatingPointError("non-finite final reconstruction")
     arrays = [v.detach().cpu().numpy() for v in fields]
     return {"method": method, "initial": initial, "final": final, "history": history,
+            "loss": cfg.loss,
             "unet_skip": cfg.unet_skip if method.startswith("unet") else None,
             "tgv_weight": cfg.tgv_weight,
             "tgv_state_dict": regularizer.state_dict() if regularizer is not None else None,

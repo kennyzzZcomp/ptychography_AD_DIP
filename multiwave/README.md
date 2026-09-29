@@ -87,6 +87,10 @@ python -m unittest discover -s multiwave/tests -v
 
 ## 输出
 
+Poisson 负对数似然已支持 `--loss poisson`（默认仍为 amplitude）；模型和 Colab 指令见 [POISSON_LOSS.md](POISSON_LOSS.md)。
+
+当前 Colab 的 AD、U-Net 重跑、学习率衰减及 DWT 结果记录见 [COLAB_ABLATION_RESULTS_20260929.md](COLAB_ABLATION_RESULTS_20260929.md)。
+
 DWT 特征融合与振幅 TGV 的实现说明、五组 Colab 对照指令见 [DWT_TGV_EXPERIMENTS.md](DWT_TGV_EXPERIMENTS.md)。默认均关闭，学习率衰减也默认关闭。
 
 默认新建 results/时间戳/，拒绝覆盖非空目录。

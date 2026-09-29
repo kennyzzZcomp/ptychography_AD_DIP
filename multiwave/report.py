@@ -170,7 +170,9 @@ def save_summary(results, cfg, audit, out):
     for r in results:
         f = r["final"]
         lines.append(f"| {r['method']} | {f[keys[0]]:.5f} | {f[keys[1]]:.5f} | {f[keys[2]]:.5f} | {r['elapsed_s_including_evaluation']:.2f} |")
-    lines += ["", f"U-Net skip：`{cfg.unet_skip}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
+    lines += ["", f"训练损失：`{cfg.loss}`。表中 train/holdout 仍为统一的振幅 NRMSE，不是 Poisson 目标值。",
+              "Poisson 使用减去饱和模型常数的 NLL，并按训练观测总计数归一化；JSON 另存 train_data_loss 和 train_total_objective。",
+              "", f"U-Net skip：`{cfg.unet_skip}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
               "TGV 只在训练扫描窗口并集内的有效差分模板上作用，不使用真值或评价 ROI；采用像素单位差分，辅助场为近似优化。",
               "", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
               "", ("USAF 主线：各波长共享一个实数振幅，物体相位固定为零；不进行光谱物体分离。振幅区域对比度不是 USAF 线组分辨率。"

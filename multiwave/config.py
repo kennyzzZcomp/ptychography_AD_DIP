@@ -44,6 +44,7 @@ class Config:
     lr_net_decay_factor: float = 0.2
     opd_scale_um: float = 0.15
     tv_weight: float = 0.0
+    loss: str = "amplitude"
     unet_skip: str = "concat"
     tgv_weight: float = 0.0
     tgv_alpha0: float = 2.0
@@ -71,6 +72,10 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if self.loss not in ("amplitude", "poisson"):
+            raise ValueError("loss must be amplitude or poisson")
+        if self.loss == "poisson" and self.photons_per_scan <= 0:
+            raise ValueError("--loss poisson requires --photons-per-scan > 0 (count data)")
         if self.unet_skip not in ("concat", "dwt_concat"):
             raise ValueError("unet_skip must be concat or dwt_concat")
         if self.scene != "usaf_zero_phase" and (self.tgv_weight or self.unet_skip != "concat"):
