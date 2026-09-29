@@ -12,6 +12,9 @@ SCENES = ("usaf_zero_phase", "shared_complex", "shared_opd", "spectral_absorptio
 class Config:
     object_size: int = 96
     patch_size: int = 48
+    detector_size: int = 0  # 0 preserves the historical patch-sized detector
+    pixel_parameterization: str = "sigmoid"
+    unet_activation: str = "sigmoid"
     grid: int = 5
     step: int = 8
     jitter: int = 1
@@ -54,6 +57,8 @@ class Config:
             return cls(object_size=384, patch_size=192, step=32, jitter=4,
                        scan_quantum=4, pixel_um=1.0, chunk=2,
                        photons_per_scan=0.0, iterations=1000, eval_every=50)
+        if name == "resolved":
+            return replace_config_highres()
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
@@ -66,6 +71,12 @@ class Config:
             raise ValueError("object_size must be >=16 and divisible by 8 (U-Net)")
         if self.patch_size % 2 or self.patch_size < 8:
             raise ValueError("patch_size must be even and >=8")
+        if not isinstance(self.detector_size, int) or self.detector_size < 0 or self.detector_size % 2:
+            raise ValueError("detector_size must be zero or a positive even integer")
+        if self.detector_pixels > self.patch_size*self.pad_factor:
+            raise ValueError("detector_size must fit the padded propagation grid")
+        if self.pixel_parameterization not in ("sigmoid", "softplus", "direct") or self.unet_activation not in ("sigmoid", "softplus"):
+            raise ValueError("unsupported amplitude parameterization")
         if not isinstance(self.jitter, int) or self.jitter < 0 or 2*self.jitter >= self.step:
             raise ValueError("jitter must be a nonnegative integer with 2*jitter < step")
         if self.jitter % self.scan_quantum or self.step % self.scan_quantum:
@@ -110,9 +121,19 @@ class Config:
         return self
 
     @property
+    def detector_pixels(self):
+        return self.detector_size or self.patch_size
+
+    @property
     def probe_power(self):
         return 1/len(self.wavelengths_nm) if self.spectral_mode == "equal_power" else 1.0
 
     @property
     def mixing_coefficients(self):
         return (1.,)*len(self.wavelengths_nm) if self.spectral_mode == "equal_power" else self.weights
+
+
+def replace_config_highres():
+    from dataclasses import replace
+    return replace(Config.preset("highres"), detector_size=768, pad_factor=8,
+                   base_channels=16, pixel_parameterization="direct", unet_activation="softplus")

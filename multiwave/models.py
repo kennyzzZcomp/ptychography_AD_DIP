@@ -17,9 +17,14 @@ class SharedAmplitudeModel(nn.Module):
         if method not in ("pixel_shared_amp", "unet_shared_amp"):
             raise ValueError(f"unsupported amplitude method: {method}")
         self.count = len(cfg.wavelengths_nm)
+        self.parameterization = cfg.unet_activation if method == "unet_shared_amp" else cfg.pixel_parameterization
         self.register_buffer("input_stack", input_stack)
         a0 = math.exp(-.1)
         bias = math.log(a0/(1-a0))
+        if self.parameterization == "softplus":
+            bias = math.log(math.expm1(a0))
+        elif self.parameterization == "direct":
+            bias = a0
         self.net = None
         if method == "unet_shared_amp":
             self.net = ProPtyUNet(input_stack.shape[1], cfg.base_channels, n_fields=1, ph_ch=1)
@@ -35,7 +40,9 @@ class SharedAmplitudeModel(nn.Module):
             raw = self.raw_amp
         else:
             raw = self.net.head_amp(self.net.forward_features(self.input_stack))[0]
-        amplitude = torch.sigmoid(raw).expand(self.count, -1, -1)
+        amplitude = (F.softplus(raw) if self.parameterization == "softplus" else
+                     raw if self.parameterization == "direct" else torch.sigmoid(raw))
+        amplitude = amplitude.expand(self.count, -1, -1)
         zero = torch.zeros_like(amplitude)
         return torch.complex(amplitude, zero), -amplitude.clamp_min(1e-8).log(), zero
 

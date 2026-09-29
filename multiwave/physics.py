@@ -27,7 +27,7 @@ def asm_transfer(n, pixel_m, wavelength_m, distance_m, *, device="cpu",
     return (torch.polar(torch.ones_like(phase), phase)*mask).to(dtype)
 
 
-def propagate_padded(field, transfer):
+def propagate_padded(field, transfer, detector_size=None):
     n = field.shape[-1]
     if field.shape[-2] != n or transfer.shape[-1] < n:
         raise ValueError("propagation requires square fields and a larger FFT grid")
@@ -35,7 +35,11 @@ def propagate_padded(field, transfer):
     lo, hi = delta//2, delta-delta//2
     padded = F.pad(field, (lo, hi, lo, hi))
     propagated = torch.fft.ifft2(torch.fft.fft2(padded)*transfer)
-    return propagated[..., lo:lo+n, lo:lo+n]
+    detector_size = n if detector_size is None else detector_size
+    if detector_size > transfer.shape[-1] or detector_size < 1:
+        raise ValueError("detector must fit propagation grid")
+    crop = (transfer.shape[-1]-detector_size)//2
+    return propagated[..., crop:crop+detector_size, crop:crop+detector_size]
 
 
 class MultiwaveOperator(nn.Module):
@@ -43,6 +47,7 @@ class MultiwaveOperator(nn.Module):
     def __init__(self, cfg, probes, positions):
         super().__init__()
         self.n = cfg.patch_size
+        self.detector_size = cfg.detector_pixels
         self.object_size = cfg.object_size
         self.chunk = cfg.chunk
         if probes.shape != (len(cfg.wavelengths_nm), self.n, self.n):
@@ -78,7 +83,7 @@ class MultiwaveOperator(nn.Module):
         for start in range(0, len(rows), self.chunk):
             r, c = rows[start:start+self.chunk], cols[start:start+self.chunk]
             patches = objects[:, r[:, :, None], c[:, None, :]]
-            wave = propagate_padded(patches*probes[:, None], self.transfer[:, None])
+            wave = propagate_padded(patches*probes[:, None], self.transfer[:, None], self.detector_size)
             outputs.append(wave.abs().square())
         return torch.cat(outputs, dim=1)
 

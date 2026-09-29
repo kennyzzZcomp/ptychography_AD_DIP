@@ -1,8 +1,20 @@
 # 零相位 USAF：共享振幅 + 独立复数像素探针
 
+高频模糊的本地定位实验见 [RESOLUTION_DIAGNOSIS.md](RESOLUTION_DIAGNOSIS.md)：固定照明、仅改变探测器记录窗口的对照，以及梯度、频率敏感性、近真值恢复和参数化诊断。
+
 当前默认执行盲探针联合优化：U-Net（或像素对照）生成一张共同物体振幅，物体相位固定为零；两个探针各自优化实部和虚部，从平滑圆斑、零相位开始。
 
 ## Colab
+
+修正探测窗口后的配置为 `resolved`：384×384 物体、192×192 探针、768×768 探测器、8 倍传播 padding。U-Net 默认 base=16、softplus 振幅，物体相位仍固定为零；像素 AD 默认为直接振幅加 [0,1] 投影。旧 `highres` 保留用于历史对照。
+
+```python
+!python /content/ptychography_AD_DIP/multiwave/run_simulation.py --preset resolved --device cuda --methods pixel_shared_amp unet_shared_amp --pixel-parameterization softplus
+```
+
+这条命令使用相同数据比较 softplus 像素 AD 和 softplus U-Net，默认盲探针；加 `--probe-mode known` 为已知探针对照。`--detector-size` 独立于 `--patch-size`，但必须放得进 `patch_size * pad_factor` 的传播网格。探测器大于物体时，仅固定网络输入使用 area 缩小，测量、传播和损失保持完整探测器尺寸。
+
+本地后台对比入口为 `python -m multiwave.run_resolved_comparison --outdir multiwave/results/resolved_ad_unet_20260929`。自动更新 [AD_UNET_COMPARISON.md](AD_UNET_COMPARISON.md)，包含已知／盲探针两类主对照和几何校验 AD 基线；部分失败重跑使用新目录，保留旧结果。
 
 同步更新后的 multiwave 文件夹，并保留项目根目录 USAF.jpg：
 

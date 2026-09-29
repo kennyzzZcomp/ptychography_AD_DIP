@@ -128,7 +128,12 @@ def simulate(cfg, device="cpu"):
     roi = exposure > .20*exposure.max()
     # The holdout measurements never enter the U-Net input or training loss.
     inp = measured[train]/measured[train].max().clamp_min(1e-12)
-    pad = (m-n)//2
-    inp = torch.nn.functional.pad(inp, (pad, m-n-pad, pad, m-n-pad))[None]
+    d = cfg.detector_pixels
+    if d > m:
+        # Only the fixed neural-network input is reduced. Loss/measurements keep ALL pixels.
+        inp = torch.nn.functional.interpolate(inp[None], size=(m, m), mode="area")
+    else:
+        pad = (m-d)//2
+        inp = torch.nn.functional.pad(inp, (pad, m-d-pad, pad, m-d-pad))[None]
     return Scene(op, objects, opd, tau, markers, texture, clean, measured,
                  train, holdout, roi, inp)

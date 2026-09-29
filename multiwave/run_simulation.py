@@ -40,7 +40,7 @@ def audit_scene(cfg, scene):
             "holdout_excluded_from_network_input": True}
 
 
-def run_experiment(cfg, methods=METHODS, outdir=None):
+def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
     cfg.validate()
     if cfg.probe_mode == "pixel" and cfg.scene != "usaf_zero_phase":
         raise ValueError("blind pixel probes are currently scoped to the zero-phase USAF task")
@@ -95,7 +95,7 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
     plot_scene(scene, cfg, out)
     results = []
     for method in methods:
-        result = reconstruct(cfg, scene, method)
+        result = reconstruct(cfg, scene, method, progress_callback=progress_callback)
         np.savez_compressed(out/f"{method}_fields.npz", **{k: result[k] for k in
                             ("objects", "optical_depth", "opd_um", "predicted_intensity", "probes", "initial_probes")})
         torch.save({"method": method, "config": metadata["config"], "state_dict": result["state_dict"],
@@ -111,7 +111,9 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--preset", choices=("smoke", "standard", "highres"), default="smoke")
+    p.add_argument("--preset", choices=("smoke", "standard", "highres", "resolved"), default="smoke")
+    p.add_argument("--pixel-parameterization", choices=("sigmoid", "softplus", "direct"))
+    p.add_argument("--unet-activation", choices=("sigmoid", "softplus"))
     p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
     p.add_argument("--usaf-path", type=str)
@@ -122,7 +124,7 @@ def main():
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
-                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum"):
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
                  "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe"):

@@ -9,6 +9,31 @@ from .physics import amplitude_loss
 from .probes import PixelProbes, probe_metrics
 
 
+def backward_shared_data(objects, probes, scene, cfg):
+    """Exact full-batch field VJP; FFT graphs are freed per scan chunk.
+
+    The U-Net is evaluated once (including BatchNorm). Detached field gradients
+    are accumulated, then passed through the original network/probe once.
+    """
+    a = objects.detach().requires_grad_(True)
+    p = probes.detach().requires_grad_(probes.requires_grad)
+    denominator = scene.measured[scene.train].mean().clamp_min(1e-12)
+    elements = scene.measured[scene.train].numel()
+    for ids in scene.train.split(cfg.chunk):
+        pred = scene.operator(a, ids, probes=p)
+        loss = ((pred+1e-12).sqrt()-(scene.measured[ids]+1e-12).sqrt()).square().sum()/elements/denominator
+        if not torch.isfinite(loss):
+            raise FloatingPointError("non-finite chunk loss")
+        loss.backward()
+    if cfg.tv_weight:
+        (cfg.tv_weight*amplitude_tv(a.abs(), scene.roi)).backward()
+    outputs, gradients = [objects], [a.grad]
+    if probes.requires_grad:
+        outputs.append(probes)
+        gradients.append(p.grad)
+    torch.autograd.backward(outputs, gradients)
+
+
 def field_metrics(objects, tau, opd, scene, cfg):
     roi = scene.roi
     channels = []
@@ -41,6 +66,11 @@ def field_metrics(objects, tau, opd, scene, cfg):
             result["amplitude_region_contrast"] = float((hi-lo)/(hi+lo).clamp_min(1e-12))
         result["max_object_imaginary_abs"] = float(objects.imag.abs().max())
         result["max_interwavelength_object_difference"] = float((objects-objects[:1]).abs().max())
+        if cfg.object_size == 384:
+            from .diagnose_resolution import metrics as detail_metrics
+            detail = detail_metrics(objects[0].real, scene.objects[0].real, roi)
+            result["center_amplitude_rmse"] = detail["center_rmse"]
+            result["high_frequency_relative_error"] = detail["high_frequency_error"]
     if cfg.scene in ("spectral_absorption", "dispersive"):
         # Joint regression removes constant/common texture before testing channel markers.
         # This diagnostic uses phantom truth ONLY during evaluation, never optimization.
@@ -71,7 +101,7 @@ def evaluate(model, scene, cfg, probe_model=None):
     return metrics, objects, tau, opd, pred, probes
 
 
-def reconstruct(cfg, scene, method):
+def reconstruct(cfg, scene, method, progress_callback=None):
     torch.manual_seed(cfg.network_seed)
     shared_amp = method.endswith("_shared_amp")
     model_class = SharedAmplitudeModel if shared_amp else ObjectModel
@@ -88,6 +118,8 @@ def reconstruct(cfg, scene, method):
     def record(iteration):
         metrics, *fields = evaluate(model, scene, cfg, probe_model)
         history.append({"iteration": iteration, **metrics})
+        if progress_callback is not None:
+            progress_callback(method, iteration, metrics)
         print(f"{method:19s} {iteration:4d}/{cfg.iterations} "
               f"train={metrics['train_observed_amplitude_nrmse']:.4f} "
               f"heldout={metrics['holdout_clean_amplitude_nrmse']:.4f} "
@@ -102,16 +134,21 @@ def reconstruct(cfg, scene, method):
     for iteration in range(1, cfg.iterations+1):
         optimizer.zero_grad(set_to_none=True)
         objects, tau, opd = model()
-        probes = None if probe_model is None else probe_model()
-        prediction = scene.operator(objects, scene.train, probes=probes)
-        loss = amplitude_loss(prediction, scene.measured[scene.train])
-        if cfg.tv_weight:
-            prior = amplitude_tv(objects.abs(), scene.roi) if shared_amp else masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
-            loss = loss + cfg.tv_weight*prior
-        if not torch.isfinite(loss):
-            raise FloatingPointError(f"non-finite loss at {method} iteration {iteration}")
-        loss.backward()
+        probes = scene.operator.probes if probe_model is None else probe_model()
+        if shared_amp:
+            backward_shared_data(objects, probes, scene, cfg)
+        else:
+            prediction = scene.operator(objects, scene.train, probes=probes)
+            loss = amplitude_loss(prediction, scene.measured[scene.train])
+            if cfg.tv_weight:
+                loss = loss + cfg.tv_weight*masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
+            if not torch.isfinite(loss):
+                raise FloatingPointError(f"non-finite loss at {method} iteration {iteration}")
+            loss.backward()
         optimizer.step()
+        if shared_amp and model.net is None and cfg.pixel_parameterization == "direct":
+            with torch.no_grad():
+                model.raw_amp.clamp_(0, 1)
         if iteration % cfg.eval_every == 0 or iteration == cfg.iterations:
             final, fields = record(iteration)
     if scene.objects.is_cuda:
