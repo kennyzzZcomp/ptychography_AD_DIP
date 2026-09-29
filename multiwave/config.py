@@ -28,6 +28,7 @@ class Config:
     probe_mode: str = "pixel"  # known remains an oracle control
     lr_probe: float = 0.01
     probe_smooth_weight: float = 0.0
+    probe_grid_size: int = 0  # 0 uses the full patch grid; otherwise bilinear complex grid
     pad_factor: int = 2
     photons_per_scan: float = 200000.0  # 0 = noiseless, otherwise incident photons
     scene: str = "usaf_zero_phase"
@@ -77,6 +78,11 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if (not isinstance(self.probe_grid_size, int) or isinstance(self.probe_grid_size, bool)
+                or (self.probe_grid_size != 0 and not 2 <= self.probe_grid_size <= self.patch_size)):
+            raise ValueError("probe_grid_size must be 0 or an integer in [2, patch_size]")
+        if self.probe_grid_size and self.probe_mode != "pixel":
+            raise ValueError("probe grid requires trainable pixel probes")
         if not math.isfinite(self.probe_smooth_weight) or self.probe_smooth_weight < 0:
             raise ValueError("probe_smooth_weight must be finite and nonnegative")
         if self.probe_smooth_weight and self.probe_mode != "pixel":

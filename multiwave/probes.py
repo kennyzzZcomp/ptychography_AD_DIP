@@ -1,6 +1,7 @@
 """Truth-independent, smooth zero-phase initialization; independent complex pixels."""
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 def probe_smoothness(probes):
@@ -31,13 +32,24 @@ class PixelProbes(nn.Module):
     def __init__(self, cfg, device="cpu"):
         super().__init__()
         initial = initial_probe_field(cfg, device)
+        self.patch_size = cfg.patch_size
+        self.grid_size = cfg.probe_grid_size or cfg.patch_size
+        if self.grid_size != cfg.patch_size:
+            # Downsample the nominal initialization, never the true probe.
+            initial = torch.complex(
+                F.interpolate(initial.real[:, None], size=self.grid_size, mode="area")[:, 0],
+                F.interpolate(initial.imag[:, None], size=self.grid_size, mode="area")[:, 0])
         # Dimensionless O(1) raw parameters, rather than pixels O(1/N).
         self.real = nn.Parameter(initial.real*cfg.patch_size)
         self.imag = nn.Parameter(initial.imag*cfg.patch_size)
         self.register_buffer("power", torch.tensor(cfg.probe_power, device=device))
 
     def forward(self):
-        raw = torch.complex(self.real, self.imag)
+        real, imag = self.real, self.imag
+        if self.grid_size != self.patch_size:
+            real = F.interpolate(real[:, None], size=self.patch_size, mode="bilinear", align_corners=False)[:, 0]
+            imag = F.interpolate(imag[:, None], size=self.patch_size, mode="bilinear", align_corners=False)[:, 0]
+        raw = torch.complex(real, imag)
         norm = raw.abs().square().sum((-1, -2), keepdim=True).clamp_min(1e-20).sqrt()
         return raw/norm*self.power.sqrt()
 

@@ -238,6 +238,10 @@ def reconstruct(cfg, scene, method, progress_callback=None):
             "elapsed_s_including_evaluation": elapsed,
             "parameter_count": sum(p.numel() for p in model.parameters()) + (sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0),
             "probe_mode": cfg.probe_mode,
+            "probe_grid_size": (probe_model.grid_size if probe_model is not None else None),
+            "probe_parameter_count": sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0,
+            "probe_interpolation": ("bilinear_align_corners_false" if probe_model is not None
+                                    and probe_model.grid_size != cfg.patch_size else None),
             "probe_learning_rate": cfg.lr_probe if probe_model is not None else None,
             "probe_state_dict": None if probe_model is None else {k: v.detach().cpu() for k, v in probe_model.state_dict().items()},
             "probes": arrays[4], "initial_probes": initial_probes,
