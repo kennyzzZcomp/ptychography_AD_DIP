@@ -1,6 +1,6 @@
 # 扩大探测器后的 U-Net / AD 对比
 
-更新时间：2026-09-29T18:18:33.925120+10:00；状态：**running**；进程 PID：25416。
+更新时间：2026-09-29T18:27:35.416020+10:00；状态：**finished_with_user_stop**；进程 PID：25416。
 
 物体 384×384、照明探针 192×192、探测器 768×768、1 μm 像素、1.5 mm 传播距离、515/633 nm。FFT 为 1536×1536；无噪声；25 个扫描位置中 20 个训练、5 个留出。
 
@@ -15,12 +15,14 @@ AD 学习率 0.03；U-Net 0.002；盲探针 0.01。主对照各 500 次更新；
 | known_ad_direct | completed | 300/300 | 0.000130159 | 0.00016665 | 0.000726876 | 0.0146004 | 0 |
 | known_ad_softplus | completed | 500/500 | 0.0438112 | 0.0531193 | 0.254928 | 0.0299826 | 0 |
 | known_unet_softplus | completed | 500/500 | 0.0394945 | 0.0708341 | 0.330633 | 0.014802 | 0 |
-| blind_ad_softplus | running | 425/500 | 0.105876 | 0.152313 | 0.710392 | 0.082843 | 0.118306 |
-| blind_unet_softplus | pending | 0/500 | — | — | — | — | — |
+| blind_ad_softplus | completed | 500/500 | 0.0742158 | 0.112419 | 0.532085 | 0.070025 | 0.0914685 |
+| blind_unet_softplus | stopped_by_user | 100/500 | 0.373194 | 0.307801 | 1.03645 | 0.186986 | 0.502342 |
 
 评价区域沿用名义照明 ROI。中央与高频指标定义见 RESOLUTION_DIAGNOSIS.md。记录最后迭代，不按真值误差选择最佳模型。留出图不参与训练或网络输入。单种子、无噪声结果只支持本次仿真判断，不代表统计优势或真实实验性能。
 
 ## 结果与解释
+
+本地 blind_unet_softplus 已按用户要求停止，表中为最后记录的中间指标，不是 500 次完整结果。用户提供的 Colab 500 次结果独立归档于 COLAB_BLIND_UNET_20260929.md，不冒充本地 CPU 实验。后台跟进已暂停。
 
 - known 主对照：AD ROI 误差 0.0438112，U-Net 0.0394945；高频误差分别 0.254928 / 0.330633。只描述本次固定预算结果，不将方法差异全部归因于网络结构。
 - blind 主对照尚未全部完成，暂不下结论。
@@ -40,3 +42,7 @@ AD 学习率 0.03；U-Net 0.002；盲探针 0.01。主对照各 500 次更新；
 ![known_unet_softplus detail](C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/known_unet_softplus/unet_shared_amp_detail.png)
 
 - blind_ad_softplus：[C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/blind_ad_softplus](C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/blind_ad_softplus)
+
+![blind_ad_softplus detail](C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/blind_ad_softplus/pixel_shared_amp_detail.png)
+
+- blind_unet_softplus：[C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/blind_unet_softplus](C:/Users/kennyzz/Desktop/INNM_Code/multiwave/results/resolved_ad_unet_20260929/blind_unet_softplus)

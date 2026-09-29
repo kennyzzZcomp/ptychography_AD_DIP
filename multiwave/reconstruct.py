@@ -117,6 +117,8 @@ def reconstruct(cfg, scene, method, progress_callback=None):
 
     def record(iteration):
         metrics, *fields = evaluate(model, scene, cfg, probe_model)
+        metrics["object_learning_rate"] = optimizer.param_groups[0]["lr"]
+        metrics["probe_learning_rate"] = optimizer.param_groups[1]["lr"] if probe_model is not None else None
         history.append({"iteration": iteration, **metrics})
         if progress_callback is not None:
             progress_callback(method, iteration, metrics)
@@ -132,6 +134,10 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         torch.cuda.synchronize()
     start = time.perf_counter()
     for iteration in range(1, cfg.iterations+1):
+        if (method.startswith("unet") and cfg.lr_net_decay_after
+                and iteration == cfg.lr_net_decay_after + 1):
+            optimizer.param_groups[0]["lr"] = cfg.lr_net * cfg.lr_net_decay_factor
+            print(f"{method}: update {iteration}, network lr -> {optimizer.param_groups[0]['lr']:.6g}", flush=True)
         optimizer.zero_grad(set_to_none=True)
         objects, tau, opd = model()
         probes = scene.operator.probes if probe_model is None else probe_model()

@@ -124,10 +124,10 @@ def main():
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
-                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size"):
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size", "lr_net_decay_after"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
-                 "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe"):
+                 "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe", "lr_net_decay_factor"):
         p.add_argument("--"+name.replace("_", "-"), type=float)
     args = p.parse_args()
     if args.weights is not None and args.spectral_mode != "weighted":

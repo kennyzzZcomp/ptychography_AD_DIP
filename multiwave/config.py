@@ -40,6 +40,8 @@ class Config:
     base_channels: int = 8
     lr_pixel: float = 0.03
     lr_net: float = 0.002
+    lr_net_decay_after: int = 0  # 0 disables; decay starts on update after this count
+    lr_net_decay_factor: float = 0.2
     opd_scale_um: float = 0.15
     tv_weight: float = 0.0
     chunk: int = 8
@@ -62,6 +64,12 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if (not isinstance(self.lr_net_decay_after, int) or isinstance(self.lr_net_decay_after, bool)
+                or self.lr_net_decay_after < 0
+                or self.lr_net_decay_after >= self.iterations):
+            raise ValueError("lr_net_decay_after must be 0 (disabled) or less than iterations")
+        if not math.isfinite(self.lr_net_decay_factor) or not 0 < self.lr_net_decay_factor <= 1:
+            raise ValueError("lr_net_decay_factor must be in (0, 1]")
         for name in ("object_size", "patch_size", "grid", "step", "pad_factor",
                      "iterations", "eval_every", "base_channels", "chunk", "threads", "scan_quantum"):
             value = getattr(self, name)

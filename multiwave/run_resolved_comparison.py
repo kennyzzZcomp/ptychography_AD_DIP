@@ -40,6 +40,8 @@ def render(state, path):
         pe=f"{sum(p['complex_relative_error'] for p in probes)/len(probes):.6g}" if probes else '—'
         lines.append(f"| {trial['name']} | {trial['status']} | {trial.get('iteration',0)}/{trial['steps']} | {fmt('shared_amplitude_relative_error')} | {fmt('center_amplitude_rmse')} | {fmt('high_frequency_relative_error')} | {fmt('holdout_clean_amplitude_nrmse')} | {pe} |")
     lines += ['', '评价区域沿用名义照明 ROI。中央与高频指标定义见 RESOLUTION_DIAGNOSIS.md。记录最后迭代，不按真值误差选择最佳模型。留出图不参与训练或网络输入。单种子、无噪声结果只支持本次仿真判断，不代表统计优势或真实实验性能。', '', '## 结果与解释', '']
+    if any(t['status']=='stopped_by_user' for t in state['trials']):
+        lines += ['本地 blind_unet_softplus 已按用户要求停止，表中为最后记录的中间指标，不是 500 次完整结果。用户提供的 Colab 500 次结果独立归档于 COLAB_BLIND_UNET_20260929.md，不冒充本地 CPU 实验。后台跟进已暂停。', '']
     completed = {t['name']:t for t in state['trials'] if t['status']=='completed'}
     for mode in ('known','blind'):
         ad,unet=completed.get(mode+'_ad_softplus'),completed.get(mode+'_unet_softplus')
@@ -88,7 +90,7 @@ def main():
         render(state,Path(__file__).parent/'AD_UNET_COMPARISON.md')
     save()
     for trial in state['trials']:
-        if trial['status']=='completed': continue
+        if trial['status'] in ('completed','stopped_by_user'): continue
         folder=root/trial['name']
         attempt=1
         while folder.exists() and any(folder.iterdir()):
@@ -109,7 +111,8 @@ def main():
             trial.update(status='failed',error=traceback.format_exc())
             print(trial['error'],flush=True)
         save()
-    state['status']='completed' if all(t['status']=='completed' for t in state['trials']) else 'needs_attention'
+    state['status']=('completed' if all(t['status']=='completed' for t in state['trials']) else
+                     'finished_with_user_stop' if all(t['status'] in ('completed','stopped_by_user') for t in state['trials']) else 'needs_attention')
     save()
     print(f"SUITE {state['status']}: {report}",flush=True)
 
