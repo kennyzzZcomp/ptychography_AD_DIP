@@ -8,13 +8,14 @@ import json
 from pathlib import Path
 import platform
 import sys
+import hashlib
 import numpy as np
 import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from multiwave.config import Config, METHODS, SCENES
+from multiwave.config import Config, METHODS, SCENES, LEGACY_METHODS
 from multiwave.physics import MultiwaveOperator
 from multiwave.scene import simulate
 from multiwave.reconstruct import reconstruct
@@ -41,9 +42,11 @@ def audit_scene(cfg, scene):
 def run_experiment(cfg, methods=METHODS, outdir=None):
     cfg.validate()
     methods = tuple(methods)
-    allowed = METHODS + ("pixel_common", "unet_common")
+    allowed = METHODS + LEGACY_METHODS
     if not methods or len(set(methods)) != len(methods) or any(m not in allowed for m in methods):
         raise ValueError(f"methods must be distinct members of {allowed}")
+    if cfg.scene != "usaf_zero_phase" and any(m in METHODS for m in methods):
+        raise ValueError("shared_amp methods require --scene usaf_zero_phase; archived scenes need explicit legacy methods")
     torch.set_num_threads(cfg.threads)
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
@@ -65,6 +68,11 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
                 "python": sys.version, "torch": torch.__version__, "numpy": np.__version__,
                 "platform": platform.platform(), "audit": audit,
                 "timestamp": datetime.now().astimezone().isoformat(), "command": sys.argv}
+    if cfg.scene == "usaf_zero_phase":
+        asset = Path(cfg.usaf_path) if cfg.usaf_path else Path(__file__).resolve().parents[1]/"USAF.jpg"
+        metadata["object_model"] = "one_shared_real_amplitude_zero_phase"
+        metadata["usaf_asset"] = {"path": str(asset.resolve()), "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
+                                  "grayscale_convention": "amplitude", "resize": "BOX, aspect ratio preserved"}
     (out/"config.json").write_text(json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8")
     arr = lambda t: t.detach().cpu().numpy()
     np.savez_compressed(out/"data.npz", objects=arr(scene.objects), opd_um=arr(scene.opd_um),
@@ -96,8 +104,9 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--preset", choices=("smoke", "standard"), default="smoke")
-    p.add_argument("--methods", nargs="+", choices=METHODS+("pixel_common", "unet_common"), default=list(METHODS))
+    p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
+    p.add_argument("--usaf-path", type=str)
     p.add_argument("--wavelengths-nm", nargs="+", type=float)
     p.add_argument("--weights", nargs="+", type=float)
     p.add_argument("--outdir", type=Path)
@@ -106,7 +115,7 @@ def main():
                  "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
-                 "opd_scale_um", "holdout_fraction"):
+                 "opd_scale_um", "holdout_fraction", "usaf_fill"):
         p.add_argument("--"+name.replace("_", "-"), type=float)
     args = p.parse_args()
     cfg = Config.preset(args.preset)

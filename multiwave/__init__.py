@@ -1,1 +1,1 @@
-"""Physics-linked multi-wavelength ptychography pilot (known probes)."""
+"""Zero-phase USAF, one shared amplitude, wavelength-dependent known probes."""

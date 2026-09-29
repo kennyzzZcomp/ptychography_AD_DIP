@@ -3,8 +3,9 @@ from dataclasses import dataclass
 import math
 
 
-METHODS = ("pixel_independent", "pixel_coupled", "unet_independent", "unet_coupled")
-SCENES = ("shared_complex", "shared_opd", "spectral_absorption", "dispersive")
+METHODS = ("pixel_shared_amp", "unet_shared_amp")
+LEGACY_METHODS = ("pixel_independent", "pixel_coupled", "unet_independent", "unet_coupled", "pixel_common", "unet_common")
+SCENES = ("usaf_zero_phase", "shared_complex", "shared_opd", "spectral_absorption", "dispersive")
 
 
 @dataclass
@@ -20,7 +21,9 @@ class Config:
     weights: tuple = (0.65, 0.35)
     pad_factor: int = 2
     photons_per_scan: float = 200000.0  # 0 = noiseless, otherwise incident photons
-    scene: str = "spectral_absorption"
+    scene: str = "usaf_zero_phase"
+    usaf_path: str = ""  # defaults to project-root USAF.jpg
+    usaf_fill: float = 0.55  # longest image side / object side; aspect ratio preserved
     scene_seed: int = 17
     noise_seed: int = 23
     network_seed: int = 31
@@ -72,8 +75,8 @@ class Config:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if not 0 < self.holdout_fraction < 0.5:
             raise ValueError("holdout_fraction must be in (0, 0.5)")
-        if not 2 <= len(self.wavelengths_nm) <= 6:
-            raise ValueError("this pilot supports 2 to 6 wavelengths")
+        if not 1 <= len(self.wavelengths_nm) <= 6:
+            raise ValueError("this pilot supports 1 to 6 wavelengths")
         if any(not math.isfinite(v) or v <= 0 for v in self.wavelengths_nm):
             raise ValueError("wavelengths must be finite and positive")
         if len(set(self.wavelengths_nm)) != len(self.wavelengths_nm):
@@ -86,6 +89,8 @@ class Config:
             raise ValueError("weights must sum to 1; they are fixed physical fractions")
         if self.scene not in SCENES:
             raise ValueError(f"scene must be one of {SCENES}")
+        if not math.isfinite(self.usaf_fill) or not 0.1 <= self.usaf_fill <= 1:
+            raise ValueError("usaf_fill must be in [0.1, 1]")
         if self.device not in ("auto", "cpu", "cuda"):
             raise ValueError("device must be auto, cpu or cuda")
         return self

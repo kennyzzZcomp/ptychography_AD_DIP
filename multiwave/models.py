@@ -7,6 +7,49 @@ from torch.nn import functional as F
 from functions.addip.model import ProPtyUNet
 
 
+class SharedAmplitudeModel(nn.Module):
+    """One real amplitude unknown, expanded identically into all optical modes.
+
+    There is no trainable phase/OPD head and no per-wavelength object head.
+    """
+    def __init__(self, cfg, method, input_stack):
+        super().__init__()
+        if method not in ("pixel_shared_amp", "unet_shared_amp"):
+            raise ValueError(f"unsupported amplitude method: {method}")
+        self.count = len(cfg.weights)
+        self.register_buffer("input_stack", input_stack)
+        a0 = math.exp(-.1)
+        bias = math.log(a0/(1-a0))
+        self.net = None
+        if method == "unet_shared_amp":
+            self.net = ProPtyUNet(input_stack.shape[1], cfg.base_channels, n_fields=1, ph_ch=1)
+            del self.net.head_phs
+            with torch.no_grad():
+                self.net.head_amp.weight.zero_()
+                self.net.head_amp.bias.fill_(bias)
+        else:
+            self.raw_amp = nn.Parameter(torch.full((1, cfg.object_size, cfg.object_size), bias))
+
+    def forward(self):
+        if self.net is None:
+            raw = self.raw_amp
+        else:
+            raw = self.net.head_amp(self.net.forward_features(self.input_stack))[0]
+        amplitude = torch.sigmoid(raw).expand(self.count, -1, -1)
+        zero = torch.zeros_like(amplitude)
+        return torch.complex(amplitude, zero), -amplitude.clamp_min(1e-8).log(), zero
+
+
+def amplitude_tv(amplitude, mask):
+    """One common amplitude image; independent of the number of wavelengths."""
+    a = amplitude[0]
+    values = []
+    for diff, selected in ((a[1:]-a[:-1], mask[1:] & mask[:-1]),
+                           (a[:, 1:]-a[:, :-1], mask[:, 1:] & mask[:, :-1])):
+        values.append(((diff[selected].square()+1e-8).sqrt()-1e-4).mean())
+    return sum(values)
+
+
 class ObjectModel(nn.Module):
     def __init__(self, cfg, method, input_stack):
         super().__init__()

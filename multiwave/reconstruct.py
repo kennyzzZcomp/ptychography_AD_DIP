@@ -4,7 +4,7 @@ import time
 import numpy as np
 import torch
 
-from .models import ObjectModel, masked_tv
+from .models import ObjectModel, SharedAmplitudeModel, masked_tv, amplitude_tv
 from .physics import amplitude_loss
 
 
@@ -28,6 +28,18 @@ def field_metrics(objects, tau, opd, scene, cfg):
         })
     result = {"channels": channels, "roi_pixels": int(roi.sum()),
               "mean_complex_relative_error": float(np.mean([x["complex_relative_error"] for x in channels]))}
+    if cfg.scene == "usaf_zero_phase":
+        rec, truth = objects[0].abs()[roi], scene.objects[0].abs()[roi]
+        mse = (rec-truth).square().mean()
+        result["shared_amplitude_rmse"] = float(mse.sqrt())
+        result["shared_amplitude_relative_error"] = float((rec-truth).norm()/truth.norm())
+        result["shared_amplitude_psnr_db"] = float(-10*torch.log10(mse.clamp_min(1e-20)))
+        dark, bright = truth <= .1, truth >= .9
+        if dark.any() and bright.any():
+            lo, hi = rec[dark].mean(), rec[bright].mean()
+            result["amplitude_region_contrast"] = float((hi-lo)/(hi+lo).clamp_min(1e-12))
+        result["max_object_imaginary_abs"] = float(objects.imag.abs().max())
+        result["max_interwavelength_object_difference"] = float((objects-objects[:1]).abs().max())
     if cfg.scene in ("spectral_absorption", "dispersive"):
         # Joint regression removes constant/common texture before testing channel markers.
         # This diagnostic uses phantom truth ONLY during evaluation, never optimization.
@@ -58,7 +70,9 @@ def evaluate(model, scene, cfg):
 
 def reconstruct(cfg, scene, method):
     torch.manual_seed(cfg.network_seed)
-    model = ObjectModel(cfg, method, scene.input_stack).to(scene.objects.device)
+    shared_amp = method.endswith("_shared_amp")
+    model_class = SharedAmplitudeModel if shared_amp else ObjectModel
+    model = model_class(cfg, method, scene.input_stack).to(scene.objects.device)
     lr = cfg.lr_net if method.startswith("unet") else cfg.lr_pixel
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     history = []
@@ -82,7 +96,8 @@ def reconstruct(cfg, scene, method):
         prediction = scene.operator(objects, scene.train)
         loss = amplitude_loss(prediction, scene.measured[scene.train])
         if cfg.tv_weight:
-            loss = loss + cfg.tv_weight*masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
+            prior = amplitude_tv(objects.abs(), scene.roi) if shared_amp else masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
+            loss = loss + cfg.tv_weight*prior
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at {method} iteration {iteration}")
         loss.backward()

@@ -30,6 +30,25 @@ def plot_result(result, scene, cfg, out):
     truth = scene.objects.cpu().numpy()
     roi = scene.roi.cpu().numpy()
     rec = result["objects"]
+    if cfg.scene == "usaf_zero_phase" and result["method"].endswith("_shared_amp"):
+        gt, estimate = np.abs(truth[0]), np.abs(rec[0])
+        fig, axes = plt.subplots(1, 4, figsize=(14, 3.6), constrained_layout=True)
+        panels = [(gt, "Shared USAF amplitude (truth)", "gray", 0, 1),
+                  (estimate, "Shared amplitude (reconstruction)", "gray", 0, 1),
+                  (estimate-gt, "Amplitude error (recon - truth)", "coolwarm", -1, 1)]
+        for ax, (arr, title, cmap, vmin, vmax) in zip(axes, panels):
+            im = ax.imshow(np.ma.masked_where(~roi, arr), cmap=cmap, vmin=vmin, vmax=vmax)
+            ax.set_title(title, fontsize=9); ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.7)
+        row = cfg.object_size//2
+        axes[3].plot(np.where(roi[row], gt[row], np.nan), label="Truth")
+        axes[3].plot(np.where(roi[row], estimate[row], np.nan), label="Reconstruction")
+        axes[3].set_title(f"Center-row amplitude (row {row})", fontsize=9)
+        axes[3].set_ylim(-.05, 1.05); axes[3].set_xlabel("Object pixel")
+        axes[3].legend(fontsize=8); axes[3].grid(alpha=.3)
+        fig.suptitle(f"{result['method']} | one object, phase fixed to zero")
+        fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
+        plt.close(fig)
+        return
     lcount = len(cfg.weights)
     fig, axes = plt.subplots(lcount, 4, figsize=(13, 3*lcount), squeeze=False,
                              constrained_layout=True)
@@ -54,7 +73,9 @@ def save_summary(results, cfg, audit, out):
     summary = {}
     rows = []
     fig, axes = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True)
-    keys = ("train_observed_amplitude_nrmse", "holdout_clean_amplitude_nrmse", "mean_complex_relative_error")
+    is_usaf = cfg.scene == "usaf_zero_phase"
+    keys = ("train_observed_amplitude_nrmse", "holdout_clean_amplitude_nrmse",
+            "shared_amplitude_relative_error" if is_usaf else "mean_complex_relative_error")
     for result in results:
         method = result["method"]
         serial = {k: v for k, v in result.items() if k not in
@@ -79,13 +100,14 @@ def save_summary(results, cfg, audit, out):
     lines = ["# 仿真运行记录", "", f"场景：`{cfg.scene}`；波长（nm）：`{cfg.wavelengths_nm}`；固定权重：`{cfg.weights}`。",
              f"每位置入射光子数：`{cfg.photons_per_scan}`（0 表示无噪声）；迭代数：`{cfg.iterations}`。", "",
              "探针、权重、扫描坐标已知。使用最终迭代，不根据真值或留出误差选取最优迭代。", "",
-             "| 方法 | 训练振幅 NRMSE | 留出干净数据 NRMSE | 物体复场相对误差 | 耗时 s（含评价） |",
+             "| 方法 | 训练振幅 NRMSE | 留出干净数据 NRMSE | 物体相对误差 | 耗时 s（含评价） |",
              "|---|---:|---:|---:|---:|"]
     for r in results:
         f = r["final"]
         lines.append(f"| {r['method']} | {f[keys[0]]:.5f} | {f[keys[1]]:.5f} | {f[keys[2]]:.5f} | {r['elapsed_s_including_evaluation']:.2f} |")
     lines += ["", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
-              "", "串扰矩阵以真实吸收标记为评价基底：理想对角线为 1、非对角线为 0；对角线接近 0 不能解释成成功抑制串扰。",
+              "", ("USAF 主线：各波长共享一个实数振幅，物体相位固定为零；不进行光谱物体分离。振幅区域对比度不是 USAF 线组分辨率。"
+                     if is_usaf else "串扰矩阵以真实吸收标记为评价基底：理想对角线为 1、非对角线为 0；对角线接近 0 不能解释成成功抑制串扰。"),
               "", "这是同一离散传播器生成和拟合数据的模型匹配仿真。单次运行不能证明物理唯一性、泛化、盲重建能力或论文创新性。",
               "等迭代数不等于等计算量；此处报告参数量和耗时，尚未按相同时间预算调优各方法。"]
     (out/"run_report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")

@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 import torch
 
-from multiwave.config import Config, METHODS
+from multiwave.config import Config, LEGACY_METHODS
 from multiwave.physics import asm_transfer, propagate_padded, amplitude_loss, MultiwaveOperator
 from multiwave.scene import simulate
 from multiwave.models import ObjectModel
@@ -16,7 +16,7 @@ class MultiwaveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.cfg = Config.preset("smoke")
+        cls.cfg = replace(Config.preset("smoke"), scene="spectral_absorption")
         cls.scene = simulate(cls.cfg)
 
     def test_zero_distance_is_identity_on_padded_grid(self):
@@ -104,7 +104,7 @@ class MultiwaveTests(unittest.TestCase):
 
     def test_initial_fields_identical_and_both_heads_receive_gradients(self):
         fields = []
-        for method in METHODS:
+        for method in LEGACY_METHODS[:4]:
             torch.manual_seed(3)
             model = ObjectModel(self.cfg, method, self.scene.input_stack)
             obj, _, _ = model()

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 import torch
+from pathlib import Path
 
 from .physics import MultiwaveOperator
 
@@ -25,6 +26,25 @@ class Scene:
 
 def phantom(cfg, device):
     m, count = cfg.object_size, len(cfg.weights)
+    if cfg.scene == "usaf_zero_phase":
+        from PIL import Image
+        path = Path(cfg.usaf_path) if cfg.usaf_path else Path(__file__).resolve().parents[1]/"USAF.jpg"
+        if not path.is_file():
+            raise FileNotFoundError(f"USAF image missing: {path}. Supply --usaf-path.")
+        with Image.open(path) as im:
+            im = im.convert("L")
+            scale = max(1, round(m*cfg.usaf_fill))/max(im.size)
+            size = tuple(max(1, round(v*scale)) for v in im.size)
+            # Treat grayscale directly as amplitude, not measured intensity.
+            small = np.asarray(im.resize(size, Image.Resampling.BOX), dtype=np.float32)/255
+        amplitude = torch.ones(m, m, device=device)
+        h, w = small.shape
+        top, left = (m-h)//2, (m-w)//2
+        amplitude[top:top+h, left:left+w] = torch.tensor(small, device=device)
+        objects = torch.complex(amplitude, torch.zeros_like(amplitude))[None].repeat(count, 1, 1)
+        opd = torch.zeros_like(objects.real)
+        tau = -amplitude.clamp_min(1e-8).log()[None].repeat(count, 1, 1)
+        return objects, opd, tau, torch.empty(0, m, m, device=device), amplitude
     a = torch.linspace(-1, 1, m, device=device)
     y, x = torch.meshgrid(a, a, indexing="ij")
     texture = (0.65*torch.exp(-((x+.20)**2+(y-.06)**2)/.10)
