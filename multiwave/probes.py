@@ -3,6 +3,19 @@ import torch
 from torch import nn
 
 
+def probe_smoothness(probes):
+    """Mean per-mode nearest-neighbor complex roughness / mode power.
+
+    Pixel-unit differences, no wrap-around or artificial zero boundary.
+    Invariant to each mode's global phase and nonzero amplitude scale.
+    """
+    dx = probes[..., :, 1:] - probes[..., :, :-1]
+    dy = probes[..., 1:, :] - probes[..., :-1, :]
+    energy = dx.abs().square().sum((-1, -2)) + dy.abs().square().sum((-1, -2))
+    power = probes.abs().square().sum((-1, -2)).clamp_min(1e-20)
+    return (energy / power).mean()
+
+
 def initial_probe_field(cfg, device="cpu"):
     n = cfg.patch_size
     x = torch.arange(n, device=device, dtype=torch.float32)-(n-1)/2

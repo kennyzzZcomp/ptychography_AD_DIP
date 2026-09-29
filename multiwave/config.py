@@ -27,6 +27,7 @@ class Config:
     spectral_mode: str = "equal_power"  # no explicit weights; power is in probe amplitude
     probe_mode: str = "pixel"  # known remains an oracle control
     lr_probe: float = 0.01
+    probe_smooth_weight: float = 0.0
     pad_factor: int = 2
     photons_per_scan: float = 200000.0  # 0 = noiseless, otherwise incident photons
     scene: str = "usaf_zero_phase"
@@ -76,6 +77,10 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if not math.isfinite(self.probe_smooth_weight) or self.probe_smooth_weight < 0:
+            raise ValueError("probe_smooth_weight must be finite and nonnegative")
+        if self.probe_smooth_weight and self.probe_mode != "pixel":
+            raise ValueError("probe smoothness requires trainable pixel probes")
         if self.feedback_mode not in ("learned", "identity", "no_gradient"):
             raise ValueError("unsupported feedback_mode")
         if not math.isfinite(self.feedback_step) or self.feedback_step <= 0:

@@ -57,6 +57,8 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
     if cfg.unet_detail != "none" and ("unet_shared_amp" not in methods or any(m not in METHODS for m in methods)):
         raise ValueError("--unet-detail requires shared_amp methods including unet_shared_amp")
     if any(m in FEEDBACK_METHODS for m in methods):
+        if cfg.probe_smooth_weight:
+            raise ValueError("probe smoothness is not enabled for feedback pilot")
         if (cfg.scene != "usaf_zero_phase" or cfg.loss != "poisson" or cfg.tv_weight
                 or cfg.tgv_weight or cfg.unet_detail != "none" or cfg.unet_skip != "concat"
                 or cfg.lr_net_decay_after):
@@ -146,7 +148,7 @@ def main():
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
                  "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe", "lr_net_decay_factor",
-                 "tgv_weight", "tgv_alpha0", "tgv_alpha1", "tgv_eps", "tgv_lr"):
+                 "tgv_weight", "tgv_alpha0", "tgv_alpha1", "tgv_eps", "tgv_lr", "probe_smooth_weight"):
         p.add_argument("--"+name.replace("_", "-"), type=float)
     args = p.parse_args()
     if args.weights is not None and args.spectral_mode != "weighted":

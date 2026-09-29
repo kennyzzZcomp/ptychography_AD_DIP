@@ -128,7 +128,7 @@ def plot_probes(result, scene, cfg, out):
             im = ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=high)
             ax.set_title(f'{cfg.wavelengths_nm[l]:g} nm | {title}', fontsize=8)
             ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.6)
-    fig.suptitle(f"{result['method']} | probe mode: {cfg.probe_mode}")
+    fig.suptitle(f"{result['method']} | probe mode: {cfg.probe_mode} | smooth={cfg.probe_smooth_weight:g}")
     fig.savefig(out/f"{result['method']}_probes.png", dpi=140)
     plt.close(fig)
 
@@ -172,6 +172,7 @@ def save_summary(results, cfg, audit, out):
         lines.append(f"| {r['method']} | {f[keys[0]]:.5f} | {f[keys[1]]:.5f} | {f[keys[2]]:.5f} | {r['elapsed_s_including_evaluation']:.2f} |")
     lines += ["", f"训练损失：`{cfg.loss}`。表中 train/holdout 仍为统一的振幅 NRMSE，不是 Poisson 目标值。",
               "Poisson 使用减去饱和模型常数的 NLL，并按训练观测总计数归一化；JSON 另存 train_data_loss 和 train_total_objective。",
+              f"探针复数场平滑权重：{cfg.probe_smooth_weight:g}。每波长相邻复数差分平方和除以该探针功率，再对波长取平均；像素单位、不跨边界、不耦合波长、不使用真值。JSON 记录 probe_smooth_penalty 及加权项。",
               "", f"U-Net skip：`{cfg.unet_skip}`；全分辨率残差分支：`{cfg.unet_detail}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
               "TGV 只在训练扫描窗口并集内的有效差分模板上作用，不使用真值或评价 ROI；采用像素单位差分，辅助场为近似优化。",
               "", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",

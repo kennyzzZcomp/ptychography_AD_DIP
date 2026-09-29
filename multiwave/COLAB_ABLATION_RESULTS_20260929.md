@@ -1,5 +1,9 @@
 # Colab：AD、U-Net、学习率衰减与 DWT/TGV 实验记录
 
+## 2026-09-30：物理反馈中间结果（未完成）
+
+用户截图：feedback_shared_amp、learned、feedback_step=0.01、base16、pixel probe、Poisson、20000 光子、scene/noise/network seed=17/24/31，计划 1000 次，截图到 600 次。200/400/600 次的 loss 为 0.85813/0.84391/0.83809，object 为 0.2778/0.3179/0.3528，probe 为 0.4019/0.4243/0.4926，heldout 为 0.2287/0.2498/0.2624。训练目标下降但物体/探针/留出误差上升，记录为中后期退化，非 NaN 发散。不是最终成绩，不加入终点 CSV；未收到完整 JSON、耗时或输出目录。机制分析见 PHYSICAL_FEEDBACK.md；不以真值最低点选模型，不启动额外训练。
+
 ## NP10：全分辨率残差分支在后期失稳
 
 用户截图记录：concat + detail=residual，Poisson，20000 光子，noise_seed=24、scene_seed=17、network_seed=31，base16，pixel probe，1000 次。注意该次是 20000 而非建议指令的 80000 光子，应与 NP7 对照。未获得完整 config/metrics JSON，以下按截图精度记录；目录末级 `20260929_125649_895252`。

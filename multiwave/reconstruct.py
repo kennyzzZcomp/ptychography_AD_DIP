@@ -7,7 +7,7 @@ import torch
 from .models import ObjectModel, SharedAmplitudeModel, masked_tv, amplitude_tv
 from .physics import amplitude_loss
 from .losses import poisson_loss, poisson_nll_sum, poisson_normalizer
-from .probes import PixelProbes, probe_metrics
+from .probes import PixelProbes, probe_metrics, probe_smoothness
 
 
 def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
@@ -35,6 +35,8 @@ def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
         (cfg.tv_weight*amplitude_tv(a.abs(), scene.roi)).backward()
     if regularizer is not None:
         (cfg.tgv_weight*regularizer.penalty(a.real[0])).backward()
+    if cfg.probe_smooth_weight and p.requires_grad:
+        (cfg.probe_smooth_weight*probe_smoothness(p)).backward()
     outputs, gradients = [objects], [a.grad]
     if probes.requires_grad:
         outputs.append(probes)
@@ -113,6 +115,8 @@ def evaluate(model, scene, cfg, probe_model=None):
 
 
 def reconstruct(cfg, scene, method, progress_callback=None):
+    if cfg.probe_smooth_weight and (cfg.probe_mode != "pixel" or method == "feedback_shared_amp"):
+        raise ValueError("probe smoothness requires pixel probes and non-feedback reconstruction")
     torch.manual_seed(cfg.network_seed)
     shared_amp = method.endswith("_shared_amp")
     feedback = method == "feedback_shared_amp"
@@ -143,6 +147,11 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         metrics["object_learning_rate"] = optimizer.param_groups[0]["lr"]
         metrics["probe_learning_rate"] = optimizer.param_groups[1]["lr"] if probe_model is not None else None
         metrics["train_total_objective"] = metrics["train_data_loss"]
+        with torch.no_grad():
+            penalty = float(probe_smoothness(fields[4]))
+        metrics["probe_smooth_penalty"] = penalty
+        metrics["probe_smooth_weighted_penalty"] = cfg.probe_smooth_weight * penalty
+        metrics["train_total_objective"] += metrics["probe_smooth_weighted_penalty"]
         if cfg.tv_weight:
             with torch.no_grad():
                 penalty = (amplitude_tv(fields[0].abs(), scene.roi) if shared_amp else
@@ -192,6 +201,8 @@ def reconstruct(cfg, scene, method, progress_callback=None):
                     if cfg.loss == "poisson" else amplitude_loss(prediction, scene.measured[scene.train]))
             if cfg.tv_weight:
                 loss = loss + cfg.tv_weight*masked_tv(tau, opd, scene.roi, cfg.opd_scale_um)
+            if cfg.probe_smooth_weight:
+                loss = loss + cfg.probe_smooth_weight*probe_smoothness(probes)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss at {method} iteration {iteration}")
             loss.backward()
@@ -211,6 +222,7 @@ def reconstruct(cfg, scene, method, progress_callback=None):
     arrays = [v.detach().cpu().numpy() for v in fields]
     return {"method": method, "initial": initial, "final": final, "history": history,
             "loss": cfg.loss,
+            "probe_smooth_weight": cfg.probe_smooth_weight,
             "feedback_mode": cfg.feedback_mode if feedback else None,
             "feedback_step": cfg.feedback_step if feedback else None,
             "training_data_gradient_passes": cfg.iterations * (2 if feedback else 1),
