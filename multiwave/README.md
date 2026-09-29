@@ -7,6 +7,9 @@
 同步更新后的 multiwave 文件夹，并保留项目根目录 USAF.jpg：
 
 ```python
+# 高分辨率首轮：384×384 物体，无噪声，1000 次更新
+!python /content/ptychography_AD_DIP/multiwave/run_simulation.py --preset highres --device cuda --methods unet_shared_amp
+
 # 首轮无噪声：只运行 U-Net + 双像素探针
 !python /content/ptychography_AD_DIP/multiwave/run_simulation.py --preset standard --device cuda --photons-per-scan 0 --methods unet_shared_amp
 
@@ -44,6 +47,19 @@ I_j = |D_1(P_1 * S_j(A))|^2 + |D_2(P_2 * S_j(A))|^2
 
 ## 几何和运行设置
 
+新增 `highres` 用于观察 USAF 条纹：
+
+| 设置 | standard | highres |
+|---|---:|---:|
+| 物体数组 | 96×96 | 384×384 |
+| 探针／探测器数组 | 48×48 | 192×192 |
+| 像素间距 | 4 μm | 1 μm |
+| USAF 图案约占像素 | 53×41 | 211×163 |
+| 更新次数 | 500 | 1000 |
+| 默认噪声 | Poisson | 无噪声 |
+
+两者物体视场均为 384 μm，探测窗口为 192 μm；波长、传播距离、扫描位置的物理坐标相同。highres 的扫描抖动限定在 4 像素倍数，保证同一随机种子下与 standard 对齐。USAF 从原图重新缩小，不对旧的低分辨率真值插值放大。细化采样不等于提高实际光学分辨率，中心最细条纹仍可能无法恢复。做对照时须统一噪声和更新次数。
+
 默认 515/633 nm；像素 4 um；传播距离 1.5 mm；同网格、带限零填充角谱传播。standard：96×96 物体、48×48 探测器、500 次更新、每扫描总入射光子数 200000。smoke：64×64／32×32、80 次更新、无噪声。
 
 25 个扫描位置，20 个训练、5 个留出；留出图不进入 U-Net 输入。初始化与波长数量独立，单波长也支持：
@@ -60,6 +76,7 @@ python -m unittest discover -s multiwave/tests -v
 默认新建 results/时间戳/，拒绝覆盖非空目录。
 
 - *_reconstruction.png：共同振幅真值、重建、误差与剖面。
+- *_detail.png：完整物体、评价区域轮廓、局部条纹放大和剖面；不平滑显示，评价区域外不作恢复质量结论。
 - *_probes.png：各波长探针的真值／初始／重建振幅，以及真值／去全局相位后的重建相位。
 - *_fields.npz：最终物体、initial_probes、probes、预测强度等。
 - *_metrics.json：物体和各探针误差、功率、收敛历史。

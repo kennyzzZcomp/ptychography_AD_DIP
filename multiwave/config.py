@@ -15,6 +15,7 @@ class Config:
     grid: int = 5
     step: int = 8
     jitter: int = 1
+    scan_quantum: int = 1  # preserve the same physical jitter on refined grids
     pixel_um: float = 4.0
     distance_mm: float = 1.5
     wavelengths_nm: tuple = (515.0, 633.0)
@@ -49,11 +50,15 @@ class Config:
                        eval_every=20, base_channels=4, photons_per_scan=0.0)
         if name == "standard":
             return cls()
+        if name == "highres":
+            return cls(object_size=384, patch_size=192, step=32, jitter=4,
+                       scan_quantum=4, pixel_um=1.0, chunk=2,
+                       photons_per_scan=0.0, iterations=1000, eval_every=50)
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
         for name in ("object_size", "patch_size", "grid", "step", "pad_factor",
-                     "iterations", "eval_every", "base_channels", "chunk", "threads"):
+                     "iterations", "eval_every", "base_channels", "chunk", "threads", "scan_quantum"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -63,6 +68,8 @@ class Config:
             raise ValueError("patch_size must be even and >=8")
         if not isinstance(self.jitter, int) or self.jitter < 0 or 2*self.jitter >= self.step:
             raise ValueError("jitter must be a nonnegative integer with 2*jitter < step")
+        if self.jitter % self.scan_quantum or self.step % self.scan_quantum:
+            raise ValueError("jitter and step must be divisible by scan_quantum")
         extent = self.patch_size + (self.grid-1)*self.step + 2*self.jitter
         if extent > self.object_size or self.grid < 3:
             raise ValueError("scan must fit object_size, and grid must be >=3")

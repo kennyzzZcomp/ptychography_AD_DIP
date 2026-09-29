@@ -103,7 +103,8 @@ def simulate(cfg, device="cpu"):
     start = (m-n-(cfg.grid-1)*cfg.step)//2
     positions = np.array([(start+r*cfg.step, start+c*cfg.step)
                           for r in range(cfg.grid) for c in range(cfg.grid)])
-    positions += rng.integers(-cfg.jitter, cfg.jitter+1, positions.shape)
+    jitter_units = cfg.jitter//cfg.scan_quantum
+    positions += rng.integers(-jitter_units, jitter_units+1, positions.shape)*cfg.scan_quantum
     count = len(positions)
     shuffled = rng.permutation(count)
     k = max(1, round(count*cfg.holdout_fraction))

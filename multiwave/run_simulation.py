@@ -111,7 +111,7 @@ def run_experiment(cfg, methods=METHODS, outdir=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--preset", choices=("smoke", "standard"), default="smoke")
+    p.add_argument("--preset", choices=("smoke", "standard", "highres"), default="smoke")
     p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
     p.add_argument("--usaf-path", type=str)
@@ -122,7 +122,7 @@ def main():
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
-                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed"):
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
                  "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe"):

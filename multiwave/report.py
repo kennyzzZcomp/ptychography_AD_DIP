@@ -37,7 +37,10 @@ def plot_result(result, scene, cfg, out):
                   (estimate, "Shared amplitude (reconstruction)", "gray", 0, 1),
                   (estimate-gt, "Amplitude error (recon - truth)", "coolwarm", -1, 1)]
         for ax, (arr, title, cmap, vmin, vmax) in zip(axes, panels):
-            im = ax.imshow(np.ma.masked_where(~roi, arr), cmap=cmap, vmin=vmin, vmax=vmax)
+            im = ax.imshow(np.ma.masked_where(~roi, arr), cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
+            rr, cc = np.where(roi)
+            ax.set_xlim(cc.min()-2, cc.max()+2)
+            ax.set_ylim(rr.max()+2, rr.min()-2)
             ax.set_title(title, fontsize=9); ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.7)
         row = cfg.object_size//2
         axes[3].plot(np.where(roi[row], gt[row], np.nan), label="Truth")
@@ -48,6 +51,7 @@ def plot_result(result, scene, cfg, out):
         fig.suptitle(f"{result['method']} | one object, phase fixed to zero")
         fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
         plt.close(fig)
+        plot_usaf_detail(result, scene, cfg, out)
         return
     lcount = len(cfg.wavelengths_nm)
     fig, axes = plt.subplots(lcount, 4, figsize=(13, 3*lcount), squeeze=False,
@@ -65,6 +69,42 @@ def plot_result(result, scene, cfg, out):
             ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.7)
     fig.suptitle(result["method"])
     fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=140)
+    plt.close(fig)
+
+
+def plot_usaf_detail(result, scene, cfg, out):
+    """Full canvas with honest ROI plus fixed central zoom; no interpolated detail."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    gt = scene.objects[0].abs().cpu().numpy()
+    rec = np.abs(result["objects"][0])
+    roi = scene.roi.cpu().numpy()
+    n = cfg.object_size
+    start, stop = round(.35*n), round(.65*n)
+    fig, axes = plt.subplots(2, 3, figsize=(13, 8), constrained_layout=True)
+    for ax, field, title in zip(axes[0, :2], (gt, rec), ("Full truth", "Full reconstruction")):
+        im = ax.imshow(field, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+        ax.contour(roi.astype(float), levels=[.5], colors=['tab:orange'], linewidths=.7)
+        ax.add_patch(Rectangle((start-.5, start-.5), stop-start, stop-start, fill=False, edgecolor='tab:cyan'))
+        ax.set_title(title + " | orange: evaluation ROI", fontsize=9)
+        fig.colorbar(im, ax=ax, shrink=.7)
+    error = np.ma.masked_where(~roi, rec-gt)
+    im = axes[0, 2].imshow(error, cmap='coolwarm', vmin=-.25, vmax=.25, interpolation='nearest')
+    axes[0, 2].set_title('Amplitude error in ROI (clipped at +/-0.25)', fontsize=9)
+    fig.colorbar(im, ax=axes[0, 2], shrink=.7, extend='both')
+    for ax, field, title in zip(axes[1, :2], (gt, rec), ('Truth zoom', 'Reconstruction zoom')):
+        ax.imshow(field[start:stop, start:stop], cmap='gray', vmin=0, vmax=1, interpolation='nearest',
+                  extent=(start-.5, stop-.5, stop-.5, start-.5))
+        ax.set_title(f'{title}: pixels {start}:{stop}', fontsize=9)
+    row = n//2
+    axes[1, 2].plot(np.arange(start, stop), gt[row, start:stop], label='Truth')
+    axes[1, 2].plot(np.arange(start, stop), rec[row, start:stop], label='Reconstruction')
+    axes[1, 2].set_ylim(-.05, 1.05); axes[1, 2].legend(fontsize=8); axes[1, 2].grid(alpha=.3)
+    axes[1, 2].set_title(f'Zoom profile: row {row}', fontsize=9)
+    for ax in axes.flat:
+        ax.set_xlabel('Object pixel')
+    fig.suptitle(f"{result['method']} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
+    fig.savefig(out/f"{result['method']}_detail.png", dpi=180)
     plt.close(fig)
 
 
