@@ -109,3 +109,5 @@ DWT 特征融合与振幅 TGV 的实现说明、五组 Colab 对照指令见 [DW
 
 [技术说明](TECHNICAL_NOTES.md) · [盲探针验证](BLIND_VALIDATION.md) · [交互 Notebook](multiwave_demo.ipynb) · [旧 OPD 方向备份](backups/README.md)。
 
+
+物理梯度反馈原型及 Colab 指令：[PHYSICAL_FEEDBACK.md](PHYSICAL_FEEDBACK.md)。

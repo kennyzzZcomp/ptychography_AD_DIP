@@ -15,7 +15,7 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from multiwave.config import Config, METHODS, SCENES, LEGACY_METHODS
+from multiwave.config import Config, METHODS, SCENES, LEGACY_METHODS, FEEDBACK_METHODS
 from multiwave.physics import MultiwaveOperator
 from multiwave.scene import simulate
 from multiwave.reconstruct import reconstruct
@@ -45,7 +45,7 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
     if cfg.probe_mode == "pixel" and cfg.scene != "usaf_zero_phase":
         raise ValueError("blind pixel probes are currently scoped to the zero-phase USAF task")
     methods = tuple(methods)
-    allowed = METHODS + LEGACY_METHODS
+    allowed = METHODS + LEGACY_METHODS + FEEDBACK_METHODS
     if not methods or len(set(methods)) != len(methods) or any(m not in allowed for m in methods):
         raise ValueError(f"methods must be distinct members of {allowed}")
     if cfg.scene != "usaf_zero_phase" and any(m in METHODS for m in methods):
@@ -56,6 +56,11 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
         raise ValueError("--unet-skip requires unet_shared_amp in --methods")
     if cfg.unet_detail != "none" and ("unet_shared_amp" not in methods or any(m not in METHODS for m in methods)):
         raise ValueError("--unet-detail requires shared_amp methods including unet_shared_amp")
+    if any(m in FEEDBACK_METHODS for m in methods):
+        if (cfg.scene != "usaf_zero_phase" or cfg.loss != "poisson" or cfg.tv_weight
+                or cfg.tgv_weight or cfg.unet_detail != "none" or cfg.unet_skip != "concat"
+                or cfg.lr_net_decay_after):
+            raise ValueError("feedback requires zero-phase Poisson, concat, no detail/TV/TGV/LR decay")
     torch.set_num_threads(cfg.threads)
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
@@ -123,9 +128,11 @@ def main():
     p.add_argument("--unet-skip", choices=("concat", "dwt_concat"))
     p.add_argument("--unet-detail", choices=("none", "residual"),
                    help="optional full-resolution signed residual amplitude branch")
+    p.add_argument("--feedback-mode", choices=("learned", "identity", "no_gradient"))
+    p.add_argument("--feedback-step", type=float)
     p.add_argument("--loss", choices=("amplitude", "poisson"),
                    help="training data loss; poisson requires a positive photon budget")
-    p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
+    p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS+FEEDBACK_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
     p.add_argument("--usaf-path", type=str)
     p.add_argument("--wavelengths-nm", nargs="+", type=float)

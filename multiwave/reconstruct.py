@@ -115,9 +115,15 @@ def evaluate(model, scene, cfg, probe_model=None):
 def reconstruct(cfg, scene, method, progress_callback=None):
     torch.manual_seed(cfg.network_seed)
     shared_amp = method.endswith("_shared_amp")
+    feedback = method == "feedback_shared_amp"
     model_class = SharedAmplitudeModel if shared_amp else ObjectModel
+    if feedback:
+        from .feedback import FeedbackAmplitudeModel
+        if cfg.loss != "poisson" or cfg.tv_weight or cfg.tgv_weight:
+            raise ValueError("feedback supports unregularized Poisson loss only")
+        model_class = FeedbackAmplitudeModel
     model = model_class(cfg, method, scene.input_stack).to(scene.objects.device)
-    lr = cfg.lr_net if method.startswith("unet") else cfg.lr_pixel
+    lr = cfg.lr_net if method.startswith("unet") or feedback else cfg.lr_pixel
     probe_model = PixelProbes(cfg, scene.objects.device) if cfg.probe_mode == "pixel" else None
     regularizer = None
     if cfg.tgv_weight:
@@ -149,6 +155,9 @@ def reconstruct(cfg, scene, method, progress_callback=None):
                            tgv_second_order=float(second), tgv_weighted_penalty=float(cfg.tgv_weight*total),
                            tgv_aux_learning_rate=cfg.tgv_lr)
             metrics["train_total_objective"] += metrics["tgv_weighted_penalty"]
+        if feedback and iteration:
+            metrics["feedback_gradient_rms"] = model.gradient_rms
+            metrics["feedback_weight_mean"] = model.weight_mean
         history.append({"iteration": iteration, **metrics})
         if progress_callback is not None:
             progress_callback(method, iteration, metrics)
@@ -170,6 +179,9 @@ def reconstruct(cfg, scene, method, progress_callback=None):
             optimizer.param_groups[0]["lr"] = cfg.lr_net * cfg.lr_net_decay_factor
             print(f"{method}: update {iteration}, network lr -> {optimizer.param_groups[0]['lr']:.6g}", flush=True)
         optimizer.zero_grad(set_to_none=True)
+        if feedback:
+            current_probes = scene.operator.probes if probe_model is None else probe_model()
+            model.prepare(scene, current_probes)
         objects, tau, opd = model()
         probes = scene.operator.probes if probe_model is None else probe_model()
         if shared_amp:
@@ -184,6 +196,8 @@ def reconstruct(cfg, scene, method, progress_callback=None):
                 raise FloatingPointError(f"non-finite loss at {method} iteration {iteration}")
             loss.backward()
         optimizer.step()
+        if feedback:
+            model.commit()
         if shared_amp and model.net is None and cfg.pixel_parameterization == "direct":
             with torch.no_grad():
                 model.raw_amp.clamp_(0, 1)
@@ -197,6 +211,10 @@ def reconstruct(cfg, scene, method, progress_callback=None):
     arrays = [v.detach().cpu().numpy() for v in fields]
     return {"method": method, "initial": initial, "final": final, "history": history,
             "loss": cfg.loss,
+            "feedback_mode": cfg.feedback_mode if feedback else None,
+            "feedback_step": cfg.feedback_step if feedback else None,
+            "training_data_gradient_passes": cfg.iterations * (2 if feedback else 1),
+            "feedback_gradient": "globally RMS-normalized; detached one-step" if feedback else None,
             "unet_skip": cfg.unet_skip if method.startswith("unet") else None,
             "unet_detail": cfg.unet_detail if method.startswith("unet") else None,
             "detail_parameter_count": (sum(p.numel() for p in model.net.detail_head.parameters())

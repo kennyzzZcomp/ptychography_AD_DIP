@@ -18,3 +18,4 @@ NP6,DWT UNet Poisson 20000 seed24,0.7288,0.27,0.2281,0.3314,,20000,poisson,0.852
 NP7,UNet concat Poisson 20000 seed24,0.7311,0.2737,0.2287,0.3283,,20000,poisson,0.85157,24
 NP8,AD Poisson 80000 seed25,0.4823,0.2564,0.2451,0.2966,,80000,poisson,0.39101,25
 NP9,UNet concat Poisson 80000 seed24,0.482,0.1805,0.1519,0.2382,,80000,poisson,0.39154,24
+NP10,UNet residual detail Poisson 20000 seed24 unstable,0.7578,0.2501,0.4560,0.6536,,20000,poisson,0.95062,24

@@ -179,5 +179,9 @@ def save_summary(results, cfg, audit, out):
                      if is_usaf else "串扰矩阵以真实吸收标记为评价基底：理想对角线为 1、非对角线为 0；对角线接近 0 不能解释成成功抑制串扰。"),
               "", "这是同一离散传播器生成和拟合数据的模型匹配仿真。单次运行不能证明物理唯一性、泛化、盲重建能力或论文创新性。",
               "等迭代数不等于等计算量；此处报告参数量和耗时，尚未按相同时间预算调优各方法。"]
+    for result in results:
+        if result.get("feedback_mode") is not None:
+            lines += ["", f"物理反馈：mode={result['feedback_mode']}，归一化物体步长={result['feedback_step']}；权重范围 [0.5,1.5]，在线单步 detach 梯度。",
+                      f"训练数据梯度遍数={result['training_data_gradient_passes']}（不含评价）；每轮两遍，非原方法的一遍。反馈物体使用非负投影，网络输出更新权重。"]
     (out/"run_report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     return summary

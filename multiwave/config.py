@@ -4,6 +4,7 @@ import math
 
 
 METHODS = ("pixel_shared_amp", "unet_shared_amp")
+FEEDBACK_METHODS = ("feedback_shared_amp",)
 LEGACY_METHODS = ("pixel_independent", "pixel_coupled", "unet_independent", "unet_coupled", "pixel_common", "unet_common")
 SCENES = ("usaf_zero_phase", "shared_complex", "shared_opd", "spectral_absorption", "dispersive")
 
@@ -47,6 +48,8 @@ class Config:
     loss: str = "amplitude"
     unet_skip: str = "concat"
     unet_detail: str = "none"
+    feedback_mode: str = "learned"
+    feedback_step: float = 0.01
     tgv_weight: float = 0.0
     tgv_alpha0: float = 2.0
     tgv_alpha1: float = 1.0
@@ -73,6 +76,10 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if self.feedback_mode not in ("learned", "identity", "no_gradient"):
+            raise ValueError("unsupported feedback_mode")
+        if not math.isfinite(self.feedback_step) or self.feedback_step <= 0:
+            raise ValueError("feedback_step must be finite and positive")
         if self.unet_detail not in ("none", "residual"):
             raise ValueError("unet_detail must be none or residual")
         if self.unet_detail != "none" and self.scene != "usaf_zero_phase":
