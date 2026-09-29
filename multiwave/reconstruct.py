@@ -9,7 +9,7 @@ from .physics import amplitude_loss
 from .probes import PixelProbes, probe_metrics
 
 
-def backward_shared_data(objects, probes, scene, cfg):
+def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
     """Exact full-batch field VJP; FFT graphs are freed per scan chunk.
 
     The U-Net is evaluated once (including BatchNorm). Detached field gradients
@@ -27,6 +27,8 @@ def backward_shared_data(objects, probes, scene, cfg):
         loss.backward()
     if cfg.tv_weight:
         (cfg.tv_weight*amplitude_tv(a.abs(), scene.roi)).backward()
+    if regularizer is not None:
+        (cfg.tgv_weight*regularizer.penalty(a.real[0])).backward()
     outputs, gradients = [objects], [a.grad]
     if probes.requires_grad:
         outputs.append(probes)
@@ -108,6 +110,12 @@ def reconstruct(cfg, scene, method, progress_callback=None):
     model = model_class(cfg, method, scene.input_stack).to(scene.objects.device)
     lr = cfg.lr_net if method.startswith("unet") else cfg.lr_pixel
     probe_model = PixelProbes(cfg, scene.objects.device) if cfg.probe_mode == "pixel" else None
+    regularizer = None
+    if cfg.tgv_weight:
+        if not shared_amp:
+            raise ValueError("TGV is supported only for shared_amp methods")
+        from .regularization import AmplitudeTGV
+        regularizer = AmplitudeTGV(cfg, scene)
     groups = [{"params": model.parameters(), "lr": lr}]
     if probe_model is not None:
         groups.append({"params": probe_model.parameters(), "lr": cfg.lr_probe})
@@ -119,6 +127,12 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         metrics, *fields = evaluate(model, scene, cfg, probe_model)
         metrics["object_learning_rate"] = optimizer.param_groups[0]["lr"]
         metrics["probe_learning_rate"] = optimizer.param_groups[1]["lr"] if probe_model is not None else None
+        if regularizer is not None:
+            with torch.no_grad():
+                total, first, second = regularizer.terms(fields[0][0].real)
+            metrics.update(tgv_penalty=float(total), tgv_first_order=float(first),
+                           tgv_second_order=float(second), tgv_weighted_penalty=float(cfg.tgv_weight*total),
+                           tgv_aux_learning_rate=cfg.tgv_lr)
         history.append({"iteration": iteration, **metrics})
         if progress_callback is not None:
             progress_callback(method, iteration, metrics)
@@ -142,7 +156,7 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         objects, tau, opd = model()
         probes = scene.operator.probes if probe_model is None else probe_model()
         if shared_amp:
-            backward_shared_data(objects, probes, scene, cfg)
+            backward_shared_data(objects, probes, scene, cfg, regularizer)
         else:
             prediction = scene.operator(objects, scene.train, probes=probes)
             loss = amplitude_loss(prediction, scene.measured[scene.train])
@@ -164,6 +178,11 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         raise FloatingPointError("non-finite final reconstruction")
     arrays = [v.detach().cpu().numpy() for v in fields]
     return {"method": method, "initial": initial, "final": final, "history": history,
+            "unet_skip": cfg.unet_skip if method.startswith("unet") else None,
+            "tgv_weight": cfg.tgv_weight,
+            "tgv_state_dict": regularizer.state_dict() if regularizer is not None else None,
+            "tgv_auxiliary_parameter_count": regularizer.v.numel() if regularizer is not None else 0,
+            "tgv_domain_pixels": int(regularizer.mask.sum()) if regularizer is not None else 0,
             "elapsed_s_including_evaluation": elapsed,
             "parameter_count": sum(p.numel() for p in model.parameters()) + (sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0),
             "probe_mode": cfg.probe_mode,

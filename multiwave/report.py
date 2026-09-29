@@ -48,7 +48,7 @@ def plot_result(result, scene, cfg, out):
         axes[3].set_title(f"Center-row amplitude (row {row})", fontsize=9)
         axes[3].set_ylim(-.05, 1.05); axes[3].set_xlabel("Object pixel")
         axes[3].legend(fontsize=8); axes[3].grid(alpha=.3)
-        fig.suptitle(f"{result['method']} | one object, phase fixed to zero")
+        fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | TGV={cfg.tgv_weight:g} | phase fixed to zero")
         fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
         plt.close(fig)
         plot_usaf_detail(result, scene, cfg, out)
@@ -103,7 +103,7 @@ def plot_usaf_detail(result, scene, cfg, out):
     axes[1, 2].set_title(f'Zoom profile: row {row}', fontsize=9)
     for ax in axes.flat:
         ax.set_xlabel('Object pixel')
-    fig.suptitle(f"{result['method']} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
+    fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | TGV={cfg.tgv_weight:g} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
     fig.savefig(out/f"{result['method']}_detail.png", dpi=180)
     plt.close(fig)
 
@@ -144,7 +144,7 @@ def save_summary(results, cfg, audit, out):
     for result in results:
         method = result["method"]
         serial = {k: v for k, v in result.items() if k not in
-                  ("objects", "optical_depth", "opd_um", "predicted_intensity", "state_dict", "probes", "initial_probes", "probe_state_dict")}
+                  ("objects", "optical_depth", "opd_um", "predicted_intensity", "state_dict", "probes", "initial_probes", "probe_state_dict", "tgv_state_dict")}
         summary[method] = serial
         (out/f"{method}_metrics.json").write_text(json.dumps(serial, indent=2, allow_nan=False), encoding="utf-8")
         for channel in result["final"]["channels"]:
@@ -170,7 +170,9 @@ def save_summary(results, cfg, audit, out):
     for r in results:
         f = r["final"]
         lines.append(f"| {r['method']} | {f[keys[0]]:.5f} | {f[keys[1]]:.5f} | {f[keys[2]]:.5f} | {r['elapsed_s_including_evaluation']:.2f} |")
-    lines += ["", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
+    lines += ["", f"U-Net skip：`{cfg.unet_skip}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
+              "TGV 只在训练扫描窗口并集内的有效差分模板上作用，不使用真值或评价 ROI；采用像素单位差分，辅助场为近似优化。",
+              "", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
               "", ("USAF 主线：各波长共享一个实数振幅，物体相位固定为零；不进行光谱物体分离。振幅区域对比度不是 USAF 线组分辨率。"
                      if is_usaf else "串扰矩阵以真实吸收标记为评价基底：理想对角线为 1、非对角线为 0；对角线接近 0 不能解释成成功抑制串扰。"),
               "", "这是同一离散传播器生成和拟合数据的模型匹配仿真。单次运行不能证明物理唯一性、泛化、盲重建能力或论文创新性。",

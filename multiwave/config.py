@@ -44,6 +44,13 @@ class Config:
     lr_net_decay_factor: float = 0.2
     opd_scale_um: float = 0.15
     tv_weight: float = 0.0
+    unet_skip: str = "concat"
+    tgv_weight: float = 0.0
+    tgv_alpha0: float = 2.0
+    tgv_alpha1: float = 1.0
+    tgv_eps: float = 1e-3
+    tgv_lr: float = 0.01
+    tgv_inner_steps: int = 5
     chunk: int = 8
     device: str = "auto"
     threads: int = 2
@@ -64,6 +71,12 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        if self.unet_skip not in ("concat", "dwt_concat"):
+            raise ValueError("unet_skip must be concat or dwt_concat")
+        if self.scene != "usaf_zero_phase" and (self.tgv_weight or self.unet_skip != "concat"):
+            raise ValueError("DWT/TGV options are scoped to the shared zero-phase amplitude scene")
+        if self.tv_weight and self.tgv_weight:
+            raise ValueError("test TV and TGV separately; do not enable both")
         if (not isinstance(self.lr_net_decay_after, int) or isinstance(self.lr_net_decay_after, bool)
                 or self.lr_net_decay_after < 0
                 or self.lr_net_decay_after >= self.iterations):
@@ -71,7 +84,7 @@ class Config:
         if not math.isfinite(self.lr_net_decay_factor) or not 0 < self.lr_net_decay_factor <= 1:
             raise ValueError("lr_net_decay_factor must be in (0, 1]")
         for name in ("object_size", "patch_size", "grid", "step", "pad_factor",
-                     "iterations", "eval_every", "base_channels", "chunk", "threads", "scan_quantum"):
+                     "iterations", "eval_every", "base_channels", "chunk", "threads", "scan_quantum", "tgv_inner_steps"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -94,11 +107,12 @@ class Config:
             raise ValueError("scan must fit object_size, and grid must be >=3")
         if self.pad_factor < 2:
             raise ValueError("pad_factor >=2 is required for this finite-window pilot")
-        for name in ("pixel_um", "distance_mm", "lr_pixel", "lr_net", "lr_probe", "opd_scale_um"):
+        for name in ("pixel_um", "distance_mm", "lr_pixel", "lr_net", "lr_probe", "opd_scale_um",
+                     "tgv_alpha0", "tgv_alpha1", "tgv_eps", "tgv_lr"):
             v = getattr(self, name)
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f"{name} must be finite and positive")
-        for name in ("photons_per_scan", "tv_weight"):
+        for name in ("photons_per_scan", "tv_weight", "tgv_weight"):
             v = getattr(self, name)
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")

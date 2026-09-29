@@ -50,6 +50,10 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
         raise ValueError(f"methods must be distinct members of {allowed}")
     if cfg.scene != "usaf_zero_phase" and any(m in METHODS for m in methods):
         raise ValueError("shared_amp methods require --scene usaf_zero_phase; archived scenes need explicit legacy methods")
+    if (cfg.tgv_weight or cfg.unet_skip != "concat") and any(m not in METHODS for m in methods):
+        raise ValueError("DWT/TGV options require shared_amp methods")
+    if cfg.unet_skip != "concat" and "unet_shared_amp" not in methods:
+        raise ValueError("--unet-skip requires unet_shared_amp in --methods")
     torch.set_num_threads(cfg.threads)
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
@@ -99,7 +103,7 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
         np.savez_compressed(out/f"{method}_fields.npz", **{k: result[k] for k in
                             ("objects", "optical_depth", "opd_um", "predicted_intensity", "probes", "initial_probes")})
         torch.save({"method": method, "config": metadata["config"], "state_dict": result["state_dict"],
-                    "probe_state_dict": result["probe_state_dict"]},
+                    "probe_state_dict": result["probe_state_dict"], "tgv_state_dict": result["tgv_state_dict"]},
                    out/f"{method}_model.pth")
         plot_result(result, scene, cfg, out)
         plot_probes(result, scene, cfg, out)
@@ -114,6 +118,7 @@ def main():
     p.add_argument("--preset", choices=("smoke", "standard", "highres", "resolved"), default="smoke")
     p.add_argument("--pixel-parameterization", choices=("sigmoid", "softplus", "direct"))
     p.add_argument("--unet-activation", choices=("sigmoid", "softplus"))
+    p.add_argument("--unet-skip", choices=("concat", "dwt_concat"))
     p.add_argument("--methods", nargs="+", choices=METHODS+LEGACY_METHODS, default=list(METHODS))
     p.add_argument("--scene", choices=SCENES)
     p.add_argument("--usaf-path", type=str)
@@ -124,10 +129,11 @@ def main():
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
-                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size", "lr_net_decay_after"):
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size", "lr_net_decay_after", "tgv_inner_steps"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
     for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
-                 "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe", "lr_net_decay_factor"):
+                 "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe", "lr_net_decay_factor",
+                 "tgv_weight", "tgv_alpha0", "tgv_alpha1", "tgv_eps", "tgv_lr"):
         p.add_argument("--"+name.replace("_", "-"), type=float)
     args = p.parse_args()
     if args.weights is not None and args.spectral_mode != "weighted":

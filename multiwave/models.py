@@ -29,6 +29,10 @@ class SharedAmplitudeModel(nn.Module):
         if method == "unet_shared_amp":
             self.net = ProPtyUNet(input_stack.shape[1], cfg.base_channels, n_fields=1, ph_ch=1)
             del self.net.head_phs
+            if cfg.unet_skip == "dwt_concat":
+                from .wavelet import DWTConcatSkip
+                self.net.skip_filters = nn.ModuleList([
+                    DWTConcatSkip(cfg.base_channels * factor) for factor in (1, 2, 4)])
             with torch.no_grad():
                 self.net.head_amp.weight.zero_()
                 self.net.head_amp.bias.fill_(bias)

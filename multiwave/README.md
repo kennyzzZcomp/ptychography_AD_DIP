@@ -87,6 +87,8 @@ python -m unittest discover -s multiwave/tests -v
 
 ## 输出
 
+DWT 特征融合与振幅 TGV 的实现说明、五组 Colab 对照指令见 [DWT_TGV_EXPERIMENTS.md](DWT_TGV_EXPERIMENTS.md)。默认均关闭，学习率衰减也默认关闭。
+
 默认新建 results/时间戳/，拒绝覆盖非空目录。
 
 - *_reconstruction.png：共同振幅真值、重建、误差与剖面。
