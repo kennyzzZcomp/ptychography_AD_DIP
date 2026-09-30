@@ -19,7 +19,7 @@ from functions.addip.losses import cabs
 from functions.paperrepro.scene import build_scene
 from functions.paperrepro.evaluate import evaluate, probe_relerr
 from functions.paperrepro.report import _save
-from functions.paperrepro.reconstruction_input import snapshot_readout
+from functions.paperrepro.reconstruction_input import snapshot_readout, reconstruction_channels
 from functions.paperrepro.solvers_addip import (
     _probe_setup, _probe_of, _initialize_object_heads, _fwd,
 )
@@ -95,6 +95,16 @@ def run_windows(cfg):
         raise ValueError("iters and eval_every must be positive")
     if not np.isfinite(cfg.window_consistency) or cfg.window_consistency < 0:
         raise ValueError("window_consistency must be finite and nonnegative")
+    switch = getattr(cfg, "window_switch_after", 0)
+    if switch and not 0 < switch < cfg.iters:
+        raise ValueError("switch-after must be positive and less than total iters (or 0 to disable)")
+    if switch and cfg.window_update == "sequential" and switch % 4:
+        raise ValueError("Sequential stage 1 must end after a complete four-window sweep")
+    if switch:
+        if any(not np.isfinite(v) or v <= 0 for v in (cfg.window_stage2_lr_net, cfg.window_stage2_lr_probe)):
+            raise ValueError("Stage-2 learning rates must be finite and positive")
+        if not np.isfinite(cfg.window_stage2_tgv) or cfg.window_stage2_tgv < 0:
+            raise ValueError("Stage-2 TGV must be finite and nonnegative")
     groups = four_windows(cfg.grid)
     update_windows(0, cfg.window_update)
     outdir = Path(cfg.outdir)
@@ -136,9 +146,10 @@ def run_windows(cfg):
 
     counts = dict(optimizer_updates=0, window_visits=0, training_patterns=0,
                   training_network_forwards=0, consistency_network_forwards=0,
-                  evaluation_network_forwards=0, evaluation_patterns=0)
+                  evaluation_network_forwards=0, evaluation_patterns=0,
+                  transition_network_forwards=0, stage2_updates=0)
     print(f"[windows] {cfg.window_update}; iteration = ONE optimizer update; "
-          "4x16 = 64 unique training frames, remaining 36 evaluation-only. "
+          "Stage 1: 4x16 = 64 unique training frames, remaining 36 evaluation-only in stage 1. "
           f"consistency={cfg.window_consistency:g}; full-canvas outputs, no added support.", flush=True)
     if cfg.window_update == "sequential" and cfg.window_consistency:
         print("[windows] Consistency adds 3 current-weight no-grad peer forwards per update; "
@@ -153,17 +164,78 @@ def run_windows(cfg):
                     iteration="one network/probe optimizer update", timing="loop includes evaluation; excludes setup/save",
                     device=str(device), gpu=torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                     network_parameters=sum(p.numel() for p in net.parameters()), scene_fingerprint=sc.fp)
+    metadata.update(switch_after=switch, total_updates=cfg.iters,
+                    stage2="fresh object-only input, full measurements" if switch else None)
     (outdir / "window_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     hist = []
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     start = time.perf_counter()
+    transition = None
+    snapshot = None
     for it in range(cfg.iters):
-        active = update_windows(it, cfg.window_update)
+        stage2 = bool(switch and it >= switch)
+        if switch and it == switch:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            transition_start = time.perf_counter()
+            with snapshot_readout(net):
+                stage1_fields = [decode(k)[0].detach().clone() for k in range(4)]
+                stage1_object = fuse_fields(stage1_fields, masks).detach().clone()
+                stage1_probe = probe().detach().clone()
+            counts["transition_network_forwards"] += 4
+            conditioning, encoding = reconstruction_channels(stage1_object, None, ns, include_probe=False)
+            snapshot = dict(obj=stage1_object.cpu().numpy(), probe=stage1_probe.cpu().numpy(),
+                            fields=torch.stack(stage1_fields).cpu().numpy(),
+                            network_input=conditioning.cpu().numpy())
+            # Same isolated initialization and neutral readout as progressive fresh.
+            seed = cfg.seed if cfg.network_seed is None else cfg.network_seed
+            with torch.random.fork_rng(devices=[]):
+                torch.random.default_generator.manual_seed(int(seed))
+                new_net = ProPtyUNet(3, cfg.base_ch, n_fields=1, ph_ch=2,
+                                    skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold)
+                _initialize_object_heads(new_net, cfg.obj_init_alpha)
+            net = new_net.to(device)
+            opt = torch.optim.Adam(net.parameters(), lr=cfg.window_stage2_lr_net, weight_decay=cfg.weight_decay)
+            probe_steps = ([float(opt_p.state[v]["step"]) for v in (pr, pi)] if opt_p else [])
+            if opt_p:
+                for group in opt_p.param_groups:
+                    group["lr"] = cfg.window_stage2_lr_probe
+            inputs = [conditioning]
+            selections = [torch.arange(cfg.n_pat, device=device)]
+            # Window auxiliaries describe different domains; use a NEW full-data
+            # TGV auxiliary, never silently copy one window's vector field.
+            tgvs = ([ObjectAmplitudeTGV(cfg, sc.pos, device)] if cfg.window_stage2_tgv else [None])
+            with snapshot_readout(net):
+                initial_obj = decode(0)[0]
+                obj_jump = float((initial_obj-stage1_object).norm()/stage1_object.norm().clamp_min(1e-12))
+                probe_jump = float((probe()-stage1_probe).norm()/stage1_probe.norm().clamp_min(1e-12))
+            counts["transition_network_forwards"] += 1
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            transition = dict(**encoding, after_update=switch, seed=seed,
+                              new_object_network=True, new_object_optimizer=True,
+                              probe_optimizer_retained=True, probe_adam_steps_at_switch=probe_steps,
+                              probe_relative_jump=probe_jump, object_relative_jump=obj_jump,
+                              object_initialization="neutral heads, NOT residual warm start",
+                              new_full_domain_tgv_auxiliary=bool(cfg.window_stage2_tgv),
+                              lr_net=cfg.window_stage2_lr_net, lr_probe=cfg.window_stage2_lr_probe,
+                              tgv_amp=cfg.window_stage2_tgv,
+                              stage1_elapsed_s=transition_start-start,
+                              transition_elapsed_s=time.perf_counter()-transition_start,
+                              network_parameters=sum(v.numel() for v in net.parameters()))
+            print(f"[windows] update {it+1}: fresh U-Net; fixed object-only 3-channel input; "
+                  f"100 measurements; retained probe/Adam, probe jump={probe_jump:g}; "
+                  f"lr_net={cfg.window_stage2_lr_net:g}, lr_probe={cfg.window_stage2_lr_probe:g}, "
+                  f"TGV={cfg.window_stage2_tgv:g}", flush=True)
+            del stage1_fields, stage1_object, stage1_probe, initial_obj, new_net
+        active = [0] if stage2 else update_windows(it, cfg.window_update)
+        consistency_weight = 0. if stage2 else cfg.window_consistency
+        tgv_weight = cfg.window_stage2_tgv if stage2 else cfg.tgv_amp
         # Read peers BEFORE any grad-enabled forward: restoring BN buffers after
         # such a forward would otherwise invalidate autograd saved tensors.
         fields = [None]*4
-        if cfg.window_consistency and len(active) == 1:
+        if consistency_weight and len(active) == 1:
             with snapshot_readout(net):
                 for k in range(4):
                     if k not in active:
@@ -185,8 +257,8 @@ def run_windows(cfg):
         data = torch.stack(losses).mean()
         reg = torch.stack(regs).mean()
         con = (consistency_loss(fields, masks, active[0] if len(active) == 1 else None)
-               if cfg.window_consistency else data.new_zeros(()))
-        loss = data + energy * (cfg.tgv_amp*reg + cfg.window_consistency*con)
+               if consistency_weight else data.new_zeros(()))
+        loss = data + energy * (tgv_weight*reg + consistency_weight*con)
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError(f"Nonfinite loss at update {it+1}")
         loss.backward()
@@ -194,22 +266,23 @@ def run_windows(cfg):
         if opt_p:
             opt_p.step()
         counts["optimizer_updates"] += 1
-        counts["window_visits"] += len(active)
-        counts["training_patterns"] += 16*len(active)
+        counts["window_visits"] += 0 if stage2 else len(active)
+        counts["stage2_updates"] += int(stage2)
+        counts["training_patterns"] += cfg.n_pat if stage2 else 16*len(active)
         # Avoid retaining four autograd graphs across iterations/evaluation.
         loss_value, data_value, con_value, reg_value = [t.item() for t in (loss, data, con, reg)]
         del fields, losses, regs, loss, data, con, reg, amp, current_probe
-        if (it+1) % cfg.eval_every == 0 or it+1 == cfg.iters:
+        if (it+1) % cfg.eval_every == 0 or it+1 == cfg.iters or it+1 == switch:
             with snapshot_readout(net):
-                final_fields = [decode(k)[0] for k in range(4)]
-                fused = fuse_fields(final_fields, masks)
+                final_fields = [decode(k)[0] for k in range(1 if stage2 else 4)]
+                fused = final_fields[0] if stage2 else fuse_fields(final_fields, masks)
                 pp = probe()
                 full_loss, predicted = scaled_amplitude_loss(cabs(_fwd(cfg, fused, pp, sc.post, sc.Q)), sc.sqrtIm)
                 real = torch.linalg.vector_norm(predicted.square()-sc.Iclt).item()
-                disagreement = consistency_loss(final_fields, masks).item()
+                disagreement = None if stage2 else consistency_loss(final_fields, masks).item()
                 rec, pc = fused.cpu().numpy(), pp.cpu().numpy()
                 final_array = torch.stack(final_fields).cpu().numpy()
-            counts["evaluation_network_forwards"] += 4
+            counts["evaluation_network_forwards"] += 1 if stage2 else 4
             counts["evaluation_patterns"] += cfg.n_pat
             rs, cs = sc.roi
             metrics = evaluate(rec[rs, cs], sc.obj[rs, cs])
@@ -218,11 +291,14 @@ def run_windows(cfg):
             row = dict(it=it+1, loss=loss_value, data_loss=data_value, tgv_amp=reg_value,
                        consistency=con_value, post_update_disagreement=disagreement,
                        full_data_loss=full_loss.item(), real=real, relerr_p=probe_relerr(pc, sc.probe),
-                       active_windows=active, completed_sweeps=counts["window_visits"]//4,
+                       active_windows=[] if stage2 else active, stage=2 if stage2 else 1,
+                       input_channels=3 if stage2 else 16, active_patterns=cfg.n_pat if stage2 else 16*len(active),
+                       tgv_amp_weight=tgv_weight,
+                       completed_sweeps=counts["window_visits"]//4,
                        sweep_progress=counts["window_visits"]/4,
                        elapsed_s=time.perf_counter()-start, **counts, **metrics)
             hist.append(row)
-            print(f"[windows] update {it+1} | sweeps {row['sweep_progress']:g} | "
+            print(f"[windows] stage {row['stage']} update {it+1} | stage1 sweeps {row['sweep_progress']:g} | "
                   f"amp PSNR {metrics['psnr_amp']:.2f} | object err {metrics['relerr']:.4f} | "
                   f"probe err {row['relerr_p']:.4f} | full loss {row['full_data_loss']:.4e} | "
                   f"{row['elapsed_s']:.2f}s", flush=True)
@@ -230,8 +306,13 @@ def run_windows(cfg):
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter()-start
     _save(cfg, rec, pc, sc.obj, sc.probe, hist, sc.roi, sc.pos, tag="windows", train_elapsed_s=elapsed)
-    np.savez_compressed(outdir / "window_fields.npz", fields=final_array,
+    np.savez_compressed(outdir / "window_fields.npz", fields=snapshot['fields'] if snapshot else final_array,
                         masks=masks.cpu().numpy(), groups=np.asarray(groups))
+    if snapshot is not None:
+        np.savez_compressed(outdir / "stage1_conditioning.npz", **snapshot)
+        (outdir / "reconstruction_input.json").write_text(json.dumps(transition, indent=2), encoding="utf-8")
+    metadata.update(transition=transition, window_fields_stage=1,
+                    final_object="single stage-2 output" if switch else "four-window fusion")
     metadata.update(counts=counts, elapsed_s=elapsed)
     (outdir / "window_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return hist

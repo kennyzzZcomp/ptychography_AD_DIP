@@ -8,6 +8,8 @@ joint 250 = 250 sweeps. Compare elapsed time and frame visits as well as updates
 Default consistency=0 first isolates sequential grouped conditioning; explicitly
 enable --consistency-weight 0.01 to test agreement (extra peer forward cost).
 No spatial cropping, known support, TGV, cosine schedule, or disk is added by default.
+Optional --switch-after 1000 --iters 2000: replace the window network with a
+fresh object-conditioned U-Net after 1000 updates; full data in stage 2.
 """
 import argparse
 from dataclasses import dataclass
@@ -23,6 +25,10 @@ from functions.paperrepro.window_training import run_windows
 class WindowCfg(Cfg):
     window_update: str = "sequential"
     window_consistency: float = 0.0
+    window_switch_after: int = 0
+    window_stage2_lr_net: float = .002
+    window_stage2_lr_probe: float = .01
+    window_stage2_tgv: float = .0001
 
 
 def main():
@@ -41,6 +47,10 @@ def main():
     p.add_argument("--lr-net", type=float, default=.001)
     p.add_argument("--lr-probe", type=float, default=.01)
     p.add_argument("--tgv-amp", type=float, default=0)
+    p.add_argument("--switch-after", type=int, default=0, help="completed stage-1 updates; 0 disables stage 2")
+    p.add_argument("--stage2-lr-net", type=float, default=.002)
+    p.add_argument("--stage2-lr-probe", type=float, default=.01)
+    p.add_argument("--stage2-tgv-amp", type=float, default=.0001)
     p.add_argument("--outdir", required=True, help="must not exist; never overwrite")
     a = p.parse_args()
     geometry = dict(PRESETS[a.preset])
@@ -52,7 +62,9 @@ def main():
                     probe_init=a.probe_init, probe_mode=a.probe_mode,
                     lr_net=a.lr_net, lr_probe=a.lr_probe, tgv_amp=a.tgv_amp,
                     outdir=a.outdir, window_update=a.update_mode,
-                    window_consistency=a.consistency_weight)
+                    window_consistency=a.consistency_weight,
+                    window_switch_after=a.switch_after, window_stage2_lr_net=a.stage2_lr_net,
+                    window_stage2_lr_probe=a.stage2_lr_probe, window_stage2_tgv=a.stage2_tgv_amp)
     run_windows(cfg)
 
 
