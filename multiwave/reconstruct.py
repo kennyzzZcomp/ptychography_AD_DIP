@@ -7,10 +7,10 @@ import torch
 from .models import ObjectModel, SharedAmplitudeModel, masked_tv, amplitude_tv
 from .physics import amplitude_loss
 from .losses import poisson_loss, poisson_nll_sum, poisson_normalizer
-from .probes import PixelProbes, probe_metrics, probe_smoothness
+from .probes import PixelProbes, BasisProbes, probe_metrics, probe_smoothness
 
 
-def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
+def backward_shared_data(objects, probes, scene, cfg, regularizer=None, atv=None):
     """Exact full-batch field VJP; FFT graphs are freed per scan chunk.
 
     The U-Net is evaluated once (including BatchNorm). Detached field gradients
@@ -33,6 +33,8 @@ def backward_shared_data(objects, probes, scene, cfg, regularizer=None):
         loss.backward()
     if cfg.tv_weight:
         (cfg.tv_weight*amplitude_tv(a.abs(), scene.roi)).backward()
+    if atv is not None:
+        (cfg.atv_weight*atv.penalty(a.real[0])).backward()
     if regularizer is not None:
         (cfg.tgv_weight*regularizer.penalty(a.real[0])).backward()
     if cfg.probe_smooth_weight and p.requires_grad:
@@ -115,20 +117,29 @@ def evaluate(model, scene, cfg, probe_model=None):
 
 
 def reconstruct(cfg, scene, method, progress_callback=None):
-    if cfg.probe_smooth_weight and (cfg.probe_mode != "pixel" or method == "feedback_shared_amp"):
+    if cfg.probe_smooth_weight and (cfg.probe_mode not in ("pixel", "basis") or method == "feedback_shared_amp"):
         raise ValueError("probe smoothness requires pixel probes and non-feedback reconstruction")
+    if cfg.probe_mode == "basis" and method == "feedback_shared_amp":
+        raise ValueError("basis probes are not enabled for feedback pilot")
     torch.manual_seed(cfg.network_seed)
     shared_amp = method.endswith("_shared_amp")
     feedback = method == "feedback_shared_amp"
     model_class = SharedAmplitudeModel if shared_amp else ObjectModel
     if feedback:
         from .feedback import FeedbackAmplitudeModel
-        if cfg.loss != "poisson" or cfg.tv_weight or cfg.tgv_weight:
+        if cfg.loss != "poisson" or cfg.tv_weight or cfg.atv_weight or cfg.tgv_weight:
             raise ValueError("feedback supports unregularized Poisson loss only")
         model_class = FeedbackAmplitudeModel
     model = model_class(cfg, method, scene.input_stack).to(scene.objects.device)
     lr = cfg.lr_net if method.startswith("unet") or feedback else cfg.lr_pixel
-    probe_model = PixelProbes(cfg, scene.objects.device) if cfg.probe_mode == "pixel" else None
+    probe_class = {"pixel": PixelProbes, "basis": BasisProbes}.get(cfg.probe_mode)
+    probe_model = probe_class(cfg, scene.objects.device) if probe_class else None
+    atv = None
+    if cfg.atv_weight:
+        if not shared_amp or feedback or cfg.scene != "usaf_zero_phase":
+            raise ValueError("ATV requires pixel_shared_amp or unet_shared_amp in zero-phase scene")
+        from .regularization import AmplitudeATV
+        atv = AmplitudeATV(cfg, scene)
     regularizer = None
     if cfg.tgv_weight:
         if not shared_amp:
@@ -157,6 +168,12 @@ def reconstruct(cfg, scene, method, progress_callback=None):
                 penalty = (amplitude_tv(fields[0].abs(), scene.roi) if shared_amp else
                            masked_tv(fields[1], fields[2], scene.roi, cfg.opd_scale_um))
             metrics["train_total_objective"] += float(cfg.tv_weight*penalty)
+        if atv is not None:
+            with torch.no_grad():
+                total, horizontal, vertical = atv.terms(fields[0][0].real)
+            metrics.update(atv_penalty=float(total), atv_horizontal=float(horizontal),
+                           atv_vertical=float(vertical), atv_weighted_penalty=float(cfg.atv_weight*total))
+            metrics["train_total_objective"] += metrics["atv_weighted_penalty"]
         if regularizer is not None:
             with torch.no_grad():
                 total, first, second = regularizer.terms(fields[0][0].real)
@@ -194,7 +211,7 @@ def reconstruct(cfg, scene, method, progress_callback=None):
         objects, tau, opd = model()
         probes = scene.operator.probes if probe_model is None else probe_model()
         if shared_amp:
-            backward_shared_data(objects, probes, scene, cfg, regularizer)
+            backward_shared_data(objects, probes, scene, cfg, regularizer, atv)
         else:
             prediction = scene.operator(objects, scene.train, probes=probes)
             loss = (poisson_loss(prediction, scene.measured[scene.train], cfg.photons_per_scan)
@@ -231,6 +248,8 @@ def reconstruct(cfg, scene, method, progress_callback=None):
             "unet_detail": cfg.unet_detail if method.startswith("unet") else None,
             "detail_parameter_count": (sum(p.numel() for p in model.net.detail_head.parameters())
                                        if model.net is not None and hasattr(model.net, "detail_head") else 0),
+            "atv_weight": cfg.atv_weight,
+            "atv_domain_pixels": int(atv.mask.sum()) if atv is not None else 0,
             "tgv_weight": cfg.tgv_weight,
             "tgv_state_dict": regularizer.state_dict() if regularizer is not None else None,
             "tgv_auxiliary_parameter_count": regularizer.v.numel() if regularizer is not None else 0,
@@ -238,9 +257,12 @@ def reconstruct(cfg, scene, method, progress_callback=None):
             "elapsed_s_including_evaluation": elapsed,
             "parameter_count": sum(p.numel() for p in model.parameters()) + (sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0),
             "probe_mode": cfg.probe_mode,
+            "probe_amp_order": cfg.probe_amp_order if cfg.probe_mode == "basis" else None,
+            "probe_phase_order": cfg.probe_phase_order if cfg.probe_mode == "basis" else None,
+            "probe_basis": "separable_cosine; phase piston excluded" if cfg.probe_mode == "basis" else None,
             "probe_grid_size": (probe_model.grid_size if probe_model is not None else None),
             "probe_parameter_count": sum(p.numel() for p in probe_model.parameters()) if probe_model is not None else 0,
-            "probe_interpolation": ("bilinear_align_corners_false" if probe_model is not None
+            "probe_interpolation": ("bilinear_align_corners_false" if cfg.probe_mode == "pixel"
                                     and probe_model.grid_size != cfg.patch_size else None),
             "probe_learning_rate": cfg.lr_probe if probe_model is not None else None,
             "probe_state_dict": None if probe_model is None else {k: v.detach().cpu() for k, v in probe_model.state_dict().items()},

@@ -1,5 +1,13 @@
 # Colab：AD、U-Net、学习率衰减与 DWT/TGV 实验记录
 
+## CG1：48×48 粗网格 probe（用户 Colab 日志）
+
+按本轮对话指令标称配置：原 concat U-Net、detail=none、TGV=0、probe_grid_size=48、probe_smooth_weight=0、20000 光子、noise_seed=24，1000 次。用户提供完整终端日志和物体细节图，未提供 config/metrics JSON；网格和种子尚待配置核对。输出目录 `20260929_235823_762962`。
+
+终点 Poisson loss=0.87268，train observed=0.7332，holdout clean=0.2598，物体误差=0.2353，平均 probe 复数误差=0.2326。对历史 NP7 完整像素 probe（object=0.2287、probe=0.3283、holdout=0.2737），probe 误差约降29.1%，holdout约降5.1%，物体误差约增2.9%。对 PS1 平滑0.1（object=0.22108227、probe=0.23649222、holdout=0.44513559），probe终点相近、holdout改善，但物体误差更高。不能将其描述成整体物体精度已提高。
+
+475次probe误差=0.2111，之后到1000次回升到0.2326；325次holdout=0.1292，终点0.2598。仅记录趋势，不根据真值或干净留出量选择checkpoint。用户反馈主观改善；未收到probe图或定量高频指标，不能据当前物体截图确认probe视觉平滑程度或高频细节增益。保留为探针参数化有效降低probe误差的候选，不自动启动新实验。
+
 ## PS1：probe 平滑权重 0.1，用户提供完整 metrics
 
 来源附件 `db5a9bf4-7671-48ca-9043-846769defc17/已粘贴的文本.txt`。unet_shared_amp、concat、detail=none、pixel probe、Poisson、TGV=0、1000 次，probe_smooth_weight=0.1。JSON 无完整 config，20000 光子/seed24 依据对话实验设置，尚未用 config 核对。

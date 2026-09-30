@@ -69,3 +69,36 @@ def probe_metrics(probes, truth, wavelengths):
                        "weighted_phase_rmse_rad": float((weight*phase_error.square()).sum().div(weight.sum()).sqrt()),
                        "power": float(rec.abs().square().sum())})
     return values
+
+
+class BasisProbes(nn.Module):
+    """Independent smooth amplitude/phase cosine expansions, without truth input.
+
+    Orders count frequencies per axis including zero. Phase excludes piston.
+    This is a low-frequency prior, not an exact physical aberration model.
+    """
+    def __init__(self, cfg, device="cpu"):
+        super().__init__()
+        n = cfg.patch_size
+        self.grid_size = None
+        t = (torch.arange(n, device=device, dtype=torch.float32)+.5)/n
+        def basis(order):
+            k = torch.arange(order, device=device, dtype=torch.float32)
+            b = torch.cos(torch.pi*k[:, None]*t[None])
+            b[1:] *= 2**.5
+            return torch.einsum("iy,jx->ijyx", b, b).reshape(order*order,n,n)
+        self.register_buffer("amp_basis", basis(cfg.probe_amp_order))
+        self.register_buffer("phase_basis", basis(cfg.probe_phase_order)[1:])
+        nominal = initial_probe_field(cfg,device).abs()*n
+        self.register_buffer("nominal_raw", torch.log(torch.expm1(nominal)))
+        self.register_buffer("power", torch.tensor(cfg.probe_power,device=device))
+        count = len(cfg.wavelengths_nm)
+        self.amp_coeff = nn.Parameter(torch.zeros(count,cfg.probe_amp_order**2,device=device))
+        self.phase_coeff = nn.Parameter(torch.zeros(count,cfg.probe_phase_order**2-1,device=device))
+
+    def forward(self):
+        raw = self.nominal_raw + torch.einsum("lk,kyx->lyx",self.amp_coeff,self.amp_basis)
+        amp = F.softplus(raw)
+        amp = amp/amp.square().sum((-1,-2),keepdim=True).clamp_min(1e-20).sqrt()*self.power.sqrt()
+        phase = torch.einsum("lk,kyx->lyx",self.phase_coeff,self.phase_basis)
+        return torch.polar(amp,phase)

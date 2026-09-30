@@ -28,6 +28,8 @@ class Config:
     probe_mode: str = "pixel"  # known remains an oracle control
     lr_probe: float = 0.01
     probe_smooth_weight: float = 0.0
+    probe_amp_order: int = 6
+    probe_phase_order: int = 6
     probe_grid_size: int = 0  # 0 uses the full patch grid; otherwise bilinear complex grid
     pad_factor: int = 2
     photons_per_scan: float = 200000.0  # 0 = noiseless, otherwise incident photons
@@ -47,6 +49,7 @@ class Config:
     lr_net_decay_factor: float = 0.2
     opd_scale_um: float = 0.15
     tv_weight: float = 0.0
+    atv_weight: float = 0.0  # exact axis-aligned L1 TV on training-domain amplitude
     loss: str = "amplitude"
     unet_skip: str = "concat"
     unet_detail: str = "none"
@@ -78,6 +81,12 @@ class Config:
         raise ValueError(f"Unknown preset: {name}")
 
     def validate(self):
+        for name in ("probe_amp_order", "probe_phase_order"):
+            v = getattr(self,name)
+            if not isinstance(v,int) or isinstance(v,bool) or not 2 <= v <= self.patch_size:
+                raise ValueError(f"{name} must be an integer in [2, patch_size]")
+        if self.probe_mode == "basis" and self.scene != "usaf_zero_phase":
+            raise ValueError("basis probes require the zero-phase scene")
         if (not isinstance(self.probe_grid_size, int) or isinstance(self.probe_grid_size, bool)
                 or (self.probe_grid_size != 0 and not 2 <= self.probe_grid_size <= self.patch_size)):
             raise ValueError("probe_grid_size must be 0 or an integer in [2, patch_size]")
@@ -85,8 +94,8 @@ class Config:
             raise ValueError("probe grid requires trainable pixel probes")
         if not math.isfinite(self.probe_smooth_weight) or self.probe_smooth_weight < 0:
             raise ValueError("probe_smooth_weight must be finite and nonnegative")
-        if self.probe_smooth_weight and self.probe_mode != "pixel":
-            raise ValueError("probe smoothness requires trainable pixel probes")
+        if self.probe_smooth_weight and self.probe_mode not in ("pixel", "basis"):
+            raise ValueError("probe smoothness requires trainable probes")
         if self.feedback_mode not in ("learned", "identity", "no_gradient"):
             raise ValueError("unsupported feedback_mode")
         if not math.isfinite(self.feedback_step) or self.feedback_step <= 0:
@@ -101,10 +110,10 @@ class Config:
             raise ValueError("--loss poisson requires --photons-per-scan > 0 (count data)")
         if self.unet_skip not in ("concat", "dwt_concat"):
             raise ValueError("unet_skip must be concat or dwt_concat")
-        if self.scene != "usaf_zero_phase" and (self.tgv_weight or self.unet_skip != "concat"):
-            raise ValueError("DWT/TGV options are scoped to the shared zero-phase amplitude scene")
-        if self.tv_weight and self.tgv_weight:
-            raise ValueError("test TV and TGV separately; do not enable both")
+        if self.scene != "usaf_zero_phase" and (self.atv_weight or self.tgv_weight or self.unet_skip != "concat"):
+            raise ValueError("DWT/ATV/TGV options are scoped to the shared zero-phase amplitude scene")
+        if sum(bool(w) for w in (self.tv_weight, self.atv_weight, self.tgv_weight)) > 1:
+            raise ValueError("test TV, ATV and TGV separately; enable at most one")
         if (not isinstance(self.lr_net_decay_after, int) or isinstance(self.lr_net_decay_after, bool)
                 or self.lr_net_decay_after < 0
                 or self.lr_net_decay_after >= self.iterations):
@@ -140,7 +149,7 @@ class Config:
             v = getattr(self, name)
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f"{name} must be finite and positive")
-        for name in ("photons_per_scan", "tv_weight", "tgv_weight"):
+        for name in ("photons_per_scan", "tv_weight", "atv_weight", "tgv_weight"):
             v = getattr(self, name)
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
@@ -154,8 +163,8 @@ class Config:
             raise ValueError("wavelengths must be distinct")
         if self.spectral_mode not in ("equal_power", "weighted"):
             raise ValueError("spectral_mode must be equal_power or weighted")
-        if self.probe_mode not in ("known", "pixel"):
-            raise ValueError("probe_mode must be known or pixel")
+        if self.probe_mode not in ("known", "pixel", "basis"):
+            raise ValueError("probe_mode must be known, pixel or basis")
         if self.spectral_mode == "weighted" and len(self.weights) != len(self.wavelengths_nm):
             raise ValueError("one weight is required per wavelength")
         if any(not math.isfinite(v) or v <= 0 for v in self.weights):

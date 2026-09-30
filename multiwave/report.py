@@ -48,7 +48,7 @@ def plot_result(result, scene, cfg, out):
         axes[3].set_title(f"Center-row amplitude (row {row})", fontsize=9)
         axes[3].set_ylim(-.05, 1.05); axes[3].set_xlabel("Object pixel")
         axes[3].legend(fontsize=8); axes[3].grid(alpha=.3)
-        fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | TGV={cfg.tgv_weight:g} | phase fixed to zero")
+        fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | ATV={cfg.atv_weight:g} | TGV={cfg.tgv_weight:g} | phase fixed to zero")
         fig.savefig(out/f"{result['method']}_reconstruction.png", dpi=150)
         plt.close(fig)
         plot_usaf_detail(result, scene, cfg, out)
@@ -103,7 +103,7 @@ def plot_usaf_detail(result, scene, cfg, out):
     axes[1, 2].set_title(f'Zoom profile: row {row}', fontsize=9)
     for ax in axes.flat:
         ax.set_xlabel('Object pixel')
-    fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | TGV={cfg.tgv_weight:g} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
+    fig.suptitle(f"{result['method']} | skip={result.get('unet_skip')} | detail={result.get('unet_detail', 'none')} | ATV={cfg.atv_weight:g} | TGV={cfg.tgv_weight:g} | {n}x{n}, {cfg.pixel_um:g} um/px | outside ROI is not validated")
     fig.savefig(out/f"{result['method']}_detail.png", dpi=180)
     plt.close(fig)
 
@@ -128,7 +128,7 @@ def plot_probes(result, scene, cfg, out):
             im = ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=high)
             ax.set_title(f'{cfg.wavelengths_nm[l]:g} nm | {title}', fontsize=8)
             ax.set_axis_off(); fig.colorbar(im, ax=ax, shrink=.6)
-    grid_label = str(cfg.probe_grid_size or cfg.patch_size) if cfg.probe_mode == 'pixel' else 'fixed'
+    grid_label = str(cfg.probe_grid_size or cfg.patch_size) if cfg.probe_mode == 'pixel' else (f'cosine amp={cfg.probe_amp_order}, phase={cfg.probe_phase_order}' if cfg.probe_mode == 'basis' else 'fixed')
     fig.suptitle(f"{result['method']} | probe mode: {cfg.probe_mode} | grid={grid_label} | smooth={cfg.probe_smooth_weight:g}")
     fig.savefig(out/f"{result['method']}_probes.png", dpi=140)
     plt.close(fig)
@@ -174,8 +174,10 @@ def save_summary(results, cfg, audit, out):
     lines += ["", f"训练损失：`{cfg.loss}`。表中 train/holdout 仍为统一的振幅 NRMSE，不是 Poisson 目标值。",
               "Poisson 使用减去饱和模型常数的 NLL，并按训练观测总计数归一化；JSON 另存 train_data_loss 和 train_total_objective。",
               f"探针复数场平滑权重：{cfg.probe_smooth_weight:g}。每波长相邻复数差分平方和除以该探针功率，再对波长取平均；像素单位、不跨边界、不耦合波长、不使用真值。JSON 记录 probe_smooth_penalty 及加权项。",
+              f"basis 探针使用独立的振幅/相位低频余弦基：每轴振幅阶数 {cfg.probe_amp_order}、相位阶数 {cfg.probe_phase_order}，相位排除常数项；无硬支撑，不使用真值，存在低频表示偏差。仅 basis 模式生效。",
               f"探针训练网格：{cfg.probe_grid_size or cfg.patch_size}（仅 pixel 模式）；小网格实部/虚部分别双线性插值到 patch_size，再归一化功率。粗网格初始化来自默认平滑初值，不是真值；与完整网格初值存在插值差异。",
               "", f"U-Net skip：`{cfg.unet_skip}`；全分辨率残差分支：`{cfg.unet_detail}`；振幅 TGV 权重：`{cfg.tgv_weight}`；TGV 辅助步数：`{cfg.tgv_inner_steps}`。",
+              f"振幅 ATV 权重：`{cfg.atv_weight}`。横纵有效相邻差分各取绝对值均值后相加，只使用训练窗口并集，不使用真值或评价 ROI；与 TV/TGV 互斥。JSON 保存原始项、加权项及总目标。",
               "TGV 只在训练扫描窗口并集内的有效差分模板上作用，不使用真值或评价 ROI；采用像素单位差分，辅助场为近似优化。",
               "", f"传播 padding 检查（当前 vs 额外一倍窗口）：强度相对差 `{audit['padding_relative_intensity_difference']:.3g}`。",
               "", ("USAF 主线：各波长共享一个实数振幅，物体相位固定为零；不进行光谱物体分离。振幅区域对比度不是 USAF 线组分辨率。"

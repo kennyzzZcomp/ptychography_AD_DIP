@@ -42,7 +42,7 @@ def audit_scene(cfg, scene):
 
 def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
     cfg.validate()
-    if cfg.probe_mode == "pixel" and cfg.scene != "usaf_zero_phase":
+    if cfg.probe_mode in ("pixel", "basis") and cfg.scene != "usaf_zero_phase":
         raise ValueError("blind pixel probes are currently scoped to the zero-phase USAF task")
     methods = tuple(methods)
     allowed = METHODS + LEGACY_METHODS + FEEDBACK_METHODS
@@ -50,19 +50,21 @@ def run_experiment(cfg, methods=METHODS, outdir=None, progress_callback=None):
         raise ValueError(f"methods must be distinct members of {allowed}")
     if cfg.scene != "usaf_zero_phase" and any(m in METHODS for m in methods):
         raise ValueError("shared_amp methods require --scene usaf_zero_phase; archived scenes need explicit legacy methods")
-    if (cfg.tgv_weight or cfg.unet_skip != "concat") and any(m not in METHODS for m in methods):
-        raise ValueError("DWT/TGV options require shared_amp methods")
+    if (cfg.atv_weight or cfg.tgv_weight or cfg.unet_skip != "concat") and any(m not in METHODS for m in methods):
+        raise ValueError("DWT/ATV/TGV options require shared_amp methods")
     if cfg.unet_skip != "concat" and "unet_shared_amp" not in methods:
         raise ValueError("--unet-skip requires unet_shared_amp in --methods")
     if cfg.unet_detail != "none" and ("unet_shared_amp" not in methods or any(m not in METHODS for m in methods)):
         raise ValueError("--unet-detail requires shared_amp methods including unet_shared_amp")
     if any(m in FEEDBACK_METHODS for m in methods):
+        if cfg.probe_mode == "basis":
+            raise ValueError("basis probes are not enabled for feedback pilot")
         if cfg.probe_smooth_weight:
             raise ValueError("probe smoothness is not enabled for feedback pilot")
         if (cfg.scene != "usaf_zero_phase" or cfg.loss != "poisson" or cfg.tv_weight
-                or cfg.tgv_weight or cfg.unet_detail != "none" or cfg.unet_skip != "concat"
+                or cfg.atv_weight or cfg.tgv_weight or cfg.unet_detail != "none" or cfg.unet_skip != "concat"
                 or cfg.lr_net_decay_after):
-            raise ValueError("feedback requires zero-phase Poisson, concat, no detail/TV/TGV/LR decay")
+            raise ValueError("feedback requires zero-phase Poisson, concat, no detail/TV/ATV/TGV/LR decay")
     torch.set_num_threads(cfg.threads)
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
@@ -139,14 +141,14 @@ def main():
     p.add_argument("--usaf-path", type=str)
     p.add_argument("--wavelengths-nm", nargs="+", type=float)
     p.add_argument("--weights", nargs="+", type=float)
-    p.add_argument("--probe-mode", choices=("pixel", "known"))
+    p.add_argument("--probe-mode", choices=("pixel", "known", "basis"))
     p.add_argument("--spectral-mode", choices=("equal_power", "weighted"))
     p.add_argument("--outdir", type=Path)
     p.add_argument("--device", choices=("auto", "cpu", "cuda"))
     for name in ("iterations", "eval_every", "object_size", "patch_size", "grid", "step", "jitter",
-                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size", "lr_net_decay_after", "tgv_inner_steps", "probe_grid_size"):
+                 "base_channels", "pad_factor", "chunk", "threads", "scene_seed", "noise_seed", "network_seed", "scan_quantum", "detector_size", "lr_net_decay_after", "tgv_inner_steps", "probe_grid_size", "probe_amp_order", "probe_phase_order"):
         p.add_argument("--"+name.replace("_", "-"), type=int)
-    for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight",
+    for name in ("pixel_um", "distance_mm", "photons_per_scan", "lr_pixel", "lr_net", "tv_weight", "atv_weight",
                  "opd_scale_um", "holdout_fraction", "usaf_fill", "lr_probe", "lr_net_decay_factor",
                  "tgv_weight", "tgv_alpha0", "tgv_alpha1", "tgv_eps", "tgv_lr", "probe_smooth_weight"):
         p.add_argument("--"+name.replace("_", "-"), type=float)

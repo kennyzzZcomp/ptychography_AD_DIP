@@ -35,3 +35,28 @@ class AmplitudeTGV:
     def state_dict(self):
         return {"vector": self.v.detach().cpu(), "mask": self.mask.cpu(),
                 "optimizer": self.optimizer.state_dict()}
+
+
+class AmplitudeATV:
+    """Exact |Dx A| + |Dy A|, each direction averaged over valid training edges.
+
+    Pixel-unit forward differences; no boundary wrapping or external zero pad.
+    This is anisotropic (axis-aligned), not adaptive or direction-learned TV.
+    """
+    def __init__(self, cfg, scene):
+        self.mask = torch.zeros((cfg.object_size, cfg.object_size), dtype=torch.bool,
+                                device=scene.objects.device)
+        for y, x in scene.operator.positions[scene.train].detach().cpu().tolist():
+            self.mask[y:y+cfg.patch_size, x:x+cfg.patch_size] = True
+        self.valid_x = self.mask[:, 1:] & self.mask[:, :-1]
+        self.valid_y = self.mask[1:, :] & self.mask[:-1, :]
+        if not bool(self.valid_x.any()) or not bool(self.valid_y.any()):
+            raise ValueError("ATV training domain has no valid edges")
+
+    def terms(self, amplitude):
+        horizontal = (amplitude[:, 1:]-amplitude[:, :-1])[self.valid_x].abs().mean()
+        vertical = (amplitude[1:, :]-amplitude[:-1, :])[self.valid_y].abs().mean()
+        return horizontal + vertical, horizontal, vertical
+
+    def penalty(self, amplitude):
+        return self.terms(amplitude)[0]
