@@ -158,7 +158,8 @@ class Cfg:
     measurement_seed: int = 0
     input_policy: str = "full"  # full | follow_measurements (gathered first conv)
     half_res_until: int = 0  # net: completed updates before restoring full spatial input
-    stage2_input: str = "diffraction"  # diffraction | reconstruction (fixed O/P snapshot)
+    stage2_input: str = "diffraction"  # diffraction | reconstruction (O/P) | object (O only)
+    stage2_network: str = "reuse"  # reuse | fresh (new object U-Net for reconstructed input)
 
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
@@ -206,9 +207,13 @@ class Cfg:
         from functions.paperrepro.sampling import MeasurementSchedule
         measurement_plan = MeasurementSchedule(self.measurement_schedule, self.grid, self.iters,
                                                self.measurement_policy, self.measurement_seed)
-        if self.stage2_input not in ("diffraction", "reconstruction"):
-            raise ValueError("stage2_input must be diffraction or reconstruction")
-        if self.stage2_input == "reconstruction":
+        if self.stage2_input not in ("diffraction", "reconstruction", "object"):
+            raise ValueError("stage2_input must be diffraction, reconstruction or object")
+        if self.stage2_network not in ("reuse", "fresh"):
+            raise ValueError("stage2_network must be reuse or fresh")
+        if self.stage2_network == "fresh" and self.stage2_input == "diffraction":
+            raise ValueError("fresh stage-2 network requires stage2_input=reconstruction or object")
+        if self.stage2_input in ("reconstruction", "object"):
             if (self.network_type != "real" or self.probe_mode not in ("pixel", "support")
                     or self.half_res_until):
                 raise ValueError("reconstruction input requires real network, pixel/support probe, no half resolution")
@@ -294,6 +299,7 @@ def main():
                  ("measurement_schedule", str), ("measurement_policy", str),
                  ("measurement_seed", int),
                  ("input_policy", str), ("half_res_until", int), ("stage2_input", str),
+                 ("stage2_network", str),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])

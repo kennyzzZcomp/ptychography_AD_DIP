@@ -355,7 +355,7 @@ def run_net(cfg: Cfg):
                                      cfg.measurement_policy, cfg.measurement_seed)
     use_curriculum = bool(cfg.measurement_schedule)
     reconstruction_switch = (curriculum.stages[1][0]
-                             if cfg.stage2_input == "reconstruction" else None)
+                             if cfg.stage2_input in ("reconstruction", "object") else None)
     reconstruction_snapshot = None
     reconstruction_metadata = None
     stage1_network_parameters = network_parameters
@@ -392,15 +392,42 @@ def run_net(cfg: Cfg):
                 snapshot_o, snapshot_p, _, _ = decode(False)
                 snapshot_o = snapshot_o.detach().clone()
                 snapshot_p = snapshot_p.detach().clone()
-            x, encoding = reconstruction_channels(snapshot_o, snapshot_p, NS)
+            include_probe = cfg.stage2_input == "reconstruction"
+            x, encoding = reconstruction_channels(snapshot_o, snapshot_p if include_probe else None,
+                                                  NS, include_probe=include_probe)
             reconstruction_snapshot = (snapshot_o, snapshot_p)
-            stem = replace_input_stem(net, opt_net,
-                                      cfg.seed if cfg.network_seed is None else cfg.network_seed)
-            input_layer = None  # no measurement-channel selection for six field channels
+            transition_seed = cfg.seed if cfg.network_seed is None else cfg.network_seed
+            if cfg.stage2_network == "fresh":
+                # Independent object network: no old parameters, BN buffers, or
+                # Adam state. Probe parameters/optimizer and TGV remain untouched.
+                with torch.random.fork_rng(devices=[]):
+                    torch.random.default_generator.manual_seed(int(transition_seed))
+                    new_net = AddipUNet(x.shape[1], cfg.base_ch, n_fields=1, ph_ch=2,
+                                       skip_mode=cfg.skip_mode,
+                                       wavelet_threshold=cfg.wavelet_threshold)
+                    _initialize_object_heads(new_net, _a)
+                net = new_net.to(device)
+                opt_net = torch.optim.Adam(net.parameters(), lr=cfg.lr_net,
+                                           weight_decay=cfg.weight_decay)
+                # Keep last-iteration wavelet diagnostics consistent if stage 2
+                # consists of only one update.
+                if cfg.skip_mode == "wavelet":
+                    for skip in net.skip_filters:
+                        skip.capture_stats = it == cfg.iters - 1
+                stem = {"network_initialization": "fresh complete U-Net, isolated CPU RNG",
+                        "network_seed": int(transition_seed), "obj_init_alpha": _a,
+                        "optimizer_reset": "entire object-network Adam only",
+                        "normalization_buffers_reset": True}
+                transition_message = "new independent object U-Net and Adam; pixel probe retained"
+            else:
+                stem = replace_input_stem(net, opt_net, transition_seed, in_channels=x.shape[1])
+                transition_message = "only input convolution reinitialized; backbone, output heads and pixel probe retained"
+            input_layer = None  # no measurement-channel selection for reconstructed-field channels
             network_parameters = sum(p.numel() for p in net.parameters())
             total_parameters = network_parameters + probe_parameters
             reconstruction_metadata = {
-                **encoding, **stem, "snapshot_after_update": it, "first_conditioned_update": it+1,
+                **encoding, **stem, "stage2_input": cfg.stage2_input, "stage2_network": cfg.stage2_network,
+                "snapshot_after_update": it, "first_conditioned_update": it+1,
                 "snapshot_readout": "post-update, original stage-1 input, training mode with BN buffers restored",
                 "fixed_detached_input": True, "ground_truth_used_for_input": False,
                 "raw_diffraction_in_stage2_input": False, "stage2_loss_measurements": cfg.n_pat,
@@ -408,8 +435,7 @@ def run_net(cfg: Cfg):
                 "extra_network_readouts": 1, "transition_cost_in_training_timer": True,
             }
             print(f"[net] update {it+1}: fixed reconstructed-field input {tuple(x.shape)}; "
-                  "only input convolution reinitialized; backbone, output heads and pixel probe retained. "
-                  "Full measured diffraction remains the loss target.", flush=True)
+                  f"{transition_message}. Full measured diffraction remains the loss target.", flush=True)
             timer.mark("reconstruction_input_switch")
         if use_curriculum:
             indices, stride = curriculum.select(it)
@@ -437,10 +463,13 @@ def run_net(cfg: Cfg):
                  learning_rates(cfg.lr_net, cfg.lr_probe, lr_stages, it))
         if stage != previous_stage and (use_curriculum or lr_stages):
             channels = len(active_post) if input_layer is not None else x.shape[1]
+            optimizer_note = ("object Adam newly initialized; probe state retained"
+                              if it == reconstruction_switch and cfg.stage2_network == "fresh"
+                              else "optimizer state retained")
             print(f"[net] update {it+1}: measurements={len(active_post)}/{cfg.n_pat}, "
                   f"axis_stride={stage[1]}, effective_step_px={stage[1]*cfg.step_px}, "
                   f"input_channels={channels}, tgv_amp={amp_weight:g}, "
-                  f"lr_net={lr_net:g}, lr_probe={lr_probe:g}; optimizer state retained",
+                  f"lr_net={lr_net:g}, lr_probe={lr_probe:g}; {optimizer_note}",
                   flush=True)
         previous_stage = stage
         timer.mark("scheduler")
@@ -595,6 +624,7 @@ def run_net(cfg: Cfg):
         "coarse_lift": "bilinear real/imag, align_corners=False" if half_until else None,
         "physics_resolution_changed": False,
         "stage2_input": cfg.stage2_input,
+        "stage2_network": cfg.stage2_network,
         "stage1_network_parameters": stage1_network_parameters,
     }, indent=2), encoding="utf-8")
     if cfg.skip_mode == "wavelet":
@@ -608,8 +638,10 @@ def run_net(cfg: Cfg):
         (Path(cfg.outdir) / "lr_schedule.json").write_text(json.dumps({
             "schedule": cfg.lr_schedule,
             "boundary_convention": "boundary counts completed updates; 1000 changes update 1001",
-            "optimizer_reset": False, "steps": lr_history,
-            "input_stem_state_replaced_at": reconstruction_switch,
+            "optimizer_reset": cfg.stage2_network == "fresh", "steps": lr_history,
+            "input_stem_state_replaced_at": reconstruction_switch if cfg.stage2_network == "reuse" else None,
+            "object_optimizer_replaced_at": reconstruction_switch if cfg.stage2_network == "fresh" else None,
+            "probe_optimizer_reset": False,
         }, indent=2), encoding="utf-8")
     if tgv_stages:
         (Path(cfg.outdir) / "tgv_amp_schedule.json").write_text(json.dumps({

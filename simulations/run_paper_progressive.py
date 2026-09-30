@@ -17,7 +17,8 @@ EVAL_SIZE = 96
 TOTAL_ITERS = 4000           # total, not 4000 additional stage-2 updates
 SWITCH_AFTER = 1000          # stage 2 begins at update 1001
 HALF_RES_STAGE1 = False      # optional: half spatial object network, unchanged physical forward
-STAGE2_INPUT = "diffraction" # set "reconstruction" for fixed first-stage object/probe input
+STAGE2_INPUT = "diffraction" # "object": fixed object only; "reconstruction": object + probe
+STAGE2_NETWORK = "reuse"    # "fresh": independent new U-Net with object/reconstruction input
 STAGE1_STRIDE = 3            # skip TWO positions: row/col indices 0,3,6,9
 STAGE1_TGV = 0.1
 STAGE2_TGV = 0.0
@@ -52,6 +53,8 @@ def build_command():
         options["half-res-until"] = SWITCH_AFTER
     if STAGE2_INPUT != "diffraction":
         options["stage2-input"] = STAGE2_INPUT
+    if STAGE2_NETWORK != "reuse":
+        options["stage2-network"] = STAGE2_NETWORK
     return [sys.executable, "-u", str(script), "net",
             *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
 
