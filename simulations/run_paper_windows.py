@@ -36,6 +36,10 @@ def main():
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
     p.add_argument("--consistency-weight", type=float, default=0.0)
     p.add_argument("--preset", choices=("paper", "smoke"), default="paper")
+    p.add_argument("--grid", type=int, default=10)
+    p.add_argument("--step-px", type=int)
+    p.add_argument("--obj-size", type=int)
+    p.add_argument("--eval-size", type=int)
     p.add_argument("--iters", type=int, default=1000, help="optimizer updates, NOT sweeps")
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--base-ch", type=int, default=32)
@@ -54,10 +58,11 @@ def main():
     p.add_argument("--outdir", required=True, help="must not exist; never overwrite")
     a = p.parse_args()
     geometry = dict(PRESETS[a.preset])
-    geometry.update(grid=10, step_px=12 if a.preset == "paper" else 2,
-                    obj_size=624 if a.preset == "paper" else 152)
+    geometry.update(grid=a.grid,
+                    step_px=a.step_px if a.step_px is not None else (12 if a.preset == "paper" else 2),
+                    obj_size=a.obj_size if a.obj_size is not None else (624 if a.preset == "paper" else 152))
     cfg = WindowCfg(**geometry, preset=a.preset, iters=a.iters, eval_every=a.eval_every,
-                    eval_size=96 if a.preset == "paper" else 16, base_ch=a.base_ch,
+                    eval_size=a.eval_size if a.eval_size is not None else (96 if a.preset == "paper" else 16), base_ch=a.base_ch,
                     seed=a.seed, network_seed=a.network_seed, device=a.device,
                     probe_init=a.probe_init, probe_mode=a.probe_mode,
                     lr_net=a.lr_net, lr_probe=a.lr_probe, tgv_amp=a.tgv_amp,

@@ -1,4 +1,4 @@
-"""Editable Colab launcher: 10x10 acquisition, 4x4 -> 10x10 net training.
+"""Editable Colab launcher for sparse-subset or four-window progressive training.
 
 Run this file after editing the settings below. No training occurs on import.
 Initially input channels and measurement loss follow the same 2D subset.
@@ -10,31 +10,72 @@ import sys
 
 
 # -------- Edit these settings, then run this file in Colab --------
+STAGE1_MODE = "windows"      # "windows": sequential four windows; "subset": original sparse subset
 GRID = 10
-STEP_PX = 12                 # full ~79.7%; stage 1 step=36px, ~39.1%
+STEP_PX = 12                 # full ~79.7%; windows step=24px; subset stride=3 gives 36px
 OBJ_SIZE = 624               # must fit N + (GRID-1)*STEP_PX = 620
 EVAL_SIZE = 96
-TOTAL_ITERS = 4000           # total, not 4000 additional stage-2 updates
 SWITCH_AFTER = 1000          # stage 2 begins at update 1001
 HALF_RES_STAGE1 = False      # optional: half spatial object network, unchanged physical forward
-STAGE2_INPUT = "diffraction" # "object": fixed object only; "reconstruction": object + probe
-STAGE2_NETWORK = "reuse"    # "fresh": independent new U-Net with object/reconstruction input
 STAGE1_STRIDE = 3            # skip TWO positions: row/col indices 0,3,6,9
-STAGE1_TGV = 0.1
-STAGE2_TGV = 0.0
-STAGE1_LR_NET = 5e-3
-STAGE2_LR_NET = 8e-4
-STAGE1_LR_PROBE = 2e-2
-STAGE2_LR_PROBE = 2e-2        # intentionally unchanged
-PROBE_INIT = "disk"
 SEED = 0
 BASE_CH = 32
-EVAL_EVERY = 25
-OUTDIR = "ov80_grid10_progressive"  # relative to current Colab working directory
 # No support mask; no cosine on top of these piecewise-constant learning rates.
+
+# Edit the block for your selected mode. All iteration totals include BOTH stages.
+WINDOW_UPDATE = "sequential" # one window loss and optimizer update per iteration
+WINDOW_CONSISTENCY = 0.0
+if STAGE1_MODE == "windows":
+    TOTAL_ITERS = 2000       # 1000 window updates + 1000 full-data updates
+    STAGE2_INPUT = "object"  # fixed fused amplitude/cos-phase/sin-phase input
+    STAGE2_NETWORK = "fresh" # new neutral-output U-Net, NOT a residual warm start
+    STAGE1_TGV = 0.0
+    STAGE2_TGV = 0.0001
+    STAGE1_LR_NET = 0.001
+    STAGE2_LR_NET = 0.002
+    STAGE1_LR_PROBE = 0.01
+    STAGE2_LR_PROBE = 0.01
+    PROBE_INIT = "ones"
+    EVAL_EVERY = 100
+    OUTDIR = "ov80_windows_progressive_fresh_object_seed0"
+else:                       # original sparse-subset defaults, preserved
+    TOTAL_ITERS = 4000
+    STAGE2_INPUT = "diffraction" # also supports "object" or "reconstruction"
+    STAGE2_NETWORK = "reuse"     # "fresh" requires object/reconstruction input
+    STAGE1_TGV = 0.1
+    STAGE2_TGV = 0.0
+    STAGE1_LR_NET = 5e-3
+    STAGE2_LR_NET = 8e-4
+    STAGE1_LR_PROBE = 2e-2
+    STAGE2_LR_PROBE = 2e-2
+    PROBE_INIT = "disk"
+    EVAL_EVERY = 25
+    OUTDIR = "ov80_grid10_progressive"
 
 
 def build_command():
+    if STAGE1_MODE not in ("subset", "windows"):
+        raise ValueError("STAGE1_MODE must be 'subset' or 'windows'")
+    if STAGE1_MODE == "windows":
+        if HALF_RES_STAGE1 or STAGE2_INPUT != "object" or STAGE2_NETWORK != "fresh":
+            raise ValueError("Windows mode requires full-resolution stage 1 and fresh object-input stage 2")
+        if GRID != 10 or not 0 < SWITCH_AFTER < TOTAL_ITERS:
+            raise ValueError("Windows progressive requires GRID=10 and 0 < SWITCH_AFTER < TOTAL_ITERS")
+        if WINDOW_UPDATE == "sequential" and SWITCH_AFTER % 4:
+            raise ValueError("Sequential stage 1 must complete a four-window sweep")
+        script = Path(__file__).resolve().with_name("run_paper_windows.py")
+        options = {
+            "preset": "paper", "grid": GRID, "step-px": STEP_PX, "obj-size": OBJ_SIZE,
+            "eval-size": EVAL_SIZE, "eval-every": EVAL_EVERY, "iters": TOTAL_ITERS,
+            "switch-after": SWITCH_AFTER, "base-ch": BASE_CH, "seed": SEED, "device": "cuda",
+            "update-mode": WINDOW_UPDATE, "consistency-weight": WINDOW_CONSISTENCY,
+            "probe-mode": "pixel", "probe-init": PROBE_INIT,
+            "lr-net": STAGE1_LR_NET, "lr-probe": STAGE1_LR_PROBE, "tgv-amp": STAGE1_TGV,
+            "stage2-lr-net": STAGE2_LR_NET, "stage2-lr-probe": STAGE2_LR_PROBE,
+            "stage2-tgv-amp": STAGE2_TGV, "outdir": OUTDIR,
+        }
+        return [sys.executable, "-u", str(script),
+                *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
     script = Path(__file__).resolve().with_name("ProPtyNet_paper.py")
     options = {
         "preset": "paper", "obj-size": OBJ_SIZE, "grid": GRID, "step-px": STEP_PX,
