@@ -158,6 +158,7 @@ class Cfg:
     measurement_seed: int = 0
     input_policy: str = "full"  # full | follow_measurements (gathered first conv)
     half_res_until: int = 0  # net: completed updates before restoring full spatial input
+    stage2_input: str = "diffraction"  # diffraction | reconstruction (fixed O/P snapshot)
 
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
@@ -203,8 +204,17 @@ class Cfg:
         if self.input_policy == "follow_measurements" and not self.measurement_schedule:
             raise ValueError("follow_measurements requires explicit measurement_schedule")
         from functions.paperrepro.sampling import MeasurementSchedule
-        MeasurementSchedule(self.measurement_schedule, self.grid, self.iters,
-                            self.measurement_policy, self.measurement_seed)
+        measurement_plan = MeasurementSchedule(self.measurement_schedule, self.grid, self.iters,
+                                               self.measurement_policy, self.measurement_seed)
+        if self.stage2_input not in ("diffraction", "reconstruction"):
+            raise ValueError("stage2_input must be diffraction or reconstruction")
+        if self.stage2_input == "reconstruction":
+            if (self.network_type != "real" or self.probe_mode not in ("pixel", "support")
+                    or self.half_res_until):
+                raise ValueError("reconstruction input requires real network, pixel/support probe, no half resolution")
+            if (self.input_policy != "follow_measurements" or self.measurement_policy != "fixed"
+                    or len(measurement_plan.stages) != 2 or measurement_plan.stages[0][1] <= 1):
+                raise ValueError("reconstruction input requires a fixed two-stage sparse-to-full measurement schedule and follow_measurements")
         if self.timing_warmup < -1:
             raise ValueError("timing_warmup must be -1 (disabled) or >= 0")
         if not math.isfinite(self.tgv_amp) or self.tgv_amp < 0:
@@ -283,7 +293,7 @@ def main():
                  ("timing_warmup", int),
                  ("measurement_schedule", str), ("measurement_policy", str),
                  ("measurement_seed", int),
-                 ("input_policy", str), ("half_res_until", int),
+                 ("input_policy", str), ("half_res_until", int), ("stage2_input", str),
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
@@ -317,6 +327,8 @@ def main():
         ap.error("--measurement-schedule is implemented only for mode net")
     if cfg.half_res_until and a.mode != "net":
         ap.error("--half-res-until is implemented only for mode net")
+    if cfg.stage2_input != "diffraction" and a.mode != "net":
+        ap.error("--stage2-input is implemented only for mode net")
     if cfg.timing_warmup >= 0 and a.mode != "net":
         ap.error("--timing-warmup is implemented only for mode net")
     if cfg.tgv_amp > 0 and a.mode not in ("run", "ad", "net"):

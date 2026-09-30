@@ -248,7 +248,7 @@ def run_net(cfg: Cfg):
     (rs, cs), Q, post = sc.roi, sc.Q, sc.post
     sqrtIm, Icl, Im = sc.sqrtIm, sc.Iclt, sc.Imt
 
-    # 网络输入：零填充到 net_size 的实测衍射图堆栈，全程固定（与 paper run 同一写法）
+    # Initial conditioning: measured diffraction stack. Optional stage-2 switch below.
     M, n, NS = cfg.obj_size, cfg.N, cfg.net_size
     pad_o = (M - n) // 2
     pad_n = (NS - M) // 2
@@ -354,6 +354,11 @@ def run_net(cfg: Cfg):
     curriculum = MeasurementSchedule(cfg.measurement_schedule, cfg.grid, cfg.iters,
                                      cfg.measurement_policy, cfg.measurement_seed)
     use_curriculum = bool(cfg.measurement_schedule)
+    reconstruction_switch = (curriculum.stages[1][0]
+                             if cfg.stage2_input == "reconstruction" else None)
+    reconstruction_snapshot = None
+    reconstruction_metadata = None
+    stage1_network_parameters = network_parameters
     selection_log, cumulative_patterns, evaluation_patterns = [], 0, 0
     if use_curriculum:
         print(f"[net] measurement curriculum {cfg.measurement_schedule}, "
@@ -378,6 +383,34 @@ def run_net(cfg: Cfg):
             if it == 0 or amp_weight != tgv_weight_history[-2]["tgv_amp_weight"]:
                 print(f"[net] update {it+1}: TGV amplitude weight={amp_weight:g} (optimizer/auxiliary state retained)", flush=True)
         timer.start(it)
+        if it == reconstruction_switch:
+            from functions.paperrepro.reconstruction_input import (
+                snapshot_readout, reconstruction_channels, replace_input_stem)
+            # Before selecting full measurements: read the old input/subset with
+            # weights AFTER the last stage-1 update, not its stale training forward.
+            with snapshot_readout(net):
+                snapshot_o, snapshot_p, _, _ = decode(False)
+                snapshot_o = snapshot_o.detach().clone()
+                snapshot_p = snapshot_p.detach().clone()
+            x, encoding = reconstruction_channels(snapshot_o, snapshot_p, NS)
+            reconstruction_snapshot = (snapshot_o, snapshot_p)
+            stem = replace_input_stem(net, opt_net,
+                                      cfg.seed if cfg.network_seed is None else cfg.network_seed)
+            input_layer = None  # no measurement-channel selection for six field channels
+            network_parameters = sum(p.numel() for p in net.parameters())
+            total_parameters = network_parameters + probe_parameters
+            reconstruction_metadata = {
+                **encoding, **stem, "snapshot_after_update": it, "first_conditioned_update": it+1,
+                "snapshot_readout": "post-update, original stage-1 input, training mode with BN buffers restored",
+                "fixed_detached_input": True, "ground_truth_used_for_input": False,
+                "raw_diffraction_in_stage2_input": False, "stage2_loss_measurements": cfg.n_pat,
+                "probe_optimizer_reset": False, "tgv_auxiliary_reset": False,
+                "extra_network_readouts": 1, "transition_cost_in_training_timer": True,
+            }
+            print(f"[net] update {it+1}: fixed reconstructed-field input {tuple(x.shape)}; "
+                  "only input convolution reinitialized; backbone, output heads and pixel probe retained. "
+                  "Full measured diffraction remains the loss target.", flush=True)
+            timer.mark("reconstruction_input_switch")
         if use_curriculum:
             indices, stride = curriculum.select(it)
             sel = torch.as_tensor(indices, device=device)
@@ -403,7 +436,7 @@ def run_net(cfg: Cfg):
         stage = (len(active_post), stride if use_curriculum else 1, amp_weight,
                  learning_rates(cfg.lr_net, cfg.lr_probe, lr_stages, it))
         if stage != previous_stage and (use_curriculum or lr_stages):
-            channels = len(active_post) if input_layer is not None else cfg.n_pat
+            channels = len(active_post) if input_layer is not None else x.shape[1]
             print(f"[net] update {it+1}: measurements={len(active_post)}/{cfg.n_pat}, "
                   f"axis_stride={stage[1]}, effective_step_px={stage[1]*cfg.step_px}, "
                   f"input_channels={channels}, tgv_amp={amp_weight:g}, "
@@ -413,6 +446,14 @@ def run_net(cfg: Cfg):
         timer.mark("scheduler")
         O, P, amp, phase = decode(amp_tgv_active)
         timer.mark("network_decode")
+        if it == reconstruction_switch:
+            # A new conditioning input is not an identity warm start. Record the
+            # first output jump explicitly instead of silently claiming continuity.
+            with torch.no_grad():
+                reconstruction_metadata['first_output_relative_change'] = {
+                    key: (torch.linalg.vector_norm(new.detach()-old) /
+                          torch.linalg.vector_norm(old).clamp_min(1e-12)).item()
+                    for key, new, old in zip(('object', 'probe'), (O, P), reconstruction_snapshot)}
         if it == 0:
             initial_fields = _initial_field_stats(O, P)
             print("[net] actual initialization (before first update): " + json.dumps(initial_fields))
@@ -491,7 +532,8 @@ def run_net(cfg: Cfg):
             if use_curriculum:
                 curriculum_stats = {
                     "active_patterns": len(indices), "measurement_stride": stride,
-                    "active_input_channels": len(indices) if input_layer is not None else cfg.n_pat,
+                    "active_input_channels": len(indices) if input_layer is not None else x.shape[1],
+                    "input_source": "reconstruction" if reconstruction_snapshot is not None else "diffraction",
                     "training_patterns_cumulative": cumulative_patterns,
                     "evaluation_patterns_cumulative": evaluation_patterns,
                     "full_data_loss": F.mse_loss(Ua_eval, sqrtIm).item(),
@@ -525,6 +567,13 @@ def run_net(cfg: Cfg):
     if tgv_phase is not None:
         tgv_phase.save(Path(cfg.outdir) / "tgv_phase_aux.npz")
     timer.save(Path(cfg.outdir) / "net_timing.json")
+    if reconstruction_metadata is not None:
+        (Path(cfg.outdir) / "reconstruction_input.json").write_text(
+            json.dumps(reconstruction_metadata, indent=2), encoding="utf-8")
+        np.savez_compressed(Path(cfg.outdir) / "stage1_conditioning.npz",
+                            obj=reconstruction_snapshot[0].cpu().numpy(),
+                            probe=reconstruction_snapshot[1].cpu().numpy(),
+                            network_input=x.detach().cpu().numpy())
     (Path(cfg.outdir) / "network_metadata.json").write_text(json.dumps({
         "network_type": cfg.network_type, "real_parameter_count": network_parameters,
         "base_channels": cfg.complex_base_ch if cfg.network_type == "complex" else cfg.base_ch,
@@ -545,6 +594,8 @@ def run_net(cfg: Cfg):
         "half_unpadded_output_shape": list(half_crop[2:]) if half_until else None,
         "coarse_lift": "bilinear real/imag, align_corners=False" if half_until else None,
         "physics_resolution_changed": False,
+        "stage2_input": cfg.stage2_input,
+        "stage1_network_parameters": stage1_network_parameters,
     }, indent=2), encoding="utf-8")
     if cfg.skip_mode == "wavelet":
         (Path(cfg.outdir) / "wavelet_skip.json").write_text(json.dumps({
@@ -558,6 +609,7 @@ def run_net(cfg: Cfg):
             "schedule": cfg.lr_schedule,
             "boundary_convention": "boundary counts completed updates; 1000 changes update 1001",
             "optimizer_reset": False, "steps": lr_history,
+            "input_stem_state_replaced_at": reconstruction_switch,
         }, indent=2), encoding="utf-8")
     if tgv_stages:
         (Path(cfg.outdir) / "tgv_amp_schedule.json").write_text(json.dumps({
@@ -570,6 +622,7 @@ def run_net(cfg: Cfg):
         (Path(cfg.outdir) / "measurement_schedule.json").write_text(json.dumps({
             "schedule": cfg.measurement_schedule, "policy": cfg.measurement_policy,
             "seed": cfg.measurement_seed, "input": cfg.input_policy,
+            "stage2_input": cfg.stage2_input,
             "early_objective": "subset-wise VarPro; not unbiased full-VarPro gradient",
             "steps": selection_log,
         }), encoding="utf-8")

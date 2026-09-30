@@ -1,7 +1,8 @@
 """Editable Colab launcher: 10x10 acquisition, 4x4 -> 10x10 net training.
 
 Run this file after editing the settings below. No training occurs on import.
-Both input channels and measurement loss follow the same 2D subset.
+Initially input channels and measurement loss follow the same 2D subset.
+Optional reconstructed-field conditioning replaces only the stage-2 input.
 """
 from pathlib import Path
 import subprocess
@@ -16,6 +17,7 @@ EVAL_SIZE = 96
 TOTAL_ITERS = 4000           # total, not 4000 additional stage-2 updates
 SWITCH_AFTER = 1000          # stage 2 begins at update 1001
 HALF_RES_STAGE1 = False      # optional: half spatial object network, unchanged physical forward
+STAGE2_INPUT = "diffraction" # set "reconstruction" for fixed first-stage object/probe input
 STAGE1_STRIDE = 3            # skip TWO positions: row/col indices 0,3,6,9
 STAGE1_TGV = 0.1
 STAGE2_TGV = 0.0
@@ -48,6 +50,8 @@ def build_command():
     }
     if HALF_RES_STAGE1:
         options["half-res-until"] = SWITCH_AFTER
+    if STAGE2_INPUT != "diffraction":
+        options["stage2-input"] = STAGE2_INPUT
     return [sys.executable, "-u", str(script), "net",
             *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
 
