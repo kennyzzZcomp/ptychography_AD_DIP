@@ -7,8 +7,8 @@ Z. Liu, Y. Chen, N. Lin, "Noise-robust ptychography using unsupervised neural
 network", Optics and Lasers in Engineering 186 (2025) 108791.
 
 网络解码顺序已按 Section 2.2 补齐 ConvTranspose2d 后的 BN + LeakyReLU。
-run 的三处上采样采用 4×4 核（论文未指定）；100 输入通道时参数约 2.474M。
-Fig.1(b) 入口/输出端卷积符号及论文约 2.5M 参数未能唯一确定逐层实现；
+run 补入入口和分头前的单卷积；默认 4×4 上采样时，100 输入通道参数约 2.493M。
+可用 --paper-up-kernel 3 对照（约 2.191M）。核尺寸是实现选择，论文未明确；
 不能把本实现标为与作者源码逐层一致。初始化、标定与仿真素材的选择见下文。
 
 【与 ProPtyNet_torch.py 的关系】那一份是为了跟 INNM_Ptycho.ipynb 的 AD 基线做
@@ -107,6 +107,7 @@ class Cfg:
 
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
+    paper_up_kernel: int = 4     # run only: 3 or 4, both double spatial dimensions
     network_type: str = "real"   # net only; original default preserved
     complex_base_ch: int = 23    # complex channels, NOT real scalar channels
     complex_activation: str = "modrelu"
@@ -185,6 +186,8 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.paper_up_kernel not in (3, 4):
+            raise ValueError("paper_up_kernel must be 3 or 4")
         if self.paper_input_norm not in ("measurement", "per-pattern"):
             raise ValueError("paper_input_norm must be measurement or per-pattern")
         if self.half_res_until < 0 or (self.half_res_until and self.half_res_until >= self.iters):
@@ -333,11 +336,15 @@ def main():
     scale_flags.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
     ap.add_argument("--paper-input-norm", choices=["measurement", "per-pattern"], default=None,
                     help="run only: measurement scale (default) or legacy per-pattern network input")
+    ap.add_argument("--paper-up-kernel", type=int, choices=[3, 4], default=None,
+                    help="run only: transposed-convolution kernel size (default: 4)")
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
     ap.add_argument("--reset-tgv-at-switch", action="store_true", default=None)
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if a.paper_up_kernel is not None and a.mode != "run":
+        ap.error("--paper-up-kernel is implemented only for mode run")
     if cfg.probe_mode == "shared" and a.mode != "net":
         ap.error("--probe-mode shared is implemented only for mode net (internal control, not paper run)")
     if cfg.network_seed is not None and a.mode != "net":

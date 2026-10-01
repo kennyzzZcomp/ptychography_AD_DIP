@@ -171,7 +171,7 @@ def run(cfg: Cfg):
     if cfg.paper_input_norm == "per-pattern":
         x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
-    net = ProPtyUNet(cfg.n_pat, cfg.base_ch).to(device)
+    net = ProPtyUNet(cfg.n_pat, cfg.base_ch, up_kernel=cfg.paper_up_kernel).to(device)
     fixed_probe = None
     truth_probe_scale = None
     if cfg.probe_mode == "truth":
@@ -196,8 +196,9 @@ def run(cfg: Cfg):
         print(f"[paper diagnostic] fixed probe amplitude scale={truth_probe_scale:.9g} "
               "(known clean-data global normalization); no per-step calibration")
     npar = sum(p.numel() for p in net.parameters())
-    print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
+    print(f"[net] 参数 {npar:,} ({npar/1e6:.3f} M; 论文约 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
+    print(f"[net] input/pre-head single convolutions; upsample kernel={cfg.paper_up_kernel}x{cfg.paper_up_kernel}")
     print(f"[paper] input normalization={cfg.paper_input_norm}; "
           f"intensity L2 + probe soft L2; beta={cfg.beta:g}; "
           f"gamma={cfg.gamma0:g}->{cfg.gamma_end:g} (implementation: exponential); "
