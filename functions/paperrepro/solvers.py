@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from functions.paperrepro.evaluate import (evaluate, evaluation_roi, illum_roi,
                                             probe_relerr, seam_diag)
-from functions.paperrepro.losses import paper_loss
+from functions.paperrepro.losses import paper_loss, overexposure_mask, pinhole_mask
 from functions.paperrepro.model import ProPtyUNet
 from functions.paperrepro.optics import forward_ptycho, make_quad_phase
 from functions.paperrepro.report import _report_device, _save
@@ -41,19 +41,24 @@ def run_check(cfg: Cfg):
     print(f"  扫描 {cfg.grid}×{cfg.grid}={cfg.n_pat} 点  步长 {cfg.step_px} px = "
           f"{cfg.step_px*cfg.dx1*1e6:.1f} µm")
     print(f"  线性重叠 = 1 - step/D = {100*(1-cfg.step_px/cfg.probe_diam_px):.1f} %")
+    ratio = cfg.step_px / cfg.probe_diam_px
+    area_overlap = ((2 * math.acos(ratio) - 2 * ratio * math.sqrt(1 - ratio**2)) / PI
+                    if 0 <= ratio < 1 else 0.0)
+    print(f"  理想圆盘面积重叠 = {100*area_overlap:.1f} %（不同于线性重叠定义）")
     print(f"  扫描跨度 {cfg.scan_span}  物体画布 {cfg.obj_size}  "
           f"{ok(cfg.scan_offset >= 0)}余量 {cfg.scan_offset} px")
-    print(f"  {ok(cfg.obj_size % 8 == 0)}画布能被 8 整除（Fig.1b 三次池化要求）"
-          f"  -> 网络内部再 pad 到 {cfg.net_size}")
+    print(f"  网络内部 pad 到 {cfg.net_size}（三次池化要求内部尺寸能被 8 整除；"
+          "物体画布本身不必整除）")
     if cfg.preset == "paper":
         print("-" * 78)
-        print("论文自身的三处不自洽（不是本代码的 bug，报数据时要说明取了哪一种）:")
-        print(f"  1) 正文说重叠 0.7，但 step={cfg.step_px}px / D={cfg.probe_diam_px:.0f}px 给出 "
-              f"{100*(1-cfg.step_px/cfg.probe_diam_px):.0f}%")
-        print(f"  2) 物体写 612，而 {cfg.N}+({cfg.grid}-1)×{cfg.step_px} = "
-              f"{cfg.N+(cfg.grid-1)*cfg.step_px}")
-        print("  3) 正文说 zero-pad 到 612 是「网络结构要求」，但 612/8 = 76.5 不是整数，"
-              "612 恰恰不满足三次池化")
+        print("与论文的对应关系（不是三处几何错误）:")
+        print("  1) Section 2.2 举例 step=10、画布 612；Section 3 写重叠 0.7，"
+              "但未明确定义线性重叠还是圆盘面积重叠。")
+        print(f"     当前 step={cfg.step_px} 给出线性重叠 "
+              f"{100*(1-ratio):.1f}%，圆盘面积重叠 {100*area_overlap:.1f}%。")
+        print(f"  2) 完整探针窗口扫描需 {cfg.scan_span} px；物体画布 {cfg.obj_size} px，"
+              f"两侧允许留余量（起点 {cfg.scan_offset} px）。")
+        print("  3) 论文明确提及 secondary zero-padding；612 再 pad 到 616 是可行实现。")
     print("-" * 78)
     _o, _p, _s1, _rr = make_truth(cfg)
     for name, fld, span in (("物体", _o, cfg.phase_span_obj),
@@ -131,7 +136,7 @@ def run_check(cfg: Cfg):
 
     _report_device(cfg, device)
     Imn, Icl = simulate(cfg, obj, probe, pos, Q, device)
-    S2 = (Imn < 1.0 - 1e-6).mean()
+    S2 = float((Imn < 1.0).mean())
     print(f"[E] 噪声 {cfg.noise}@{cfg.snr_db}dB  ->  过曝(S2=0)像素占比 "
           f"{100*(1-S2):.4f} %"
           + ("   <- noise=none 时几乎为 0，Eq.5 的 γ 无事可做" if cfg.noise == "none" else ""))
@@ -151,7 +156,9 @@ def run(cfg: Cfg):
     obj, probe, pos = sc.obj, sc.probe, sc.pos
     (rs, cs), Q = sc.roi, sc.Q
     post, Im, Icl, S1 = sc.post, sc.Imt, sc.Iclt, sc.S1t
-    S2 = (Im < 1.0 - 1e-6).float()                       # Eq.(6)
+    S2 = overexposure_mask(Im)                           # Eq.(6)
+    S1 = pinhole_mask(cfg.N, cfg.s1_margin * cfg.probe_diam_px / 2,
+                      device, dtype=Im.dtype)
 
     # ---- 网络输入: 零填充后的实测衍射图堆栈，全程固定 (Fig.1c) ----
     M, n, NS = cfg.obj_size, cfg.N, cfg.net_size
@@ -159,12 +166,19 @@ def run(cfg: Cfg):
     pad_n = (NS - M) // 2                                 # 612 -> 616 (被 8 整除)
     x = F.pad(Im[None], (pad_o,) * 4)
     x = F.pad(x, (pad_n, NS - M - pad_n, pad_n, NS - M - pad_n))
-    x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
+    # Preserve the globally normalized measurements used in Eq.(4)/(5).
+    # Per-pattern normalization is a legacy implementation option, not a paper step.
+    if cfg.paper_input_norm == "per-pattern":
+        x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
     net = ProPtyUNet(cfg.n_pat, cfg.base_ch).to(device)
     npar = sum(p.numel() for p in net.parameters())
     print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
+    print(f"[paper] input normalization={cfg.paper_input_norm}; "
+          f"intensity L2 + probe soft L2; beta={cfg.beta:g}; "
+          f"gamma={cfg.gamma0:g}->{cfg.gamma_end:g} (implementation: exponential); "
+          f"S2: Im<1; S1: r<R; scale-cal={cfg.scale_cal}")
 
     def decode():
         a_s, p_s, a_p, p_p = net(x)
@@ -208,13 +222,15 @@ def run(cfg: Cfg):
 
     scale = 1.0
     if cfg.scale_cal:
-        # 论文没写网络输出的绝对幅度怎么锚定。这里在第一次前向后算一个常数并冻结，
-        # 纯数值辅助，不改物理；--no-scale-cal 可关掉看差别。
+        # Explicit legacy option, not part of Eq.(4)/(5). A frozen intensity scale
+        # changes the data term and its balance against the probe soft penalty.
         with torch.no_grad():
             O, P, _, _ = decode()
             I0 = forward_ptycho(O, P, post, Q, n, chunk=8)
             scale = (Im.mean() / I0.mean().clamp_min(1e-20)).item()
         print(f"[net] 冻结幅度标定 = {scale:.4g}")
+    else:
+        print("[paper] predicted intensity used directly: no additional scale coefficient")
 
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -222,7 +238,7 @@ def run(cfg: Cfg):
     tgv = ObjectAmplitudeTGV(cfg, pos, device) if cfg.tgv_amp > 0 else None
     if tgv is not None:
         tr, tc = tgv.roi
-        print(f"[paper] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
+        print(f"[paper extension, NOT original Eq.4/5] object amplitude TGV2: lambda={cfg.tgv_amp:g}, "
               f"alpha0={cfg.tgv_alpha0:g}, alpha1={cfg.tgv_alpha1:g}, "
               f"inner_steps={cfg.tgv_inner_steps}, eps={cfg.tgv_eps:g}; "
               f"domain=[{tr.start}:{tr.stop}, {tc.start}:{tc.stop}], "

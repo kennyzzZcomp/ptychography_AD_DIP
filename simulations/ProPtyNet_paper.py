@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ProPtyNet_paper.py —— 严格按论文复现
+ProPtyNet_paper.py —— 按论文核心结构与公式实现的复现版本
 
 Z. Liu, Y. Chen, N. Lin, "Noise-robust ptychography using unsupervised neural
 network", Optics and Lasers in Engineering 186 (2025) 108791.
+
+网络解码顺序已按 Section 2.2 补齐 ConvTranspose2d 后的 BN + LeakyReLU。
+run 的三处上采样采用 4×4 核（论文未指定）；100 输入通道时参数约 2.474M。
+Fig.1(b) 入口/输出端卷积符号及论文约 2.5M 参数未能唯一确定逐层实现；
+不能把本实现标为与作者源码逐层一致。初始化、标定与仿真素材的选择见下文。
 
 【与 ProPtyNet_torch.py 的关系】那一份是为了跟 INNM_Ptycho.ipynb 的 AD 基线做
 可比对照，沿用了 INNM 的角谱前向和 INNM 的振幅域损失；本文件不管可比性，只按论文:
@@ -14,7 +19,7 @@ network", Optics and Lasers in Engineering 186 (2025) 108791.
             振幅 Conv2d+LeakyReLU / 相位 Conv2d+tanh —— 这是原版基线，不要改
     损失    Eq.(4)(5)  β·Loss1 + (1-β)·Loss2, 双掩膜 S1/S2 + γ 衰减
     探针    只有 Loss2 的软约束, 【没有】二值 support 硬掩膜
-    噪声    Table 1  全局归一化 -> 加噪 -> clip[0,1] (clip 产生过曝, 才有 S2)
+    噪声    全局归一化 -> 加噪 -> clip[0,1]；噪声强度公式有历史差异，见 sample.py
 
 用法（四种模式共用同一份仿真数据，见 functions/paperrepro/scene.py）:
     python ProPtyNet_paper.py check                       # 采样/几何自检
@@ -53,7 +58,7 @@ PI = math.pi
 # ============================================================================ #
 
 PRESETS = {
-    # 论文第 3 节的仿真参数，原样照抄
+    # Section 3 的光学参数 + Section 2.2 的 step=10/画布612示例；不声称70%重叠。
     "paper": dict(wlength=632e-9, N=512, det_pixel=15.04e-6, z=0.165,
                   grid=10, step_px=10, probe_diam_um=800.0, obj_size=612),
     # 只为在 CPU 上验证代码通路，物理上不等价于论文，别拿它的数字下结论
@@ -91,6 +96,8 @@ class Cfg:
     noise_seed: int = 42
 
     # ---- 损失 (Eq.4/5) ----
+    # Paper defines beta and recommends gamma decay, but does not specify these
+    # numerical defaults or an exact decay schedule. These are disclosed choices.
     beta: float = 0.90
     gamma0: float = 1.0
     gamma_end: float = 0.02
@@ -163,7 +170,8 @@ class Cfg:
     reset_tgv_at_switch: bool = False  # object-conditioned net: reset amplitude auxiliary AND its Adam
 
     # ---- 其它 ----
-    scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
+    scale_cal: bool = False      # run only; explicit legacy calibration, not Eq.(4)/(5)
+    paper_input_norm: str = "measurement"  # run only: keep Im scale; per-pattern = legacy
     seed: int = 0
     network_seed: int | None = None  # net-only: hold scene fixed while varying U-Net initialization
     device: str = "auto"
@@ -174,6 +182,8 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.paper_input_norm not in ("measurement", "per-pattern"):
+            raise ValueError("paper_input_norm must be measurement or per-pattern")
         if self.half_res_until < 0 or (self.half_res_until and self.half_res_until >= self.iters):
             raise ValueError("half_res_until must be 0 (off) or between 1 and iters-1")
         if self.half_res_until and (self.network_type != "real" or self.probe_mode == "shared"):
@@ -277,9 +287,9 @@ def build_cfg(args) -> Cfg:
 # ============================================================================ #
 
 def main():
-    ap = argparse.ArgumentParser(description="ProPtyNet 严格复现 (Opt. Lasers Eng. 186 (2025) 108791)")
+    ap = argparse.ArgumentParser(description="ProPtyNet 论文方法复现 (Opt. Lasers Eng. 186 (2025) 108791)")
     ap.add_argument("mode", choices=["check", "run", "ad", "net"],
-                    help="check=自检 | run=论文原版 ProPtyNet | ad=纯 AD | net=DIP")
+                    help="check=自检 | run=论文方法 ProPtyNet 复现 | ad=纯 AD | net=DIP")
     ap.add_argument("--preset", choices=list(PRESETS))
     for k, t in [("N", int), ("obj_size", int), ("z", float), ("det_pixel", float),
                  ("grid", int), ("step_px", int), ("probe_diam_um", float),
@@ -313,7 +323,12 @@ def main():
     ap.add_argument("--complex-activation", choices=["modrelu", "crelu"])
     ap.add_argument("--snr", dest="snr_db", type=float)
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
-    ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
+    scale_flags = ap.add_mutually_exclusive_group()
+    scale_flags.add_argument("--scale-cal", dest="scale_cal", action="store_true", default=None,
+                             help="run only: enable legacy frozen intensity scaling (not paper Eq.4/5)")
+    scale_flags.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
+    ap.add_argument("--paper-input-norm", choices=["measurement", "per-pattern"], default=None,
+                    help="run only: measurement scale (default) or legacy per-pattern network input")
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
     ap.add_argument("--reset-tgv-at-switch", action="store_true", default=None)
     a = ap.parse_args()

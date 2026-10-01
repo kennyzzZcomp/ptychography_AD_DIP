@@ -77,9 +77,9 @@ def _lowpass_noise(n, sigma_px, rng):
 
 def make_truth(cfg: Cfg):
     """物体: 两张分辨率靶（论文用 resolution test targets，这里沿用你手上的两张图）。
-    探针: 800 µm 圆孔（论文的 "circular part with an 800 µm diameter"）+
-          "mandrill" 振幅纹理。手上没有 mandrill，用低通随机场代替 —— 论文的重点是
-          探针振幅不是平的，纹理来源不影响结论，但这是一处替代，报数据时要说明。
+    探针: 800 µm 圆孔内的低通随机振幅 + 二次相位。
+    论文 Section 3 写探针振幅和相位来自 mandrill 图及圆形区域；这里是替代场景，
+    不能认定这种替代不影响结论，也不能用于逐数值复现论文 Fig.2。
     """
     M = cfg.obj_size
     a = _object_map(cfg, cfg.amp_image, M)
@@ -96,7 +96,7 @@ def make_truth(cfg: Cfg):
     aperture = (rr <= R).astype(np.float64)
     tex = 0.4 + 0.6 * _lowpass_noise(n, max(R / 8, 2.0), rng)
     p_amp = aperture * tex
-    # 针孔面到样品面的一点离焦，让探针相位不是恒 0（论文的探针相位来自实际光路）
+    # 本仿真的二次波前（0..2 rad）；不是论文 mandrill 相位图的复刻。
     p_phs = aperture * (2.0 * (rr / max(R, 1)) ** 2)
     probe = (p_amp * np.exp(1j * p_phs)).astype(np.complex64)
     probe = probe / np.abs(probe).max()
@@ -139,10 +139,11 @@ def make_positions(cfg: Cfg):
 def add_noise(I, kind, snr_db, rng):
     """输入 I 已按【全局】最大值归一到 [0,1]（Table 1 第 3 步）。
 
-    !! Table 1 的 Poisson 列第 5 行写的是概率质量函数 λ^r·e^(-λ)/255^r，第 6 行又
-       写 Signal = Pois + Signal（把 pmf 的值当噪声加上去），物理上讲不通，几乎肯定
-       是转写错误。这里实现标准散粒噪声 I' = Poisson(I·P)/P，P 由目标 SNR 定出。
-       Gaussian 列严格照论文: σ = mean(signal)/sqrt(10^(SNR/10))。
+    Table 1 的 Poisson 写法含概率质量函数，采样步骤不明确；本实现采用
+    I' = Poisson(I·P)/P，P 由 snr_db 控制，并非逐式复刻表中的 λ=Signal*255。
+    Gaussian 保留历史设置 σ = mean(signal)/sqrt(10^(SNR/10))，而论文 Table 1
+    写的是 sqrt(mean(signal)/10^(SNR/10))；二者不同，snr_db 不应视作经实测
+    校准的信噪比。此处保留数值以免改变现有各方法共享的测量数据。
     """
     out = I.astype(np.float64).copy()
     lin = 10.0 ** (snr_db / 10.0)
