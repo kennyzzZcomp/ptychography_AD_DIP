@@ -126,6 +126,25 @@ def scaled_amplitude_loss(amplitude, target):
     return F.mse_loss(q * amplitude, target), q * amplitude
 
 
+def residual_object(base, raw_real, raw_imag):
+    """Unrestricted complex correction to a fixed, UNNORMALIZED stage-1 field.
+
+    No softplus/phase activation is applied to residuals. The returned amplitude
+    belongs to the FINAL object, not the correction, and uses the existing safe
+    complex magnitude for TGV (including at exact cancellation to zero).
+    """
+    field = base.detach() + torch.complex(raw_real, raw_imag)
+    return field, cabs(field)
+
+
+def initialize_residual_heads(net):
+    """Zero only the two linear output heads; keep the backbone random/trainable."""
+    with torch.no_grad():
+        for head in (net.head_amp, net.head_phs):
+            head.weight.zero_()
+            head.bias.zero_()
+
+
 def run_windows(cfg):
     if (cfg.network_type != "real" or cfg.probe_mode not in ("pixel", "support", "truth")
             or cfg.measurement_schedule or cfg.lr_schedule or cfg.lr_cosine
@@ -144,6 +163,11 @@ def run_windows(cfg):
     if loss_mode == "cached-fusion" and cfg.obj_init_alpha != 0:
         raise ValueError("Cached fusion initializes four fields to ones; requires obj-init-alpha=0")
     switch = getattr(cfg, "window_switch_after", 0)
+    stage2_readout = getattr(cfg, "window_stage2_readout", "direct")
+    if stage2_readout not in ("direct", "complex-residual"):
+        raise ValueError("stage2-readout must be direct or complex-residual")
+    if stage2_readout == "complex-residual" and not switch:
+        raise ValueError("Complex-residual readout requires an enabled second stage")
     if switch and not 0 < switch < cfg.iters:
         raise ValueError("switch-after must be positive and less than total iters (or 0 to disable)")
     if switch and cfg.window_update == "sequential" and switch % 4:
@@ -185,9 +209,12 @@ def run_windows(cfg):
     # Independent auxiliary TGV state per window; nominal domains, as in net.
     tgvs = [ObjectAmplitudeTGV(cfg, sc.pos[g], device) for g in groups] if cfg.tgv_amp else [None]*4
     energy = sc.sqrtIm.square().mean().detach()
+    residual_base = None
 
     def decode(k):
         a, ph = net(inputs[k])
+        if residual_base is not None:
+            return residual_object(residual_base, a[0][crop, crop], ph[0][crop, crop])
         return make_field(a[0], ph[:2])[crop, crop], F.softplus(a[0])[crop, crop]
 
     def probe():
@@ -219,6 +246,7 @@ def run_windows(cfg):
                     device=str(device), gpu=torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                     network_parameters=sum(p.numel() for p in net.parameters()), scene_fingerprint=sc.fp)
     metadata.update(switch_after=switch, total_updates=cfg.iters,
+                    stage2_readout=stage2_readout if switch else None,
                     stage2="fresh object-only input, full measurements" if switch else None)
     if cache is not None:
         metadata.update(training_object="partition-weighted complex fusion; active prediction + detached peers",
@@ -252,14 +280,21 @@ def run_windows(cfg):
             snapshot = dict(obj=stage1_object.cpu().numpy(), probe=stage1_probe.cpu().numpy(),
                             fields=torch.stack(stage1_fields).cpu().numpy(),
                             network_input=conditioning.cpu().numpy())
-            # Same isolated initialization and neutral readout as progressive fresh.
+            # Same fresh backbone and fixed conditioning; optional two-head residual.
             seed = cfg.seed if cfg.network_seed is None else cfg.network_seed
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(int(seed))
-                new_net = ProPtyUNet(3, cfg.base_ch, n_fields=1, ph_ch=2,
+                new_net = ProPtyUNet(3, cfg.base_ch, n_fields=1,
+                                    ph_ch=1 if stage2_readout == "complex-residual" else 2,
                                     skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold)
-                _initialize_object_heads(new_net, cfg.obj_init_alpha)
+                if stage2_readout == "complex-residual":
+                    initialize_residual_heads(new_net)
+                else:
+                    _initialize_object_heads(new_net, cfg.obj_init_alpha)
             net = new_net.to(device)
+            if stage2_readout == "complex-residual":
+                # Retain the raw complex scale; normalized conditioning is INPUT only.
+                residual_base = stage1_object
             opt = torch.optim.Adam(net.parameters(), lr=cfg.window_stage2_lr_net, weight_decay=cfg.weight_decay)
             probe_steps = ([float(opt_p.state[v]["step"]) for v in (pr, pi)] if opt_p else [])
             if opt_p:
@@ -274,6 +309,7 @@ def run_windows(cfg):
                 initial_obj = decode(0)[0]
                 obj_jump = float((initial_obj-stage1_object).norm()/stage1_object.norm().clamp_min(1e-12))
                 probe_jump = float((probe()-stage1_probe).norm()/stage1_probe.norm().clamp_min(1e-12))
+                snapshot["stage2_initial_obj"] = initial_obj.cpu().numpy()
             counts["transition_network_forwards"] += 1
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
@@ -281,7 +317,12 @@ def run_windows(cfg):
                               new_object_network=True, new_object_optimizer=True,
                               probe_optimizer_retained=True, probe_adam_steps_at_switch=probe_steps,
                               probe_relative_jump=probe_jump, object_relative_jump=obj_jump,
-                              object_initialization="neutral heads, NOT residual warm start",
+                              stage2_readout=stage2_readout,
+                              output_channels=2 if residual_base is not None else 3,
+                              object_initialization=("O1 + zero linear complex residual" if residual_base is not None
+                                                     else "neutral heads, NOT residual warm start"),
+                              tgv_amplitude_readout=("safe magnitude of final O1 + residual" if residual_base is not None
+                                                     else "softplus object amplitude head"),
                               new_full_domain_tgv_auxiliary=bool(cfg.window_stage2_tgv),
                               cache_fresh_relative_difference=cache_gap_at_switch,
                               stage1_cache=cache.audit(switch) if cache else None,
@@ -291,6 +332,7 @@ def run_windows(cfg):
                               transition_elapsed_s=time.perf_counter()-transition_start,
                               network_parameters=sum(v.numel() for v in net.parameters()))
             print(f"[windows] update {it+1}: fresh U-Net; fixed object-only 3-channel input; "
+                  f"readout={stage2_readout}, object jump={obj_jump:g}; "
                   f"100 measurements; retained probe/Adam, probe jump={probe_jump:g}; "
                   f"lr_net={cfg.window_stage2_lr_net:g}, lr_probe={cfg.window_stage2_lr_probe:g}, "
                   f"TGV={cfg.window_stage2_tgv:g}", flush=True)
@@ -367,6 +409,7 @@ def run_windows(cfg):
                        full_data_loss=full_loss.item(), real=real, relerr_p=probe_relerr(pc, sc.probe),
                        active_windows=[] if stage2 else active, stage=2 if stage2 else 1,
                        input_channels=3 if stage2 else 16, active_patterns=cfg.n_pat if stage2 else 16*len(active),
+                       object_readout=stage2_readout if stage2 else "window-direct",
                        tgv_amp_weight=tgv_weight,
                        loss_mode=loss_mode if not stage2 else "full-data",
                        cache_fresh_relative_difference=cache_gap,
@@ -398,6 +441,9 @@ def run_windows(cfg):
     if snapshot is not None:
         np.savez_compressed(outdir / "stage1_conditioning.npz", **snapshot)
         (outdir / "reconstruction_input.json").write_text(json.dumps(transition, indent=2), encoding="utf-8")
+        if residual_base is not None:
+            np.savez_compressed(outdir / "stage2_residual.npz", base=snapshot['obj'],
+                                residual=rec-snapshot['obj'], final_object=rec)
     metadata.update(transition=transition, window_fields_stage=1,
                     final_object="single stage-2 output" if switch else "four-window fusion")
     metadata.update(counts=counts, elapsed_s=elapsed)

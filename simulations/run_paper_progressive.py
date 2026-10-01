@@ -26,19 +26,20 @@ RESET_TGV_AT_SWITCH = False  # subset/object mode only; windows already creates 
 # Edit the block for your selected mode. All iteration totals include BOTH stages.
 WINDOW_UPDATE = "sequential" # one window loss and optimizer update per iteration
 WINDOW_CONSISTENCY = 0.0
+STAGE2_READOUT = "complex-residual" # windows only: "direct" reproduces the original stage-2 readout
 if STAGE1_MODE == "windows":
     TOTAL_ITERS = 2000       # 1000 window updates + 1000 full-data updates
     STAGE2_INPUT = "object"  # fixed fused amplitude/cos-phase/sin-phase input
-    STAGE2_NETWORK = "fresh" # new neutral-output U-Net, NOT a residual warm start
-    STAGE1_TGV = 0.0
-    STAGE2_TGV = 0.0001
+    STAGE2_NETWORK = "fresh" # new backbone; STAGE2_READOUT chooses direct vs residual output
+    STAGE1_TGV = 0.001       # successful 30.50 dB run settings, held fixed
+    STAGE2_TGV = 0.001
     STAGE1_LR_NET = 0.001
     STAGE2_LR_NET = 0.002
     STAGE1_LR_PROBE = 0.01
     STAGE2_LR_PROBE = 0.01
     PROBE_INIT = "ones"
     EVAL_EVERY = 100
-    OUTDIR = "ov80_windows_progressive_fresh_object_seed0"
+    OUTDIR = f"ov80_windows_progressive_{STAGE2_READOUT}_tgv001_seed0"
 else:                       # original sparse-subset defaults, preserved
     TOTAL_ITERS = 4000
     STAGE2_INPUT = "diffraction" # also supports "object" or "reconstruction"
@@ -66,6 +67,8 @@ def build_command():
             raise ValueError("Windows progressive requires GRID=10 and 0 < SWITCH_AFTER < TOTAL_ITERS")
         if WINDOW_UPDATE == "sequential" and SWITCH_AFTER % 4:
             raise ValueError("Sequential stage 1 must complete a four-window sweep")
+        if STAGE2_READOUT not in ("direct", "complex-residual"):
+            raise ValueError("STAGE2_READOUT must be direct or complex-residual")
         script = Path(__file__).resolve().with_name("run_paper_windows.py")
         options = {
             "preset": "paper", "grid": GRID, "step-px": STEP_PX, "obj-size": OBJ_SIZE,
@@ -76,6 +79,7 @@ def build_command():
             "lr-net": STAGE1_LR_NET, "lr-probe": STAGE1_LR_PROBE, "tgv-amp": STAGE1_TGV,
             "stage2-lr-net": STAGE2_LR_NET, "stage2-lr-probe": STAGE2_LR_PROBE,
             "stage2-tgv-amp": STAGE2_TGV, "outdir": OUTDIR,
+            "stage2-readout": STAGE2_READOUT,
         }
         return [sys.executable, "-u", str(script),
                 *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
