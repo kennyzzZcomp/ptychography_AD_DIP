@@ -30,8 +30,11 @@ class ProPtyUNet(nn.Module):
     这是图示的显式实现选择，不代表作者未公开的逐层源码。
     """
 
-    def __init__(self, in_ch, base=32, up_kernel=4):
+    def __init__(self, in_ch, base=32, up_kernel=4, obj_amp_activation="leakyrelu"):
         super().__init__()
+        if obj_amp_activation not in ("leakyrelu", "softplus"):
+            raise ValueError("obj_amp_activation must be leakyrelu or softplus")
+        self.obj_amp_activation = obj_amp_activation
         if up_kernel not in (3, 4):
             raise ValueError("up_kernel must be 3 or 4")
         self.up_kernel = up_kernel
@@ -71,5 +74,7 @@ class ProPtyUNet(nn.Module):
         y = self.d1(torch.cat([y, x1], 1))
         y = self.output_conv(y)
         lr = lambda t: F.leaky_relu(t, 0.2)
-        return (lr(self.amp_s(y))[0, 0], torch.tanh(self.phs_s(y))[0, 0],
+        # Optional object-only diagnostic; probe and phase heads stay unchanged.
+        obj_amp = F.softplus(self.amp_s(y)) if self.obj_amp_activation == "softplus" else lr(self.amp_s(y))
+        return (obj_amp[0, 0], torch.tanh(self.phs_s(y))[0, 0],
                 lr(self.amp_p(y))[0, 0], torch.tanh(self.phs_p(y))[0, 0])

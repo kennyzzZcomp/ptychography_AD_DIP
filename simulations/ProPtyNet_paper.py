@@ -108,6 +108,7 @@ class Cfg:
     # ---- 网络 ----
     base_ch: int = 32            # 32/64/128/256, 3 次池化 (Fig.1b)
     paper_up_kernel: int = 4     # run only: 3 or 4, both double spatial dimensions
+    paper_obj_amp_activation: str = "leakyrelu"  # run only; softplus is a diagnostic extension
     network_type: str = "real"   # net only; original default preserved
     complex_base_ch: int = 23    # complex channels, NOT real scalar channels
     complex_activation: str = "modrelu"
@@ -186,6 +187,8 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.paper_obj_amp_activation not in ("leakyrelu", "softplus"):
+            raise ValueError("paper_obj_amp_activation must be leakyrelu or softplus")
         if self.paper_up_kernel not in (3, 4):
             raise ValueError("paper_up_kernel must be 3 or 4")
         if self.paper_input_norm not in ("measurement", "per-pattern"):
@@ -338,11 +341,15 @@ def main():
                     help="run only: measurement scale (default) or legacy per-pattern network input")
     ap.add_argument("--paper-up-kernel", type=int, choices=[3, 4], default=None,
                     help="run only: transposed-convolution kernel size (default: 4)")
+    ap.add_argument("--paper-obj-amp-activation", choices=["leakyrelu", "softplus"], default=None,
+                    help="run only: object amplitude activation; softplus is a nonnegative diagnostic")
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
     ap.add_argument("--reset-tgv-at-switch", action="store_true", default=None)
     a = ap.parse_args()
 
     cfg = build_cfg(a)
+    if a.paper_obj_amp_activation is not None and a.mode != "run":
+        ap.error("--paper-obj-amp-activation is implemented only for mode run")
     if a.paper_up_kernel is not None and a.mode != "run":
         ap.error("--paper-up-kernel is implemented only for mode run")
     if cfg.probe_mode == "shared" and a.mode != "net":
