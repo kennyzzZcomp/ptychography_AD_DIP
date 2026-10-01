@@ -230,7 +230,7 @@ def _initial_field_stats(O, P):
     return {"object": stats(O), "probe": stats(P)}
 
 
-def run_net(cfg: Cfg):
+def run_net(cfg: Cfg, *, stage2_observer=None):
     from functions.paperrepro.lr_schedule import parse_lr_schedule, learning_rates
     lr_stages = parse_lr_schedule(cfg.lr_schedule, cfg.lr_net, cfg.lr_probe,
                                  cfg.iters, cfg.lr_cosine)
@@ -423,6 +423,20 @@ def run_net(cfg: Cfg):
                 stem = replace_input_stem(net, opt_net, transition_seed, in_channels=x.shape[1])
                 transition_message = "only input convolution reinitialized; backbone, output heads and pixel probe retained"
             input_layer = None  # no measurement-channel selection for reconstructed-field channels
+            tgv_switch_audit = None
+            if tgv is not None:
+                tgv_switch_audit = {
+                    "before_vector_norm": float(tgv.v.detach().norm()),
+                    "before_adam_step": float(tgv.opt.state.get(tgv.v, {}).get("step", 0)),
+                }
+                if cfg.reset_tgv_at_switch:
+                    tgv = ObjectAmplitudeTGV(cfg, sc.pos, device)
+                    print("[net] amplitude TGV reset: zero auxiliary field and fresh auxiliary Adam; probe Adam retained", flush=True)
+                tgv_switch_audit.update(
+                    after_vector_norm=float(tgv.v.detach().norm()),
+                    after_adam_step=float(tgv.opt.state.get(tgv.v, {}).get("step", 0)),
+                    probe_adam_steps=([float(s.get("step", 0)) for s in opt_prb.state.values()]
+                                      if opt_prb is not None else []))
             network_parameters = sum(p.numel() for p in net.parameters())
             total_parameters = network_parameters + probe_parameters
             reconstruction_metadata = {
@@ -431,12 +445,17 @@ def run_net(cfg: Cfg):
                 "snapshot_readout": "post-update, original stage-1 input, training mode with BN buffers restored",
                 "fixed_detached_input": True, "ground_truth_used_for_input": False,
                 "raw_diffraction_in_stage2_input": False, "stage2_loss_measurements": cfg.n_pat,
-                "probe_optimizer_reset": False, "tgv_auxiliary_reset": False,
+                "probe_optimizer_reset": False, "tgv_auxiliary_reset": cfg.reset_tgv_at_switch,
+                "tgv_switch_audit": tgv_switch_audit,
                 "extra_network_readouts": 1, "transition_cost_in_training_timer": True,
             }
             print(f"[net] update {it+1}: fixed reconstructed-field input {tuple(x.shape)}; "
                   f"{transition_message}. Full measured diffraction remains the loss target.", flush=True)
             timer.mark("reconstruction_input_switch")
+            if stage2_observer is not None:
+                stage2_observer(dict(net=net, opt_net=opt_net, probe_real=Pr, probe_imag=Pi,
+                                     opt_probe=opt_prb, tgv=tgv, network_input=x,
+                                     scene=sc, completed_updates=it, history=hist))
         if use_curriculum:
             indices, stride = curriculum.select(it)
             sel = torch.as_tensor(indices, device=device)
@@ -647,7 +666,8 @@ def run_net(cfg: Cfg):
         (Path(cfg.outdir) / "tgv_amp_schedule.json").write_text(json.dumps({
             "schedule": cfg.tgv_amp_schedule, "initial_weight": cfg.tgv_amp,
             "boundary_convention": "boundary counts completed updates; 1000 changes update 1001",
-            "optimizer_reset": False, "auxiliary_reset": False,
+            "optimizer_reset": cfg.reset_tgv_at_switch, "auxiliary_reset": cfg.reset_tgv_at_switch,
+            "reset_after_update": reconstruction_switch if cfg.reset_tgv_at_switch else None,
             "steps": tgv_weight_history,
         }, indent=2), encoding="utf-8")
     if use_curriculum:

@@ -20,6 +20,7 @@ HALF_RES_STAGE1 = False      # optional: half spatial object network, unchanged 
 STAGE1_STRIDE = 3            # skip TWO positions: row/col indices 0,3,6,9
 SEED = 0
 BASE_CH = 32
+RESET_TGV_AT_SWITCH = False  # subset/object mode only; windows already creates a new full-domain TGV
 # No support mask; no cosine on top of these piecewise-constant learning rates.
 
 # Edit the block for your selected mode. All iteration totals include BOTH stages.
@@ -57,6 +58,8 @@ def build_command():
     if STAGE1_MODE not in ("subset", "windows"):
         raise ValueError("STAGE1_MODE must be 'subset' or 'windows'")
     if STAGE1_MODE == "windows":
+        if RESET_TGV_AT_SWITCH:
+            raise ValueError("Windows already resets TGV; this comparison switch is for subset mode")
         if HALF_RES_STAGE1 or STAGE2_INPUT != "object" or STAGE2_NETWORK != "fresh":
             raise ValueError("Windows mode requires full-resolution stage 1 and fresh object-input stage 2")
         if GRID != 10 or not 0 < SWITCH_AFTER < TOTAL_ITERS:
@@ -97,6 +100,7 @@ def build_command():
     if STAGE2_NETWORK != "reuse":
         options["stage2-network"] = STAGE2_NETWORK
     return [sys.executable, "-u", str(script), "net",
+            *(["--reset-tgv-at-switch"] if RESET_TGV_AT_SWITCH else []),
             *[s for key, value in options.items() for s in (f"--{key}", str(value))]]
 
 

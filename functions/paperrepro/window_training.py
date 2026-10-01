@@ -3,6 +3,8 @@
 This is a separate pilot, not a change to the paper or progressive solver.
 Sequential mode: one window and one optimizer step per iteration. Joint mode:
 four windows at the same weights and one optimizer step per iteration.
+Cached-fusion loss: one current prediction plus three detached stored predictions
+compose the training object, without additional network/physics forwards.
 Optional consistency uses conservative computational probe footprints, NOT
 ground-truth illumination or evaluation ROI. These masks are not confidence maps.
 """
@@ -53,11 +55,50 @@ def footprint_masks(positions, groups, obj_size, probe_size, device):
     return masks
 
 
-def fuse_fields(fields, masks):
+def fusion_weights(masks):
+    """Partition of unity on existing computational footprints; no GT/support."""
+    return masks.float() / masks.sum(0).clamp_min(1)
+
+
+def fuse_fields(fields, masks, weights=None):
     fields = torch.stack(list(fields))
     count = masks.sum(0)
-    merged = (fields * masks).sum(0) / count.clamp_min(1)
+    merged = ((fields * masks).sum(0) / count.clamp_min(1) if weights is None
+              else (fields * weights).sum(0))
     return torch.where(count > 0, merged, torch.ones_like(merged))
+
+
+class WindowFieldCache:
+    """Latest PRE-update prediction per window, detached from prior graphs.
+
+    A cache is a numerical memory, not a snapshot of the current shared network.
+    Evaluation must not overwrite it: otherwise evaluation frequency changes
+    the training algorithm. Only the selected training forward refreshes it.
+    """
+
+    def __init__(self, masks):
+        self.masks = masks
+        self.weights = fusion_weights(masks)
+        self.fields = torch.ones(masks.shape, dtype=torch.complex64, device=masks.device)
+        self.source_updates = [0]*len(masks)
+        self.visited = [False]*len(masks)
+
+    def compose(self, active, field):
+        fields = [field if k == active else self.fields[k].detach()
+                  for k in range(len(self.fields))]
+        return fuse_fields(fields, self.masks, self.weights)
+
+    @torch.no_grad()
+    def commit(self, active, field, completed_updates_before_forward):
+        # copy_ must happen after backward; compose's saved graph no longer lives.
+        self.fields[active].copy_(field.detach())
+        self.source_updates[active] = int(completed_updates_before_forward)
+        self.visited[active] = True
+
+    def audit(self, completed_updates):
+        return dict(cache_source_updates=list(self.source_updates),
+                    cache_ages=[int(completed_updates)-u for u in self.source_updates],
+                    cache_visited=list(self.visited))
 
 
 def consistency_loss(fields, masks, active=None):
@@ -95,6 +136,13 @@ def run_windows(cfg):
         raise ValueError("iters and eval_every must be positive")
     if not np.isfinite(cfg.window_consistency) or cfg.window_consistency < 0:
         raise ValueError("window_consistency must be finite and nonnegative")
+    loss_mode = getattr(cfg, "window_loss_mode", "independent")
+    if loss_mode not in ("independent", "cached-fusion"):
+        raise ValueError("window_loss_mode must be independent or cached-fusion")
+    if loss_mode == "cached-fusion" and (cfg.window_update != "sequential" or cfg.window_consistency):
+        raise ValueError("Cached fusion requires sequential updates and consistency-weight=0")
+    if loss_mode == "cached-fusion" and cfg.obj_init_alpha != 0:
+        raise ValueError("Cached fusion initializes four fields to ones; requires obj-init-alpha=0")
     switch = getattr(cfg, "window_switch_after", 0)
     if switch and not 0 < switch < cfg.iters:
         raise ValueError("switch-after must be positive and less than total iters (or 0 to disable)")
@@ -133,6 +181,7 @@ def run_windows(cfg):
     inputs = [stack[:, s] for s in selections]
     crop = slice(p//2, p//2 + m)
     masks = footprint_masks(sc.pos, groups, m, cfg.N, device)
+    cache = WindowFieldCache(masks) if loss_mode == "cached-fusion" else None
     # Independent auxiliary TGV state per window; nominal domains, as in net.
     tgvs = [ObjectAmplitudeTGV(cfg, sc.pos[g], device) for g in groups] if cfg.tgv_amp else [None]*4
     energy = sc.sqrtIm.square().mean().detach()
@@ -147,15 +196,20 @@ def run_windows(cfg):
     counts = dict(optimizer_updates=0, window_visits=0, training_patterns=0,
                   training_network_forwards=0, consistency_network_forwards=0,
                   evaluation_network_forwards=0, evaluation_patterns=0,
-                  transition_network_forwards=0, stage2_updates=0)
+                  transition_network_forwards=0, stage2_updates=0, cache_updates=0)
     print(f"[windows] {cfg.window_update}; iteration = ONE optimizer update; "
           "Stage 1: 4x16 = 64 unique training frames, remaining 36 evaluation-only in stage 1. "
           f"consistency={cfg.window_consistency:g}; full-canvas outputs, no added support.", flush=True)
+    if cache is not None:
+        print("[windows] loss-mode=cached-fusion: ONE current window forward + 3 detached cached fields; "
+              "data/TGV use the fused object, 16 measurements/update. Cache starts at ones, "
+              "stores pre-update predictions; evaluation NEVER refreshes training cache.", flush=True)
     if cfg.window_update == "sequential" and cfg.window_consistency:
         print("[windows] Consistency adds 3 current-weight no-grad peer forwards per update; "
               "BN buffers restored. No stale cache; extra work counted.", flush=True)
     metadata = dict(groups=groups, missing_indices=sorted(set(range(cfg.n_pat))-set(sum(groups, []))),
                     update_mode=cfg.window_update, consistency_weight=cfg.window_consistency,
+                    loss_mode=loss_mode,
                     input_channels=16, output="full global canvas for each window",
                     fusion="complex mean on full computational footprints; ones outside union",
                     consistency_domain="full computational footprint intersections, NOT confidence/support",
@@ -166,6 +220,14 @@ def run_windows(cfg):
                     network_parameters=sum(p.numel() for p in net.parameters()), scene_fingerprint=sc.fp)
     metadata.update(switch_after=switch, total_updates=cfg.iters,
                     stage2="fresh object-only input, full measurements" if switch else None)
+    if cache is not None:
+        metadata.update(training_object="partition-weighted complex fusion; active prediction + detached peers",
+                        training_tgv="amplitude of fused object on active window TGV domain",
+                        cache_initialization="four constant ones fields",
+                        cache_commit="pre-update active prediction, copied after optimizer step",
+                        cache_refresh="training visits only; no extra peer forwards",
+                        evaluation="fresh post-update fusion; cache gap reported, cache never changed",
+                        fusion_weight_geometry="existing full computational probe footprints; flat normalized overlap weights")
     (outdir / "window_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     hist = []
     if device.type == "cuda":
@@ -181,8 +243,10 @@ def run_windows(cfg):
             transition_start = time.perf_counter()
             with snapshot_readout(net):
                 stage1_fields = [decode(k)[0].detach().clone() for k in range(4)]
-                stage1_object = fuse_fields(stage1_fields, masks).detach().clone()
+                stage1_object = fuse_fields(stage1_fields, masks, cache.weights if cache else None).detach().clone()
                 stage1_probe = probe().detach().clone()
+                cache_gap_at_switch = (float((stage1_object-fuse_fields(cache.fields, masks, cache.weights)).norm()
+                                            / stage1_object.norm().clamp_min(1e-12)) if cache else None)
             counts["transition_network_forwards"] += 4
             conditioning, encoding = reconstruction_channels(stage1_object, None, ns, include_probe=False)
             snapshot = dict(obj=stage1_object.cpu().numpy(), probe=stage1_probe.cpu().numpy(),
@@ -219,6 +283,8 @@ def run_windows(cfg):
                               probe_relative_jump=probe_jump, object_relative_jump=obj_jump,
                               object_initialization="neutral heads, NOT residual warm start",
                               new_full_domain_tgv_auxiliary=bool(cfg.window_stage2_tgv),
+                              cache_fresh_relative_difference=cache_gap_at_switch,
+                              stage1_cache=cache.audit(switch) if cache else None,
                               lr_net=cfg.window_stage2_lr_net, lr_probe=cfg.window_stage2_lr_probe,
                               tgv_amp=cfg.window_stage2_tgv,
                               stage1_elapsed_s=transition_start-start,
@@ -249,7 +315,10 @@ def run_windows(cfg):
         for k in active:
             fields[k], amp = decode(k)
             counts["training_network_forwards"] += 1
-            data, _ = scaled_amplitude_loss(cabs(_fwd(cfg, fields[k], current_probe,
+            training_object = cache.compose(k, fields[k]) if cache is not None and not stage2 else fields[k]
+            if cache is not None and not stage2:
+                amp = cabs(training_object)
+            data, _ = scaled_amplitude_loss(cabs(_fwd(cfg, training_object, current_probe,
                                                      sc.post[selections[k]], sc.Q)), sc.sqrtIm[selections[k]])
             reg = tgvs[k](amp)[0] if tgvs[k] is not None else data.new_zeros(())
             losses.append(data)
@@ -265,17 +334,22 @@ def run_windows(cfg):
         opt.step()
         if opt_p:
             opt_p.step()
+        if cache is not None and not stage2:
+            cache.commit(active[0], fields[active[0]], it)
+            counts["cache_updates"] += 1
         counts["optimizer_updates"] += 1
         counts["window_visits"] += 0 if stage2 else len(active)
         counts["stage2_updates"] += int(stage2)
         counts["training_patterns"] += cfg.n_pat if stage2 else 16*len(active)
         # Avoid retaining four autograd graphs across iterations/evaluation.
         loss_value, data_value, con_value, reg_value = [t.item() for t in (loss, data, con, reg)]
-        del fields, losses, regs, loss, data, con, reg, amp, current_probe
+        del fields, losses, regs, loss, data, con, reg, amp, current_probe, training_object
         if (it+1) % cfg.eval_every == 0 or it+1 == cfg.iters or it+1 == switch:
             with snapshot_readout(net):
                 final_fields = [decode(k)[0] for k in range(1 if stage2 else 4)]
-                fused = final_fields[0] if stage2 else fuse_fields(final_fields, masks)
+                fused = final_fields[0] if stage2 else fuse_fields(final_fields, masks, cache.weights if cache else None)
+                cache_gap = (float((fused-fuse_fields(cache.fields, masks, cache.weights)).norm()
+                                   / fused.norm().clamp_min(1e-12)) if cache and not stage2 else None)
                 pp = probe()
                 full_loss, predicted = scaled_amplitude_loss(cabs(_fwd(cfg, fused, pp, sc.post, sc.Q)), sc.sqrtIm)
                 real = torch.linalg.vector_norm(predicted.square()-sc.Iclt).item()
@@ -294,25 +368,40 @@ def run_windows(cfg):
                        active_windows=[] if stage2 else active, stage=2 if stage2 else 1,
                        input_channels=3 if stage2 else 16, active_patterns=cfg.n_pat if stage2 else 16*len(active),
                        tgv_amp_weight=tgv_weight,
+                       loss_mode=loss_mode if not stage2 else "full-data",
+                       cache_fresh_relative_difference=cache_gap,
                        completed_sweeps=counts["window_visits"]//4,
                        sweep_progress=counts["window_visits"]/4,
                        elapsed_s=time.perf_counter()-start, **counts, **metrics)
             hist.append(row)
+            if cache and not stage2:
+                row.update(cache.audit(it+1))
+            cache_note = f" | cache/fresh gap {cache_gap:.3e}" if cache_gap is not None else ""
             print(f"[windows] stage {row['stage']} update {it+1} | stage1 sweeps {row['sweep_progress']:g} | "
                   f"amp PSNR {metrics['psnr_amp']:.2f} | object err {metrics['relerr']:.4f} | "
                   f"probe err {row['relerr_p']:.4f} | full loss {row['full_data_loss']:.4e} | "
-                  f"{row['elapsed_s']:.2f}s", flush=True)
+                  f"{row['elapsed_s']:.2f}s{cache_note}", flush=True)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter()-start
+    print(f"[windows] training-loop time {elapsed:.2f}s / {cfg.iters} updates; "
+          f"training net forwards={counts['training_network_forwards']}, "
+          f"training patterns={counts['training_patterns']}, cache commits={counts['cache_updates']}", flush=True)
     _save(cfg, rec, pc, sc.obj, sc.probe, hist, sc.roi, sc.pos, tag="windows", train_elapsed_s=elapsed)
     np.savez_compressed(outdir / "window_fields.npz", fields=snapshot['fields'] if snapshot else final_array,
-                        masks=masks.cpu().numpy(), groups=np.asarray(groups))
+                        masks=masks.cpu().numpy(), groups=np.asarray(groups),
+                        weights=cache.weights.cpu().numpy() if cache else fusion_weights(masks).cpu().numpy())
+    if cache is not None:
+        np.savez_compressed(outdir / "window_cache.npz", fields=cache.fields.cpu().numpy(),
+                            source_updates=np.asarray(cache.source_updates), visited=np.asarray(cache.visited),
+                            weights=cache.weights.cpu().numpy(), masks=masks.cpu().numpy())
     if snapshot is not None:
         np.savez_compressed(outdir / "stage1_conditioning.npz", **snapshot)
         (outdir / "reconstruction_input.json").write_text(json.dumps(transition, indent=2), encoding="utf-8")
     metadata.update(transition=transition, window_fields_stage=1,
                     final_object="single stage-2 output" if switch else "four-window fusion")
     metadata.update(counts=counts, elapsed_s=elapsed)
+    if cache is not None:
+        metadata.update(final_stage1_cache=cache.audit(switch or cfg.iters))
     (outdir / "window_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return hist

@@ -160,6 +160,7 @@ class Cfg:
     half_res_until: int = 0  # net: completed updates before restoring full spatial input
     stage2_input: str = "diffraction"  # diffraction | reconstruction (O/P) | object (O only)
     stage2_network: str = "reuse"  # reuse | fresh (new object U-Net for reconstructed input)
+    reset_tgv_at_switch: bool = False  # object-conditioned net: reset amplitude auxiliary AND its Adam
 
     # ---- 其它 ----
     scale_cal: bool = True       # 冻结的幅度标定（论文没写，见下方说明）
@@ -213,6 +214,8 @@ class Cfg:
             raise ValueError("stage2_network must be reuse or fresh")
         if self.stage2_network == "fresh" and self.stage2_input == "diffraction":
             raise ValueError("fresh stage-2 network requires stage2_input=reconstruction or object")
+        if self.reset_tgv_at_switch and (self.stage2_input == "diffraction" or self.tgv_amp <= 0):
+            raise ValueError("TGV reset requires reconstructed-field stage 2 and an existing amplitude TGV")
         if self.stage2_input in ("reconstruction", "object"):
             if (self.network_type != "real" or self.probe_mode not in ("pixel", "support")
                     or self.half_res_until):
@@ -312,6 +315,7 @@ def main():
     ap.add_argument("--quad-sign", dest="quad_sign", type=float, choices=[-1.0, 1.0])
     ap.add_argument("--no-scale-cal", dest="scale_cal", action="store_false", default=None)
     ap.add_argument("--lr-cosine", dest="lr_cosine", action="store_true", default=None)
+    ap.add_argument("--reset-tgv-at-switch", action="store_true", default=None)
     a = ap.parse_args()
 
     cfg = build_cfg(a)

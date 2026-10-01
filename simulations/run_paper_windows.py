@@ -10,6 +10,10 @@ enable --consistency-weight 0.01 to test agreement (extra peer forward cost).
 No spatial cropping, known support, TGV, cosine schedule, or disk is added by default.
 Optional --switch-after 1000 --iters 2000: replace the window network with a
 fresh object-conditioned U-Net after 1000 updates; full data in stage 2.
+--loss-mode cached-fusion: preserve sequential 16-pattern updates, but train
+the fused object using the current prediction and three detached cached fields.
+Caches start at ones; no extra training forwards or extra optimizer updates.
+Fusion uses existing computational footprints, not known illumination/support.
 """
 import argparse
 from dataclasses import dataclass
@@ -24,6 +28,7 @@ from functions.paperrepro.window_training import run_windows
 @dataclass
 class WindowCfg(Cfg):
     window_update: str = "sequential"
+    window_loss_mode: str = "independent"
     window_consistency: float = 0.0
     window_switch_after: int = 0
     window_stage2_lr_net: float = .002
@@ -34,6 +39,8 @@ class WindowCfg(Cfg):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
+    p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
+                   help="stage-1 training object: individual window or current + cached peer fusion")
     p.add_argument("--consistency-weight", type=float, default=0.0)
     p.add_argument("--preset", choices=("paper", "smoke"), default="paper")
     p.add_argument("--grid", type=int, default=10)
@@ -67,6 +74,7 @@ def main():
                     probe_init=a.probe_init, probe_mode=a.probe_mode,
                     lr_net=a.lr_net, lr_probe=a.lr_probe, tgv_amp=a.tgv_amp,
                     outdir=a.outdir, window_update=a.update_mode,
+                    window_loss_mode=a.loss_mode,
                     window_consistency=a.consistency_weight,
                     window_switch_after=a.switch_after, window_stage2_lr_net=a.stage2_lr_net,
                     window_stage2_lr_probe=a.stage2_lr_probe, window_stage2_tgv=a.stage2_tgv_amp)
