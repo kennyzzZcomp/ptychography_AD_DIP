@@ -28,6 +28,7 @@ Fig.1(b) 入口/输出端卷积符号及论文约 2.5M 参数未能唯一确定�
     python ProPtyNet_paper.py check  --preset smoke
     python ProPtyNet_paper.py run    --preset smoke --iters 400        # CPU 冒烟
     python ProPtyNet_paper.py run    --preset paper --iters 2000       # 需要 GPU
+    python ProPtyNet_paper.py run    --preset paper --probe-mode truth --beta 1  # 非盲诊断
     python ProPtyNet_paper.py run    --preset paper --noise mixed --snr 30
 
 资源: 默认 USAF.jpg (振幅) + 内置合成辐条靶 (相位)，对应论文 Fig.2(a)。
@@ -77,6 +78,7 @@ class Cfg:
     grid: int = 10               # grid×grid 个扫描点
     step_px: int = 10            # 步长（重建面像素 Δx1）
     probe_diam_um: float = 800.0 # 针孔直径
+    probe_amp_image: str = ""    # GT only: empty=historical random texture; image fits pinhole
     obj_size: int = 612          # 论文写的物体画布
     # 物体的振幅图 / 相位图。论文: "synthesized from two kinds of resolution test targets"
     #   USAF.jpg  -> 与论文 Fig.2(a) 的 Object Amplitude 同款 USAF 1951 靶
@@ -128,10 +130,11 @@ class Cfg:
     # ad/net use probe_init; paper run retains its own constant network-head init.
     probe_init: str = "ones"     # disk = 平滑圆盘 + 零相位 | ones = P0 ≡ 1
     probe_init_sigma: float = 0.15   # 仅 disk 用，单位 = 针孔半径的倍数
-    # 探针参数化（只对 ad / net 生效；run 的探针是网络输出的，改不了）
+    # 探针参数化：ad/net 支持下列模式；run 默认仍是四头联合盲重建，
+    # 只有 truth 在 run 中额外生效：冻结探针两头、前向替换成尺度匹配的真值。
     #   pixel   自由复数像素，2·N² = 524k 个未知量，其中只有针孔内那 ~5.5k 被数据定住
     #   support 只在针孔内参数化，外面【恒等于 0】。未知量 524k -> 5.5k，直接消掉零空间
-    #   truth   冻结在真值上（非盲上界诊断：它也崩 = 数据本身不够，与探针无关）
+    #   truth   固定真值探针（非盲诊断；失败也可能是物体网络/优化问题，不证明数据不足）
     #   shared  net only: shared real U-Net + linear real/imag probe head, ones init
     probe_mode: str = "pixel"
     # support 档的掩膜半径 = margin × 针孔半径。1.2 允许一圈衍射光晕，更接近真实光路。
@@ -297,6 +300,7 @@ def main():
                  ("base_ch", int), ("beta", float), ("gamma0", float),
                  ("gamma_end", float), ("s1_margin", float), ("obj_phase_rad", float),
                  ("amp_image", str), ("phs_image", str),
+                 ("probe_amp_image", str),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("eval_size", int),

@@ -172,6 +172,29 @@ def run(cfg: Cfg):
         x = x / x.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
 
     net = ProPtyUNet(cfg.n_pat, cfg.base_ch).to(device)
+    fixed_probe = None
+    truth_probe_scale = None
+    if cfg.probe_mode == "truth":
+        # simulate() divides ALL measured intensities by the clean global peak.
+        # Absorb that known simulation normalization into the frozen probe:
+        # |F(O_gt * P_gt / sqrt(I_raw.max()))|^2 == I_clean.
+        # Do not infer this scale from noisy maxima or fit it during training.
+        with torch.no_grad():
+            truth_probe = torch.from_numpy(probe).to(device)
+            raw_truth = forward_ptycho(torch.from_numpy(obj).to(device),
+                                      truth_probe, post, Q, n, chunk=16)
+            raw_peak = raw_truth.max()
+            if not torch.isfinite(raw_peak) or raw_peak.item() <= 0:
+                raise ValueError("truth-probe diagnostic needs a finite positive clean intensity peak")
+            truth_probe_scale = raw_peak.rsqrt().item()
+            fixed_probe = (truth_probe * truth_probe_scale).detach()
+            del raw_truth
+        net.amp_p.requires_grad_(False)
+        net.phs_p.requires_grad_(False)
+        print("[paper diagnostic, NON-BLIND] probe-mode=truth: probe amplitude/phase heads frozen; "
+              "forward uses fixed GT probe, not the head predictions")
+        print(f"[paper diagnostic] fixed probe amplitude scale={truth_probe_scale:.9g} "
+              "(known clean-data global normalization); no per-step calibration")
     npar = sum(p.numel() for p in net.parameters())
     print(f"[net] 参数 {npar/1e6:.2f} M (论文 2.5 M) | 输入 {tuple(x.shape)} | "
           f"过曝像素 {100*float(1-S2.mean()):.4f}% | 设备 {device}")
@@ -185,6 +208,8 @@ def run(cfg: Cfg):
         c = slice(pad_n, pad_n + M)
         a_s, p_s, a_p, p_p = a_s[c, c], p_s[c, c], a_p[c, c], p_p[c, c]
         O = (a_s * torch.exp(1j * cfg.phase_span_obj * p_s)).to(torch.complex64)
+        if fixed_probe is not None:
+            return O, fixed_probe, fixed_probe.abs(), a_s
         # Fig.1(c): 612 的探针裁到中心 512 再进前向；不加任何硬 support，只靠 Loss2
         d = slice(pad_o, pad_o + n)
         P = (a_p[d, d] * torch.exp(1j * cfg.phase_span_prb * p_p[d, d])).to(torch.complex64)
@@ -232,7 +257,7 @@ def run(cfg: Cfg):
     else:
         print("[paper] predicted intensity used directly: no additional scale coefficient")
 
-    opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr)
+    opt = torch.optim.AdamW((p for p in net.parameters() if p.requires_grad), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=cfg.iters, eta_min=cfg.lr * cfg.lr_final_frac)
     tgv = ObjectAmplitudeTGV(cfg, pos, device) if cfg.tgv_amp > 0 else None
@@ -299,6 +324,10 @@ def run(cfg: Cfg):
     elapsed = time.time() - t0
     hist[-1]["train_elapsed_s"] = elapsed
     hist[-1]["mean_iteration_s"] = elapsed / cfg.iters
+    if fixed_probe is not None:
+        hist[-1]["probe_fixed"] = True
+        hist[-1]["probe_heads_frozen"] = True
+        hist[-1]["probe_truth_scale"] = truth_probe_scale
     print(f"[paper] 用时 {elapsed:.1f}s / {cfg.iters} it "
           f"({1000*elapsed/cfg.iters:.2f} ms/it；训练循环，不含数据生成、存盘和画图)")
     if len(hist) > 8:

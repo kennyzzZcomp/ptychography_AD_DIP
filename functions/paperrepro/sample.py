@@ -75,9 +75,28 @@ def _lowpass_noise(n, sigma_px, rng):
     f -= f.min()
     return f / max(f.max(), 1e-12)
 
+def _probe_image_texture(cfg, n, radius):
+    """Fit the complete grayscale image across the GT aperture, not across N.
+
+    Map intensities to 0.4..1, retaining the historical texture contrast range.
+    The caller applies the same aperture and final peak-amplitude normalization.
+    This changes simulation truth only, never reconstruction initialization.
+    """
+    half = int(math.ceil(radius))
+    image = _imread(_resolve(asset_dir(cfg), cfg.probe_amp_image), 2 * half + 1)
+    image = 0.4 + 0.6 * np.clip(image / 255.0, 0.0, 1.0)
+    texture = np.zeros((n, n), dtype=np.float64)
+    origin = n // 2 - half
+    begin, end = max(origin, 0), min(origin + image.shape[0], n)
+    if end > begin:
+        source = slice(begin - origin, end - origin)
+        texture[begin:end, begin:end] = image[source, source]
+    return texture
+
+
 def make_truth(cfg: Cfg):
     """物体: 两张分辨率靶（论文用 resolution test targets，这里沿用你手上的两张图）。
-    探针: 800 µm 圆孔内的低通随机振幅 + 二次相位。
+    探针: 800 µm 圆孔内的低通随机振幅（或 probe_amp_image 灰度纹理）+ 二次相位。
     论文 Section 3 写探针振幅和相位来自 mandrill 图及圆形区域；这里是替代场景，
     不能认定这种替代不影响结论，也不能用于逐数值复现论文 Fig.2。
     """
@@ -94,7 +113,10 @@ def make_truth(cfg: Cfg):
     R = cfg.probe_diam_px / 2
     rng = np.random.default_rng(cfg.seed)
     aperture = (rr <= R).astype(np.float64)
-    tex = 0.4 + 0.6 * _lowpass_noise(n, max(R / 8, 2.0), rng)
+    if getattr(cfg, 'probe_amp_image', ''):
+        tex = _probe_image_texture(cfg, n, R)
+    else:
+        tex = 0.4 + 0.6 * _lowpass_noise(n, max(R / 8, 2.0), rng)
     p_amp = aperture * tex
     # 本仿真的二次波前（0..2 rad）；不是论文 mandrill 相位图的复刻。
     p_phs = aperture * (2.0 * (rr / max(R, 1)) ** 2)

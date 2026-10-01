@@ -79,6 +79,9 @@ def banner(cfg: Cfg, sc):
           f"±{cfg.obj_phase_rad:g} rad")
     print(f"[scene] 探针 {dia:.1f} px 针孔 / 探测器 {cfg.N} px  "
           f"-> 过采样 {cfg.N/max(dia,1e-9):.1f}×")
+    if getattr(cfg, 'probe_amp_image', ''):
+        print(f"[scene] 探针真值振幅 = {cfg.probe_amp_image}（图像缩放到圆孔内）；"
+              "相位仍为二次波前，重建初始化不变")
     print(f"[scene] 扫描 {cfg.grid}×{cfg.grid} = {cfg.n_pat} 点  step {step} px  "
           f"-> 线性重叠 {1-step/max(dia,1e-9):.1%}  照明区 ≈ {illum:.0f}²")
     print(f"[scene] 测量数 {meas/1e6:.1f}M / 未知量 {unk/1e3:.0f}k "
