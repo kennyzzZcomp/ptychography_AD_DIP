@@ -79,6 +79,10 @@ class Cfg:
     step_px: int = 10            # 步长（重建面像素 Δx1）
     probe_diam_um: float = 800.0 # 针孔直径
     probe_amp_image: str = ""    # GT only: empty=historical random texture; image fits pinhole
+    probe_phase_mode: str = "quadratic"  # GT only: quadratic | same-texture
+    probe_phase_rad: float = 0.8  # same-texture phase range +/- radians
+    obj_amp_binary_invert: bool = False  # optional white bars on black background
+    obj_amp_floor: float = 0.0   # applies only with obj_amp_binary_invert
     obj_size: int = 612          # 论文写的物体画布
     # 物体的振幅图 / 相位图。论文: "synthesized from two kinds of resolution test targets"
     #   USAF.jpg  -> 与论文 Fig.2(a) 的 Object Amplitude 同款 USAF 1951 靶
@@ -187,6 +191,12 @@ class Cfg:
     # overlap sweep 要横向比较 SSIM/PSNR 时应给所有 run 传同一个值。
     eval_size: int = 0
     def __post_init__(self):
+        if self.probe_phase_mode not in ("quadratic", "same-texture"):
+            raise ValueError("probe_phase_mode must be quadratic or same-texture")
+        if not math.isfinite(self.probe_phase_rad) or self.probe_phase_rad < 0:
+            raise ValueError("probe_phase_rad must be finite and nonnegative")
+        if not 0 <= self.obj_amp_floor < 1:
+            raise ValueError("obj_amp_floor must be in [0,1)")
         if self.paper_obj_amp_activation not in ("leakyrelu", "softplus"):
             raise ValueError("paper_obj_amp_activation must be leakyrelu or softplus")
         if self.paper_up_kernel not in (3, 4):
@@ -307,6 +317,7 @@ def main():
                  ("gamma_end", float), ("s1_margin", float), ("obj_phase_rad", float),
                  ("amp_image", str), ("phs_image", str),
                  ("probe_amp_image", str),
+                 ("probe_phase_mode", str), ("probe_phase_rad", float), ("obj_amp_floor", float),
                  ("phase_span_obj", float), ("phase_span_prb", float),
                  ("snr_db", float), ("pos_batch", int), ("eval_every", int),
                  ("eval_size", int),
@@ -326,6 +337,8 @@ def main():
                  ("fwd_chunk", int), ("noise_seed", int)]:
         ap.add_argument("--" + k.replace("_", "-"), dest=k, type=t)
     ap.add_argument("--noise", choices=["none", "gaussian", "poisson", "mixed"])
+    ap.add_argument("--obj-amp-binary-invert", action="store_true", default=None,
+                    help="GT only: threshold and invert object amplitude to white bars on black")
     ap.add_argument("--skip-mode", choices=["concat", "wavelet", "wavelet-identity"])
     ap.add_argument("--wavelet-threshold", type=float)
     ap.add_argument("--network-type", choices=["real", "complex"])

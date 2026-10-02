@@ -63,6 +63,14 @@ def _imread(path: Path, n: int):
         return np.asarray(im.resize((n, n), Image.BICUBIC), dtype=np.float64)
 
 def _object_map(cfg: Cfg, spec: str, n: int):
+    if spec.lower() == "siemens-sharp":
+        # Binary straight-sided radial bars: no artificial gray central disk.
+        y, x = np.mgrid[0:n, 0:n] - (n - 1) / 2.0
+        theta = np.arctan2(y, x)
+        spacing = 2 * PI / 16
+        delta = (theta + spacing / 2) % spacing - spacing / 2
+        along = np.hypot(x, y) * np.cos(delta)
+        return ((np.abs(delta) < spacing / 4) & (along <= .46 * n)).astype(float) * 255
     if spec.lower() in ("siemens", "star", "spoke"):
         return _siemens_star(n)
     return _imread(_resolve(asset_dir(cfg), spec), n)
@@ -104,6 +112,10 @@ def make_truth(cfg: Cfg):
     a = _object_map(cfg, cfg.amp_image, M)
     p = _object_map(cfg, cfg.phs_image, M)
     amp = 0.2 + 0.8 * a / a.max()
+    if getattr(cfg, 'obj_amp_binary_invert', False):
+        # White bars on black background, with an explicit physical amplitude floor.
+        a01 = (a - a.min()) / max(a.max() - a.min(), 1e-12)
+        amp = cfg.obj_amp_floor + (1 - cfg.obj_amp_floor) * (a01 < .5)
     phs = (-1 + 2 * (p - p.min()) / max(p.max() - p.min(), 1e-12)) * cfg.obj_phase_rad
     obj = (amp * np.exp(1j * phs)).astype(np.complex64)
 
@@ -113,13 +125,21 @@ def make_truth(cfg: Cfg):
     R = cfg.probe_diam_px / 2
     rng = np.random.default_rng(cfg.seed)
     aperture = (rr <= R).astype(np.float64)
-    if getattr(cfg, 'probe_amp_image', ''):
+    if getattr(cfg, 'probe_amp_image', '').lower() == 'simple-stripes':
+        # Two smooth vertical bright bands across the aperture diameter.
+        # Generated at the physical probe grid; no photograph or added noise.
+        tex = 0.4 + 0.6 * (0.5 - 0.5 * np.cos(2 * PI * xx / max(R, 1)))
+    elif getattr(cfg, 'probe_amp_image', ''):
         tex = _probe_image_texture(cfg, n, R)
     else:
         tex = 0.4 + 0.6 * _lowpass_noise(n, max(R / 8, 2.0), rng)
     p_amp = aperture * tex
     # 本仿真的二次波前（0..2 rad）；不是论文 mandrill 相位图的复刻。
     p_phs = aperture * (2.0 * (rr / max(R, 1)) ** 2)
+    if getattr(cfg, 'probe_phase_mode', 'quadratic') == 'same-texture':
+        inside = aperture > 0
+        t = (tex - tex[inside].min()) / max(np.ptp(tex[inside]), 1e-12)
+        p_phs = aperture * (2 * t - 1) * cfg.probe_phase_rad
     probe = (p_amp * np.exp(1j * p_phs)).astype(np.complex64)
     probe = probe / np.abs(probe).max()
 
