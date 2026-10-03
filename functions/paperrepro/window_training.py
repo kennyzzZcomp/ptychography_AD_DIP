@@ -43,8 +43,8 @@ def measurement_groups(grid=10, layout="sparse", side=4):
     compact-full partitions every scan position into four 5x5 quadrants.
     These deterministic raster partitions are not a K-means implementation.
     """
-    if grid != 10 or side not in (3, 4):
-        raise ValueError("Window experiments require grid=10 and window-side=3 or 4")
+    if grid != 10 or side not in (3, 4, 5):
+        raise ValueError("Window experiments require grid=10 and window-side=3, 4 or 5")
     if layout == "compact-full":
         if side != 4:
             raise ValueError("compact-full uses 5x5 groups; omit --window-side")

@@ -46,8 +46,8 @@ def main():
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
     p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full"), default="sparse",
                    help="sparse: original strided windows; compact-matched: regroup same points; compact-full: four 5x5 groups")
-    p.add_argument("--window-side", type=int, choices=(3, 4), default=4,
-                   help="3 or 4 scan positions per axis (stride 2); compact-full always uses 5x5")
+    p.add_argument("--window-side", type=int, choices=(3, 4, 5), default=4,
+                   help="3, 4 or 5 scan positions per axis (stride 2); omit for compact-full")
     p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
                    help="stage-1 training object: individual window or current + cached peer fusion")
     p.add_argument("--consistency-weight", type=float, default=0.0)
