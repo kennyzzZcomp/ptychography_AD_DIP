@@ -47,13 +47,13 @@ def measurement_groups(grid=10, layout="sparse", side=4):
     """
     if grid != 10 or side not in (3, 4, 5):
         raise ValueError("Window experiments require grid=10 and window-side=3, 4 or 5")
-    if layout == "alternating":
+    if layout in ("alternating", "inner"):
         if side != 4:
-            raise ValueError("alternating requires window-side=4")
+            raise ValueError(f"{layout} requires window-side=4")
         inner = [[(r + dy)*grid + c + dx for r in (0, 2, 4, 6)
                   for c in (0, 2, 4, 6)]
                  for dy, dx in ((1, 1), (1, 2), (2, 1), (2, 2))]
-        return four_windows(grid) + inner
+        return inner if layout == "inner" else four_windows(grid) + inner
     if layout == "compact-full":
         if side != 4:
             raise ValueError("compact-full uses 5x5 groups; omit --window-side")
