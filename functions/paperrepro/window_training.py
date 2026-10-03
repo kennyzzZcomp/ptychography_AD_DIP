@@ -37,14 +37,23 @@ def four_windows(grid=10):
 
 
 def measurement_groups(grid=10, layout="sparse", side=4):
-    """Four equal-size groups; defaults reproduce four_windows exactly.
+    """Equal-size groups; defaults reproduce four_windows exactly.
 
     compact-matched regroups the SAME sparse measurements into quadrants.
     compact-full partitions every scan position into four 5x5 quadrants.
     These deterministic raster partitions are not a K-means implementation.
+    alternating adds four inner windows: 128 visits to 92 unique positions
+    per eight-update cycle. Readout remains on the original four corners.
     """
     if grid != 10 or side not in (3, 4, 5):
         raise ValueError("Window experiments require grid=10 and window-side=3, 4 or 5")
+    if layout == "alternating":
+        if side != 4:
+            raise ValueError("alternating requires window-side=4")
+        inner = [[(r + dy)*grid + c + dx for r in (0, 2, 4, 6)
+                  for c in (0, 2, 4, 6)]
+                 for dy, dx in ((1, 1), (1, 2), (2, 1), (2, 2))]
+        return four_windows(grid) + inner
     if layout == "compact-full":
         if side != 4:
             raise ValueError("compact-full uses 5x5 groups; omit --window-side")
@@ -205,6 +214,12 @@ def run_windows(cfg):
     layout = getattr(cfg, "window_layout", "sparse")
     side = getattr(cfg, "window_side", 4)
     groups = measurement_groups(cfg.grid, layout, side)
+    alternating = layout == "alternating"
+    if alternating:
+        if cfg.window_update != "sequential" or loss_mode != "independent" or cfg.window_consistency:
+            raise ValueError("alternating requires sequential, independent loss and consistency-weight=0")
+        if switch and switch % 8:
+            raise ValueError("alternating stage 1 must end after a complete 8-update cycle")
     patterns_per_group = len(groups[0])
     unique_patterns = len(set(sum(groups, [])))
     update_windows(0, cfg.window_update)
@@ -233,10 +248,11 @@ def run_windows(cfg):
     stack = stack / stack.amax((2, 3), keepdim=True).clamp_min(1e-12)
     inputs = [stack[:, s] for s in selections]
     crop = slice(p//2, p//2 + m)
-    masks = footprint_masks(sc.pos, groups, m, cfg.N, device)
+    # Fixed four-corner readout isolates training scheduling from fusion changes.
+    masks = footprint_masks(sc.pos, groups[:4], m, cfg.N, device)
     cache = WindowFieldCache(masks) if loss_mode == "cached-fusion" else None
     # Independent auxiliary TGV state per window; nominal domains, as in net.
-    tgvs = [ObjectAmplitudeTGV(cfg, sc.pos[g], device) for g in groups] if cfg.tgv_amp else [None]*4
+    tgvs = [ObjectAmplitudeTGV(cfg, sc.pos[g], device) for g in groups] if cfg.tgv_amp else [None]*len(groups)
     energy = sc.sqrtIm.square().mean().detach()
     residual_base = None
 
@@ -254,9 +270,12 @@ def run_windows(cfg):
                   evaluation_network_forwards=0, evaluation_patterns=0,
                   transition_network_forwards=0, stage2_updates=0, cache_updates=0)
     print(f"[windows] {cfg.window_update}; iteration = ONE optimizer update; "
-          f"Stage 1: layout={layout}; 4x{patterns_per_group} = {unique_patterns} unique training frames, "
+          f"Stage 1: layout={layout}; {len(groups)} groups x {patterns_per_group} patterns; {unique_patterns} unique training frames, "
           f"remaining {cfg.n_pat-unique_patterns} evaluation-only in stage 1. "
           f"consistency={cfg.window_consistency:g}; full-canvas outputs, no added support.", flush=True)
+    if alternating:
+        print("[windows] alternating: 4 corner updates + 4 inner updates = 1 cycle; "
+              "evaluation/stage-2 conditioning use fresh predictions of the original 4 corner windows.", flush=True)
     if cache is not None:
         print("[windows] loss-mode=cached-fusion: ONE current window forward + 3 detached cached fields; "
               f"data/TGV use the fused object, {patterns_per_group} measurements/update. Cache starts at ones, "
@@ -278,6 +297,8 @@ def run_windows(cfg):
                     device=str(device), gpu=torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                     network_parameters=sum(p.numel() for p in net.parameters()), scene_fingerprint=sc.fp)
     metadata.update(switch_after=switch, total_updates=cfg.iters,
+                    evaluation_groups=groups[:4], schedule_period_updates=len(groups),
+                    window_schedule="four corners then four inner windows" if alternating else "fixed groups",
                     stage2_readout=stage2_readout if switch else None,
                     stage2="fresh object-only input, full measurements" if switch else None)
     if cache is not None:
@@ -369,12 +390,12 @@ def run_windows(cfg):
                   f"lr_net={cfg.window_stage2_lr_net:g}, lr_probe={cfg.window_stage2_lr_probe:g}, "
                   f"TGV={cfg.window_stage2_tgv:g}", flush=True)
             del stage1_fields, stage1_object, stage1_probe, initial_obj, new_net
-        active = [0] if stage2 else update_windows(it, cfg.window_update)
+        active = [0] if stage2 else ([it % 8] if alternating else update_windows(it, cfg.window_update))
         consistency_weight = 0. if stage2 else cfg.window_consistency
         tgv_weight = cfg.window_stage2_tgv if stage2 else cfg.tgv_amp
         # Read peers BEFORE any grad-enabled forward: restoring BN buffers after
         # such a forward would otherwise invalidate autograd saved tensors.
-        fields = [None]*4
+        fields = [None]*len(groups)
         if consistency_weight and len(active) == 1:
             with snapshot_readout(net):
                 for k in range(4):
@@ -446,6 +467,7 @@ def run_windows(cfg):
                        loss_mode=loss_mode if not stage2 else "full-data",
                        cache_fresh_relative_difference=cache_gap,
                        completed_sweeps=counts["window_visits"]//4,
+                       completed_schedule_cycles=counts["window_visits"]//len(groups),
                        sweep_progress=counts["window_visits"]/4,
                        elapsed_s=time.perf_counter()-start, **counts, **metrics)
             hist.append(row)
@@ -464,7 +486,8 @@ def run_windows(cfg):
           f"training patterns={counts['training_patterns']}, cache commits={counts['cache_updates']}", flush=True)
     _save(cfg, rec, pc, sc.obj, sc.probe, hist, sc.roi, sc.pos, tag="windows", train_elapsed_s=elapsed)
     np.savez_compressed(outdir / "window_fields.npz", fields=snapshot['fields'] if snapshot else final_array,
-                        masks=masks.cpu().numpy(), groups=np.asarray(groups),
+                        masks=masks.cpu().numpy(), groups=np.asarray(groups[:4]),
+                        training_groups=np.asarray(groups),
                         weights=cache.weights.cpu().numpy() if cache else fusion_weights(masks).cpu().numpy())
     if cache is not None:
         np.savez_compressed(outdir / "window_cache.npz", fields=cache.fields.cpu().numpy(),

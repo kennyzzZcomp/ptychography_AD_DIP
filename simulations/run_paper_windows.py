@@ -44,8 +44,8 @@ class WindowCfg(Cfg):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
-    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full"), default="sparse",
-                   help="sparse: original strided windows; compact-matched: regroup same points; compact-full: four 5x5 groups")
+    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full", "alternating"), default="sparse",
+                   help="alternating: four corner then four inner 4x4 windows; fixed corner fusion. Other layouts: sparse, compact-matched, compact-full")
     p.add_argument("--window-side", type=int, choices=(3, 4, 5), default=4,
                    help="3, 4 or 5 scan positions per axis (stride 2); omit for compact-full")
     p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
