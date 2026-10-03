@@ -36,6 +36,31 @@ def four_windows(grid=10):
             for rows, cols in ((a, a), (a, b), (b, a), (b, b))]
 
 
+def measurement_groups(grid=10, layout="sparse", side=4):
+    """Four equal-size groups; defaults reproduce four_windows exactly.
+
+    compact-matched regroups the SAME sparse measurements into quadrants.
+    compact-full partitions every scan position into four 5x5 quadrants.
+    These deterministic raster partitions are not a K-means implementation.
+    """
+    if grid != 10 or side not in (3, 4):
+        raise ValueError("Window experiments require grid=10 and window-side=3 or 4")
+    if layout == "compact-full":
+        if side != 4:
+            raise ValueError("compact-full uses 5x5 groups; omit --window-side")
+        a, b = tuple(range(5)), tuple(range(5, 10))
+    else:
+        a = tuple(range(0, 2 * side, 2))
+        b = tuple(range(grid - 1 - 2 * (side - 1), grid, 2))
+        if layout == "compact-matched":
+            axis = sorted(set(a + b))
+            a, b = tuple(axis[:side]), tuple(axis[side:])
+        elif layout != "sparse":
+            raise ValueError("Unknown window layout")
+    return [[r * grid + c for r in rows for c in cols]
+            for rows, cols in ((a, a), (a, b), (b, a), (b, b))]
+
+
 def update_windows(update, mode):
     if mode == "sequential":
         return [update % 4]
@@ -177,7 +202,11 @@ def run_windows(cfg):
             raise ValueError("Stage-2 learning rates must be finite and positive")
         if not np.isfinite(cfg.window_stage2_tgv) or cfg.window_stage2_tgv < 0:
             raise ValueError("Stage-2 TGV must be finite and nonnegative")
-    groups = four_windows(cfg.grid)
+    layout = getattr(cfg, "window_layout", "sparse")
+    side = getattr(cfg, "window_side", 4)
+    groups = measurement_groups(cfg.grid, layout, side)
+    patterns_per_group = len(groups[0])
+    unique_patterns = len(set(sum(groups, [])))
     update_windows(0, cfg.window_update)
     outdir = Path(cfg.outdir)
     outdir.mkdir(parents=True, exist_ok=False)
@@ -188,7 +217,7 @@ def run_windows(cfg):
     sc = build_scene(cfg, device)
     if cfg.network_seed is not None:
         torch.manual_seed(cfg.network_seed)
-    net = ProPtyUNet(16, cfg.base_ch, n_fields=1, ph_ch=2,
+    net = ProPtyUNet(patterns_per_group, cfg.base_ch, n_fields=1, ph_ch=2,
                     skip_mode=cfg.skip_mode, wavelet_threshold=cfg.wavelet_threshold).to(device)
     _initialize_object_heads(net, cfg.obj_init_alpha)
     mode, fixed, pr, pi, support = _probe_setup(cfg, sc, sc.probe, device, "windows")
@@ -225,11 +254,12 @@ def run_windows(cfg):
                   evaluation_network_forwards=0, evaluation_patterns=0,
                   transition_network_forwards=0, stage2_updates=0, cache_updates=0)
     print(f"[windows] {cfg.window_update}; iteration = ONE optimizer update; "
-          "Stage 1: 4x16 = 64 unique training frames, remaining 36 evaluation-only in stage 1. "
+          f"Stage 1: layout={layout}; 4x{patterns_per_group} = {unique_patterns} unique training frames, "
+          f"remaining {cfg.n_pat-unique_patterns} evaluation-only in stage 1. "
           f"consistency={cfg.window_consistency:g}; full-canvas outputs, no added support.", flush=True)
     if cache is not None:
         print("[windows] loss-mode=cached-fusion: ONE current window forward + 3 detached cached fields; "
-              "data/TGV use the fused object, 16 measurements/update. Cache starts at ones, "
+              f"data/TGV use the fused object, {patterns_per_group} measurements/update. Cache starts at ones, "
               "stores pre-update predictions; evaluation NEVER refreshes training cache.", flush=True)
     if cfg.window_update == "sequential" and cfg.window_consistency:
         print("[windows] Consistency adds 3 current-weight no-grad peer forwards per update; "
@@ -237,7 +267,9 @@ def run_windows(cfg):
     metadata = dict(groups=groups, missing_indices=sorted(set(range(cfg.n_pat))-set(sum(groups, []))),
                     update_mode=cfg.window_update, consistency_weight=cfg.window_consistency,
                     loss_mode=loss_mode,
-                    input_channels=16, output="full global canvas for each window",
+                    input_channels=patterns_per_group, window_layout=layout, window_side=side,
+                    unique_training_patterns=unique_patterns,
+                    output="full global canvas for each window",
                     fusion="complex mean on full computational footprints; ones outside union",
                     consistency_domain="full computational footprint intersections, NOT confidence/support",
                     calibration="independent analytic amplitude scale per training window; global scale for fused evaluation",
@@ -382,7 +414,7 @@ def run_windows(cfg):
         counts["optimizer_updates"] += 1
         counts["window_visits"] += 0 if stage2 else len(active)
         counts["stage2_updates"] += int(stage2)
-        counts["training_patterns"] += cfg.n_pat if stage2 else 16*len(active)
+        counts["training_patterns"] += cfg.n_pat if stage2 else patterns_per_group*len(active)
         # Avoid retaining four autograd graphs across iterations/evaluation.
         loss_value, data_value, con_value, reg_value = [t.item() for t in (loss, data, con, reg)]
         del fields, losses, regs, loss, data, con, reg, amp, current_probe, training_object
@@ -408,7 +440,7 @@ def run_windows(cfg):
                        consistency=con_value, post_update_disagreement=disagreement,
                        full_data_loss=full_loss.item(), real=real, relerr_p=probe_relerr(pc, sc.probe),
                        active_windows=[] if stage2 else active, stage=2 if stage2 else 1,
-                       input_channels=3 if stage2 else 16, active_patterns=cfg.n_pat if stage2 else 16*len(active),
+                       input_channels=3 if stage2 else patterns_per_group, active_patterns=cfg.n_pat if stage2 else patterns_per_group*len(active),
                        object_readout=stage2_readout if stage2 else "window-direct",
                        tgv_amp_weight=tgv_weight,
                        loss_mode=loss_mode if not stage2 else "full-data",
