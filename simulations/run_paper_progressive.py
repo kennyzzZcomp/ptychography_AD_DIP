@@ -24,6 +24,8 @@ RESET_TGV_AT_SWITCH = False  # subset/object mode only; windows already creates 
 # No support mask; no cosine on top of these piecewise-constant learning rates.
 
 # Edit the block for your selected mode. All iteration totals include BOTH stages.
+WINDOW_LAYOUT = "inner"     # main configuration; "sparse" for corner/5x5 comparisons
+WINDOW_SIDE = 4             # 4 inner groups x 16 patterns; 64 unique central scan positions
 WINDOW_UPDATE = "sequential" # one window loss and optimizer update per iteration
 WINDOW_CONSISTENCY = 0.0
 STAGE2_READOUT = "complex-residual" # windows only: "direct" reproduces the original stage-2 readout
@@ -31,15 +33,15 @@ if STAGE1_MODE == "windows":
     TOTAL_ITERS = 2000       # 1000 window updates + 1000 full-data updates
     STAGE2_INPUT = "object"  # fixed fused amplitude/cos-phase/sin-phase input
     STAGE2_NETWORK = "fresh" # new backbone; STAGE2_READOUT chooses direct vs residual output
-    STAGE1_TGV = 0.001       # successful 30.50 dB run settings, held fixed
-    STAGE2_TGV = 0.001
-    STAGE1_LR_NET = 0.001
+    STAGE1_TGV = 0.01        # fixed inner-4x4 residual main configuration
+    STAGE2_TGV = 0.005
+    STAGE1_LR_NET = 0.0005
     STAGE2_LR_NET = 0.002
     STAGE1_LR_PROBE = 0.01
     STAGE2_LR_PROBE = 0.01
     PROBE_INIT = "ones"
     EVAL_EVERY = 100
-    OUTDIR = f"ov80_windows_progressive_{STAGE2_READOUT}_tgv001_seed0"
+    OUTDIR = f"ov80_{WINDOW_LAYOUT}{WINDOW_SIDE}x{WINDOW_SIDE}_{STAGE2_READOUT}_tgv01to005_seed{SEED}"
 else:                       # original sparse-subset defaults, preserved
     TOTAL_ITERS = 4000
     STAGE2_INPUT = "diffraction" # also supports "object" or "reconstruction"
@@ -75,6 +77,7 @@ def build_command():
             "eval-size": EVAL_SIZE, "eval-every": EVAL_EVERY, "iters": TOTAL_ITERS,
             "switch-after": SWITCH_AFTER, "base-ch": BASE_CH, "seed": SEED, "device": "cuda",
             "update-mode": WINDOW_UPDATE, "consistency-weight": WINDOW_CONSISTENCY,
+            "window-layout": WINDOW_LAYOUT, "window-side": WINDOW_SIDE,
             "probe-mode": "pixel", "probe-init": PROBE_INIT,
             "lr-net": STAGE1_LR_NET, "lr-probe": STAGE1_LR_PROBE, "tgv-amp": STAGE1_TGV,
             "stage2-lr-net": STAGE2_LR_NET, "stage2-lr-probe": STAGE2_LR_PROBE,

@@ -16,6 +16,18 @@ to the fixed raw stage-1 object. Default direct preserves the previous solver.
 the fused object using the current prediction and three detached cached fields.
 Caches start at ones; no extra training forwards or extra optimizer updates.
 Fusion uses existing computational footprints, not known illumination/support.
+
+--window-layout coverage-balanced: fixed four-way partition of ALL measurements
+using the coverage demo's capacity-preserving pair swaps. For 10x10 this is
+4x25 channels/patterns, matching sparse --window-side 5, NOT inner 4x4's 64 frames.
+--window-side is ignored in this mode. Use --coverage-diameter-px 59.1 and
+--coverage-seed 0 to reproduce the geometry demo (grid 10, step 12).
+The disk is a nominal grouping proxy only, not an object/probe support or a GT
+probe. Grouping is computed once and frozen; channels stay in ascending original
+scan-index order. Input, loss and readout all use the same new groups.
+coverage_partition.json stores exact groups, E and preprocessing times (excluded
+from the existing training-loop time). Other layouts/progressive defaults stay
+unchanged. The training adapter currently requires equal group lengths (N%4=0).
 """
 import argparse
 from dataclasses import dataclass
@@ -31,6 +43,9 @@ from functions.paperrepro.window_training import run_windows
 class WindowCfg(Cfg):
     window_layout: str = "sparse"
     window_side: int = 4
+    coverage_diameter_px: float = None
+    coverage_anchor_step: float = 2.0
+    coverage_seed: int = 0
     window_update: str = "sequential"
     window_loss_mode: str = "independent"
     window_consistency: float = 0.0
@@ -44,10 +59,16 @@ class WindowCfg(Cfg):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
-    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full", "alternating", "inner"), default="sparse",
-                   help="inner: fixed four inner 4x4 windows for training and fusion; alternating: corners then inner, fixed corner fusion; other layouts: sparse, compact-matched, compact-full")
+    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full", "alternating", "inner", "coverage-balanced"), default="sparse",
+                   help="coverage-balanced: disk-coverage partition of ALL measurements into four equal groups; inner: fixed inner windows; alternating: corners then inner")
     p.add_argument("--window-side", type=int, choices=(3, 4, 5), default=4,
-                   help="3, 4 or 5 scan positions per axis (stride 2); omit for compact-full")
+                   help="3, 4 or 5 scan positions per axis (stride 2); ignored by coverage-balanced; omit for compact-full")
+    p.add_argument("--coverage-diameter-px", type=float, default=None,
+                   help="coverage-balanced ONLY: nominal uniform-disk diameter for grouping, not a reconstruction support. Default: configured physical diameter in pixels; use 59.1 to reproduce the demo")
+    p.add_argument("--coverage-anchor-step", type=float, default=2.0,
+                   help="coverage-balanced ONLY: grouping feature-grid spacing in object pixels")
+    p.add_argument("--coverage-seed", type=int, default=0,
+                   help="coverage-balanced ONLY: local partition RNG seed, independent of network/scene RNG")
     p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
                    help="stage-1 training object: individual window or current + cached peer fusion")
     p.add_argument("--consistency-weight", type=float, default=0.0)
@@ -86,6 +107,8 @@ def main():
                     lr_net=a.lr_net, lr_probe=a.lr_probe, tgv_amp=a.tgv_amp,
                     outdir=a.outdir, window_update=a.update_mode,
                     window_layout=a.window_layout, window_side=a.window_side,
+                    coverage_diameter_px=a.coverage_diameter_px,
+                    coverage_anchor_step=a.coverage_anchor_step, coverage_seed=a.coverage_seed,
                     window_loss_mode=a.loss_mode,
                     window_consistency=a.consistency_weight,
                     window_switch_after=a.switch_after, window_stage2_lr_net=a.stage2_lr_net,

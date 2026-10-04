@@ -213,15 +213,16 @@ def run_windows(cfg):
             raise ValueError("Stage-2 TGV must be finite and nonnegative")
     layout = getattr(cfg, "window_layout", "sparse")
     side = getattr(cfg, "window_side", 4)
-    groups = measurement_groups(cfg.grid, layout, side)
+    coverage_balanced = layout == "coverage-balanced"
+    if coverage_balanced and (cfg.n_pat < 4 or cfg.n_pat % 4):
+        raise ValueError("coverage-balanced training requires measurement count divisible by 4; unequal-channel groups are not supported")
+    groups = None if coverage_balanced else measurement_groups(cfg.grid, layout, side)
     alternating = layout == "alternating"
     if alternating:
         if cfg.window_update != "sequential" or loss_mode != "independent" or cfg.window_consistency:
             raise ValueError("alternating requires sequential, independent loss and consistency-weight=0")
         if switch and switch % 8:
             raise ValueError("alternating stage 1 must end after a complete 8-update cycle")
-    patterns_per_group = len(groups[0])
-    unique_patterns = len(set(sum(groups, [])))
     update_windows(0, cfg.window_update)
     outdir = Path(cfg.outdir)
     outdir.mkdir(parents=True, exist_ok=False)
@@ -230,6 +231,24 @@ def run_windows(cfg):
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
     sc = build_scene(cfg, device)
+    coverage_audit = None
+    if coverage_balanced:
+        from functions.paperrepro.coverage_balanced_batching import disk_window_partition
+        diameter = getattr(cfg, "coverage_diameter_px", None)
+        groups, coverage_audit = disk_window_partition(
+            sc.pos, cfg.probe_diam_px if diameter is None else diameter,
+            anchor_step=getattr(cfg, "coverage_anchor_step", 2.0),
+            seed=getattr(cfg, "coverage_seed", 0))
+        (outdir / "coverage_partition.json").write_text(
+            json.dumps(dict(groups=groups, positions_yx=sc.pos.tolist(), **coverage_audit), indent=2),
+            encoding="utf-8")
+        print(f"[windows] coverage-balanced: fixed nominal disk D={coverage_audit['diameter_px']:.6g}px; "
+              f"partition seed={coverage_audit['seed']}; eval E={coverage_audit['E_percent']:.2f}% "
+              f"(initial random {coverage_audit['initial_random_E_percent']:.2f}%); "
+              f"setup incl. diagnostics={coverage_audit['setup_with_diagnostics_seconds']:.3f}s. "
+              "No truth probe or added reconstruction support; window-side ignored.", flush=True)
+    patterns_per_group = len(groups[0])
+    unique_patterns = len(set(sum(groups, [])))
     if cfg.network_seed is not None:
         torch.manual_seed(cfg.network_seed)
     net = ProPtyUNet(patterns_per_group, cfg.base_ch, n_fields=1, ph_ch=2,
@@ -248,7 +267,8 @@ def run_windows(cfg):
     stack = stack / stack.amax((2, 3), keepdim=True).clamp_min(1e-12)
     inputs = [stack[:, s] for s in selections]
     crop = slice(p//2, p//2 + m)
-    # Fixed four-corner readout isolates training scheduling from fusion changes.
+    # Use the same four groups for input, loss and readout; alternating alone
+    # retains the original four-corner readout to isolate schedule changes.
     masks = footprint_masks(sc.pos, groups[:4], m, cfg.N, device)
     cache = WindowFieldCache(masks) if loss_mode == "cached-fusion" else None
     # Independent auxiliary TGV state per window; nominal domains, as in net.
@@ -301,6 +321,8 @@ def run_windows(cfg):
                     window_schedule="four corners then four inner windows" if alternating else "fixed groups",
                     stage2_readout=stage2_readout if switch else None,
                     stage2="fresh object-only input, full measurements" if switch else None)
+    if coverage_audit is not None:
+        metadata.update(coverage_partition=coverage_audit, window_side=None)
     if cache is not None:
         metadata.update(training_object="partition-weighted complex fusion; active prediction + detached peers",
                         training_tgv="amplitude of fused object on active window TGV domain",
