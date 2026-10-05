@@ -163,6 +163,82 @@ $py = 'D:\miniconda\envs\flatnet\python.exe'
 本地原始日志/图/配置/checkpoint 在 `tmp/deepie_validation/paper_final/`
 和 `tmp/deepie_validation/paper_low_lr/`；这些临时运行产物不作为源码提交。
 
+## 诊断“停在常数物体”的顺序
+
+新增 `simulations/DeePIE_diagnose.py`。这三个阶段不修改原训练入口。
+诊断测试已加入 `simulations/test_deepie.py`，当前合计 12 项测试通过。
+以下假设待查的 Colab 实验目录是截图中的 `results_paper/deepie_4`。
+同步新增诊断脚本后，在 Colab 项目根目录运行；每次换一个新的诊断输出目录。
+
+### A. 审计已有结果：不训练
+
+```python
+!python simulations/DeePIE_diagnose.py audit \
+  --result results_paper/deepie_4/deepie_result.npz \
+  --outdir results_paper/deepie_4_audit
+```
+
+直接使用保存的 obj_rec/obj_gt/roi，不重新仿真，也不加载 pickle checkpoint。
+输出 `diagnostic.json` 和 `constant_comparison.png`：
+
+- `gain_over_constant_db`：比同一 ROI 的常数物体高多少 dB。
+- `object_statistics.relative_distance_to_constant`：
+  ||O-mean(O)||/||O||，越接近 0 越接近空间常数，不受非零全局复尺度影响。
+- `amplitude_cv`：振幅标准差/平均值，配合真值统计看对比度是否丢失。
+- 原始训练配置，以及已有 history 中实际使用的 LR。
+
+PSNR 接近常数基线并不能单独证明物体恒定；必须结合空间变化统计或重建图。
+这些统计也不能单独证明损失完全由探针下降，需要探针冻结/物体冻结对照。
+
+### B. 绕开衍射，直接拟合已知物体
+
+```python
+!python simulations/DeePIE_diagnose.py fit-object \
+  --from-run results_paper/deepie_4 \
+  --device cuda --lr 1e-6 --iters 100 --eval-every 10 \
+  --outdir results_paper/deepie_4_fit_object
+```
+
+继承原 manifest 中的网络配置和网络种子，但从相同随机初始化重新开始，
+不载入已经停滞的网络权重。直接最小化振幅 MSE + 相位弧度 MSE，
+默认只拟合评价 ROI 内的坐标（保留原全局坐标，不重新放大局部坐标）。
+`--fit-domain full` 可切换到整幅画布。该损失对 wrapped GT phase 的跳变并不平滑；
+当前默认 +/-0.8 rad 场景没有这种跨 +/-pi 跳变。
+
+诊断默认显式关闭 LR 衰减、扫描加权、梯度平衡，避免未确认启发式干扰；
+CLI 仍可覆盖这些值（扫描加权对直接拟合模式不生效）。
+`--lr` 是网络 LR；`--probe-lr`、`--probe-scale` 不控制这两个诊断实验。
+记录初始状态、第 1 步、指定间隔和最终状态；同时记录每层有效 W 的原始 RMS、
+更新 RMS 和相对更新量。特别小的初始 W 会放大相对更新量，必须同时看绝对 RMS。
+
+如果直接拟合也不能降低目标损失、学出结构，应先检查网络参数化和优化条件，
+不应归因于衍射前向或盲探针。100 步失败不证明网络缺乏表达能力，可能是预算/LR不合适。
+ROI 直接拟合通过也不等于全幅拟合或盲重建已经通过。
+
+### C. 固定正确探针，只从衍射图重建物体
+
+```python
+!python simulations/DeePIE_diagnose.py known-probe \
+  --from-run results_paper/deepie_4 \
+  --device cuda --lr 1e-6 --iters 100 --eval-every 10 \
+  --outdir results_paper/deepie_4_known_probe
+```
+
+使用与原仿真一致的真值探针，并用真值前向的全局最大强度恢复其正确幅度尺度；
+探针不参与优化。这是明确使用真值的非盲诊断，不是可用于正式对照的 baseline。
+`truth_clean_amplitude_mse` 检查真值对干净数据的前向一致性，应接近数值精度。
+有噪声时训练使用原含噪数据，不能要求真值在含噪数据上达到零损失。
+
+若 B 通过、C 停滞，再查衍射损失下的网络优化、尺度和数据可辨识性；
+若 C 明显有效、原盲重建仍停滞，优先检查联合探针优化。
+这些诊断为了降低难度更改了训练规则，不构成对某一个启发式的单变量归因；
+定位范围后应逐项恢复原设置验证。
+
+B/C 都输出 `diagnostic.json`、`history.json`、`diagnostic_fields.npz`，
+并标记 `not_a_blind_baseline=true`。默认会根据原配置重新生成仿真，
+打印新旧指纹；如果不同，应先核查素材、参数覆盖和软件/设备差异。
+本地只完成小场景单步测试，没有自动执行以上两项 100 步实验。
+
 ## 输出与连续坐标推理
 
 - `deepie_manifest.json`：来源、实现选择、场景指纹、源码 SHA256、模型/训练参数、

@@ -22,6 +22,8 @@ from functions.paperrepro.deepie_solver import (TrainingConfig, exact_chunked_gr
                                                 measurement_loss, scan_weights, initial_probe_scale,
                                                 balance_network_gradients, run_deepie)
 from functions.paperrepro.scene import build_scene
+from simulations.DeePIE_diagnose import (supervised_gradients, scaled_truth_probe,
+                                        audit_result, run_diagnostic, main as diagnostic_main)
 
 
 @contextlib.contextmanager
@@ -172,6 +174,60 @@ class DeePIETests(unittest.TestCase):
                 np.testing.assert_allclose(result["obj_rec"],obj.numpy(),rtol=1e-5,atol=1e-6)
                 self.assertEqual(str(result["scene_fingerprint"]),scene.fp)
                 self.assertEqual(json.loads(str(result["cfg"]))["quad_sign"],-1.)
+
+    def test_supervised_diagnostic_gradients_match_direct(self):
+        model=self.small_model()
+        ref=copy.deepcopy(model)
+        coords=coordinate_grid(5,"cpu",torch.float64)
+        amp=torch.rand(25,dtype=torch.float64)
+        phase=torch.rand(25,dtype=torch.float64)*.8
+        loss=((ref.amplitude(coords)-amp).square()
+              +(ref.phase(coords)*ref.cfg.phase_scale-phase).square()).mean()
+        loss.backward()
+        actual=supervised_gradients(model,coords,amp,phase,7)
+        torch.testing.assert_close(actual,loss.detach(),rtol=1e-10,atol=1e-12)
+        for a,b in zip(model.parameters(),ref.parameters()):
+            torch.testing.assert_close(a.grad,b.grad,rtol=1e-8,atol=1e-10)
+
+    def test_audit_detects_constant_field_from_saved_arrays(self):
+        y,x=np.mgrid[:10,:10]
+        gt=((.2+x/20)*np.exp(.1j*y)).astype(np.complex64)
+        with workspace_temp() as d:
+            p=Path(d)/"input.npz"
+            np.savez(p,obj_rec=np.ones_like(gt)*(.3+.2j),obj_gt=gt,
+                      probe_rec=np.ones((4,4)),probe_gt=np.ones((4,4)),roi=[0,10,0,10],hist="[]")
+            with contextlib.redirect_stdout(io.StringIO()):
+                report=audit_result(p,Path(d))
+            self.assertLess(report["object_statistics"]["relative_distance_to_constant"],1e-12)
+            for v in report["gain_over_constant_db"].values():self.assertAlmostEqual(v,0,places=5)
+
+    def test_known_probe_and_direct_fit_diagnostics_run_one_update(self):
+        mc=ModelConfig(width=6,hidden_layers=2,high_frequencies=3,low_frequencies=2,
+                       phases=4,encoding_side=8,omega=3.,head_scale=.1)
+        tc=TrainingConfig(lr=1e-5,scan_chunk=3,coordinate_chunk=31,balance="none",scan_weight="uniform")
+        for mode in ("fit-object","known-probe"):
+            with self.subTest(mode=mode),workspace_temp() as d:
+                cfg=Cfg(N=8,obj_size=16,grid=2,step_px=4,eval_size=8,iters=1,eval_every=1,
+                        device="cpu",probe_diam_um=2000,outdir=d)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    meta,hist=run_diagnostic(mode,cfg,mc,tc)
+                self.assertLess(meta["truth_clean_amplitude_mse"],1e-12)
+                self.assertTrue(meta["not_a_blind_baseline"])
+                self.assertEqual([row["it"] for row in hist],[0,1])
+                self.assertTrue(np.isfinite(hist[-1]["loss"]))
+                self.assertIn("amplitude.0",hist[-1]["effective_weight_update"])
+
+    def test_diagnostic_inherits_model_and_seed_but_explicitly_disables_decay(self):
+        with workspace_temp() as d:
+            manifest=Path(d)/"deepie_manifest.json"
+            manifest.write_text(json.dumps({"model_config":{"width":32,"activation":"leaky-sine"},
+                "training_config":{"lr":3e-6,"network_seed":17,"decay_factor":.5,"balance":"equal-norm"},
+                "scene_config":{"preset":"smoke","seed":5}}),encoding="utf-8")
+            with patch("simulations.DeePIE_diagnose.run_diagnostic") as run:
+                diagnostic_main(["fit-object","--from-run",d,"--lr","2e-6"])
+            _,cfg,mc,tc,*_=run.call_args.args
+            self.assertEqual((cfg.seed,mc.width,mc.activation,tc.network_seed),(5,32,"leaky-sine",17))
+            self.assertEqual((tc.lr,tc.decay_factor,tc.balance),(2e-6,1.,"none"))
 
 
 if __name__ == "__main__":
