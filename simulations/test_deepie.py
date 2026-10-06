@@ -42,6 +42,26 @@ def workspace_temp():
 
 
 class DeePIETests(unittest.TestCase):
+    def test_small_window_layout_and_sampling_scale(self):
+        cfg,mc,tc=configurations(parser().parse_args(['check','--preset','ptyinr-layout']))
+        baseline=Cfg(**PRESETS['paper'])
+        self.assertEqual((cfg.N,cfg.obj_size,cfg.grid,cfg.step_px),(64,241,60,3))
+        self.assertEqual(cfg.scan_span,241)
+        self.assertEqual(cfg.n_pat,3600)
+        self.assertAlmostEqual(cfg.dx1,8*baseline.dx1)
+        self.assertAlmostEqual(cfg.probe_diam_px,baseline.probe_diam_px/8)
+        scaled,_,_=configurations(parser().parse_args(['check','--preset','ptyinr-layout',
+                                  '--sample-pixel-um',str(baseline.dx1*1e6)]))
+        self.assertAlmostEqual(scaled.dx1,baseline.dx1)
+        self.assertAlmostEqual(scaled.det_pixel,8*baseline.det_pixel)
+        self.assertAlmostEqual(scaled.probe_diam_px,baseline.probe_diam_px)
+        self.assertNotIn('ptyinr-layout',PRESETS)
+        with self.assertRaises(ValueError):
+            configurations(parser().parse_args(['check','--sample-pixel-um','10','--det-pixel','1e-5']))
+        with patch('simulations.DeePIE_diagnose.run_diagnostic') as run:
+            diagnostic_main(['known-probe','--preset','ptyinr-layout','--lr','1e-6'])
+        self.assertEqual(run.call_args.args[1].N,64)
+
     def setUp(self):
         self.threads = torch.get_num_threads()
         torch.set_num_threads(1)
@@ -205,7 +225,8 @@ class DeePIETests(unittest.TestCase):
         mc=ModelConfig(width=6,hidden_layers=2,high_frequencies=3,low_frequencies=2,
                        phases=4,encoding_side=8,omega=3.,head_scale=.1)
         tc=TrainingConfig(lr=1e-5,scan_chunk=3,coordinate_chunk=31,balance="none",scan_weight="uniform")
-        for mode in ("fit-object","known-probe"):
+        initial_known = None
+        for mode in ("fit-object","known-probe","pixel-known-probe"):
             with self.subTest(mode=mode),workspace_temp() as d:
                 cfg=Cfg(N=8,obj_size=16,grid=2,step_px=4,eval_size=8,iters=1,eval_every=1,
                         device="cpu",probe_diam_um=2000,outdir=d)
@@ -215,7 +236,18 @@ class DeePIETests(unittest.TestCase):
                 self.assertTrue(meta["not_a_blind_baseline"])
                 self.assertEqual([row["it"] for row in hist],[0,1])
                 self.assertTrue(np.isfinite(hist[-1]["loss"]))
-                self.assertIn("amplitude.0",hist[-1]["effective_weight_update"])
+                if mode == "pixel-known-probe":
+                    self.assertIsNone(hist[-1]["effective_weight_update"])
+                    self.assertGreater(hist[-1]["gradient_stats"]["pixel_gradient_norm"],0)
+                    self.assertAlmostEqual(hist[0]["loss"],initial_known["loss"],places=12)
+                    self.assertEqual(hist[0]["metrics"],initial_known["metrics"])
+                    self.assertLess(hist[-1]["loss"],hist[0]["loss"])
+                    self.assertTrue(meta["network_used_for_initialization_only"])
+                else:
+                    self.assertIn("amplitude.0",hist[-1]["effective_weight_update"])
+                if mode == "known-probe":
+                    initial_known = hist[0]
+                    self.assertGreater(hist[0]["relative_amplitude_mse"],0)
 
     def test_diagnostic_inherits_model_and_seed_but_explicitly_disables_decay(self):
         with workspace_temp() as d:
@@ -228,6 +260,12 @@ class DeePIETests(unittest.TestCase):
             _,cfg,mc,tc,*_=run.call_args.args
             self.assertEqual((cfg.seed,mc.width,mc.activation,tc.network_seed),(5,32,"leaky-sine",17))
             self.assertEqual((tc.lr,tc.decay_factor,tc.balance),(2e-6,1.,"none"))
+            with patch("simulations.DeePIE_diagnose.run_diagnostic") as run:
+                diagnostic_main(["pixel-known-probe","--from-run",d])
+            self.assertEqual(run.call_args.args[3].lr,1e-2)
+            with patch("simulations.DeePIE_diagnose.run_diagnostic") as run:
+                diagnostic_main(["pixel-known-probe","--from-run",d,"--lr","0.003"])
+            self.assertEqual(run.call_args.args[3].lr,.003)
 
 
 if __name__ == "__main__":

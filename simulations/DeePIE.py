@@ -15,10 +15,18 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from simulations.ProPtyNet_paper import Cfg, PRESETS
+from simulations.ProPtyNet_paper import Cfg, PRESETS as BASE_PRESETS
 from functions.paperrepro.deepie_model import ModelConfig
 from functions.paperrepro.deepie_solver import TrainingConfig, run_deepie
 from functions.paperrepro.scene import build_scene
+
+# Local to DeePIE: do not alter the baseline's defaults or CLI presets.
+# Match PtyINR's default ARRAY/SCAN layout, not its X-ray specimen or probe.
+# Keeping wavelength/z/detector pitch means N=64 increases object pixel pitch 8x.
+PRESETS = {**BASE_PRESETS, "ptyinr-layout": {
+    **BASE_PRESETS["paper"], "N":64, "obj_size":241, "grid":60, "step_px":3,
+    "eval_size":0,
+}}
 
 
 # Only measurement/geometry/initial-probe/evaluation fields are inherited.
@@ -38,6 +46,8 @@ def parser():
     p.add_argument("mode", choices=["check", "run"], help="check: scene only; run: optimize DeePIE")
     p.add_argument("--preset", choices=PRESETS, default=None)
     p.add_argument("--scene-config", type=Path, help="baseline result .npz, config .json, or DeePIE manifest")
+    p.add_argument("--sample-pixel-um", type=float, default=None,
+                   help="Set object-plane pixel pitch by deriving detector pitch from lambda*z/(N*dx); changes measurement sampling")
     for name, kind in SCENE_FIELDS.items():
         p.add_argument("--" + name.replace("_", "-"), dest=name, type=kind, default=None)
     p.add_argument("--obj-amp-binary-invert", action=argparse.BooleanOptionalAction, default=None)
@@ -95,6 +105,14 @@ def configurations(args):
     if args.preset is not None:
         kw.update(PRESETS[args.preset])
     kw.update({k: getattr(args, k) for k in accepted if getattr(args, k) is not None})
+    if args.sample_pixel_um is not None:
+        if not np.isfinite(args.sample_pixel_um) or args.sample_pixel_um <= 0:
+            raise ValueError("sample-pixel-um must be finite and positive")
+        if args.det_pixel is not None:
+            raise ValueError("Use either --sample-pixel-um or --det-pixel, not both")
+        base=Cfg()
+        kw["det_pixel"] = (kw.get("wlength",base.wlength)*kw.get("z",base.z)
+                           / (kw.get("N",base.N)*args.sample_pixel_um*1e-6))
     kw.update(device=args.device, iters=args.iters, eval_every=args.eval_every,
               outdir=args.outdir, probe_mode="pixel")
     if kw.get("noise", "none") not in ("none", "gaussian", "poisson", "mixed"):
@@ -123,7 +141,13 @@ def main(argv=None):
         p.error(str(exc))
     if args.mode == "check":
         scene = build_scene(cfg, cfg.dev())
-        print(json.dumps({"scene_fingerprint": scene.fp, "model_config": asdict(mc),
+        print(json.dumps({"scene_fingerprint": scene.fp,
+                          "scene_config": {**asdict(cfg),"quad_sign":cfg.quad_sign},
+                          "sampling": {"object_pixel_um":cfg.dx1*1e6,
+                                       "probe_diameter_px":cfg.probe_diam_px,
+                                       "window_overlap":1-cfg.step_px/cfg.N,
+                                       "scan_displacement_px":(cfg.grid-1)*cfg.step_px},
+                          "model_config": asdict(mc),
                           "training_config": asdict(tc)}, indent=2))
     else:
         run_deepie(cfg, mc, tc)

@@ -143,6 +143,9 @@ def effective_update_stats(model, before):
 
 
 def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
+    if mode not in ("fit-object", "known-probe", "pixel-known-probe"):
+        raise ValueError(f"Unknown diagnostic: {mode}")
+    pixel_mode = mode == "pixel-known-probe"
     out = Path(cfg.outdir)
     out.mkdir(parents=True, exist_ok=True)
     if (out / "diagnostic.json").exists():
@@ -161,6 +164,14 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
     torch.manual_seed(tc.network_seed)
     model = DeePIEObject(mc).to(device)
     coords = coordinate_grid(cfg.obj_size, device)
+    if pixel_mode:
+        # Match the network control's initial complex field exactly, then free each pixel.
+        with torch.no_grad():
+            pixels = torch.nn.Parameter(model.field(coords, cfg.obj_size, tc.coordinate_chunk,
+                                                     model.materialize()).clone())
+        del model
+        model = None
+    parameters = [pixels] if pixel_mode else list(model.parameters())
     rs, cs = scene.roi
     selection = (rs,cs) if fit_domain == "roi" else (slice(None),slice(None))
     fit_coords = coords.reshape(cfg.obj_size,cfg.obj_size,2)[selection].reshape(-1,2)
@@ -171,13 +182,17 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
     with torch.no_grad():
         truth_loss = measurement_loss(gt_field,probe,scene.post,scene.Q,scene.Iclt.sqrt(),
                                       torch.ones_like(weights),tc.scan_chunk).item()
-    opt = torch.optim.Adam(model.parameters(),lr=tc.lr)
+    measured_energy = scene.sqrtIm.square().mean().clamp_min(1e-30).item()
+    print(f"[diagnostic] truth clean amplitude MSE={truth_loss:.6g}")
+    opt = torch.optim.Adam(parameters,lr=tc.lr)
     scheduler = torch.optim.lr_scheduler.StepLR(opt,tc.decay_every,gamma=tc.decay_factor)
     metadata = {
         "diagnostic": mode, "not_a_blind_baseline": True, "status": "running",
         "fit_domain": fit_domain if mode == "fit-object" else None,
         "source_manifest": str(source_manifest) if source_manifest else None,
         "source_model_weights_loaded": False,
+        "object_parameterization": "complex pixels" if pixel_mode else "coordinate network",
+        "network_used_for_initialization_only": pixel_mode,
         "scene_fingerprint": scene.fp,
         "scene_config": {**asdict(cfg),"quad_sign":cfg.quad_sign},
         "model_config":asdict(mc),"training_config":asdict(tc),
@@ -189,8 +204,12 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
     history=[]
     def record(it, pre_loss=None, gradient_stats=None, weight_stats=None):
         with torch.no_grad():
-            eff=model.materialize()
-            obj=model.field(coords,cfg.obj_size,tc.coordinate_chunk,eff)
+            if pixel_mode:
+                obj=pixels.detach()
+            else:
+                eff=model.materialize()
+                obj=model.field(coords,cfg.obj_size,tc.coordinate_chunk,eff)
+            relative_data_loss=None
             if mode == "fit-object":
                 loss=coords.new_zeros(())
                 for start in range(0,len(fit_coords),tc.coordinate_chunk):
@@ -200,8 +219,12 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
                            +(p-phase_target[start:start+len(xy)]).square().sum())/len(fit_coords)
             else:
                 loss=measurement_loss(obj,probe,scene.post,scene.Q,scene.sqrtIm,weights,tc.scan_chunk)
+                data_loss = loss if tc.scan_weight == "uniform" else measurement_loss(
+                    obj,probe,scene.post,scene.Q,scene.sqrtIm,torch.ones_like(weights),tc.scan_chunk)
+                relative_data_loss=data_loss.item()/measured_energy
             rec=obj.cpu().numpy()
         row={"it":it,"loss":loss.item(),"pre_update_loss":pre_loss,
+             "relative_amplitude_mse":relative_data_loss,
              "metrics":evaluate(rec[rs,cs],scene.obj[rs,cs]),
              "object_statistics":field_statistics(rec[rs,cs]),
              "gradient_stats":gradient_stats,"effective_weight_update":weight_stats}
@@ -218,20 +241,25 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
         rec=record(0)
         for it in range(cfg.iters):
             log_step=it==0 or (it+1)%cfg.eval_every==0 or it==cfg.iters-1
-            before=effective_snapshot(model) if log_step else None
+            before=effective_snapshot(model) if log_step and not pixel_mode else None
             opt.zero_grad(set_to_none=True)
             if mode == "fit-object":
                 loss=supervised_gradients(model,fit_coords,amp_target,phase_target,tc.coordinate_chunk)
+            elif pixel_mode:
+                loss=measurement_loss(pixels,probe,scene.post,scene.Q,scene.sqrtIm,weights,
+                                      tc.scan_chunk,backward=True)
             else:
                 loss=exact_chunked_gradients(model,probe,coords,cfg.obj_size,scene.post,scene.Q,
                                              scene.sqrtIm,weights,tc)
-            stats=balance_network_gradients(model,tc.balance)
-            if not torch.isfinite(loss) or any(not torch.isfinite(p.grad).all() for p in model.parameters()):
+            stats=({"pixel_gradient_norm":pixels.grad.norm().item()} if pixel_mode
+                   else balance_network_gradients(model,tc.balance))
+            if not torch.isfinite(loss) or any(p.grad is None or not torch.isfinite(p.grad).all() for p in parameters):
                 raise FloatingPointError("Non-finite loss/gradient")
             used_lr=opt.param_groups[0]["lr"]
             opt.step();scheduler.step()
             if log_step:
-                rec=record(it+1,loss.item(),stats,effective_update_stats(model,before))
+                rec=record(it+1,loss.item(),stats,
+                           None if pixel_mode else effective_update_stats(model,before))
                 history[-1]["lr_used"]=used_lr
                 if not np.isfinite(history[-1]["loss"]):
                     raise FloatingPointError("Non-finite post-update loss")
@@ -252,9 +280,9 @@ def run_diagnostic(mode, cfg, mc, tc, fit_domain="roi", source_manifest=None):
 
 def main(argv=None):
     argv=list(sys.argv[1:] if argv is None else argv)
-    modes=("audit","fit-object","known-probe")
+    modes=("audit","fit-object","known-probe","pixel-known-probe")
     if not argv or argv[0] not in modes:
-        raise SystemExit("Usage: DeePIE_diagnose.py {audit|fit-object|known-probe} [options]; append --help")
+        raise SystemExit("Usage: DeePIE_diagnose.py {audit|fit-object|known-probe|pixel-known-probe} [options]; append --help")
     mode=argv.pop(0)
     if mode=="audit":
         p=argparse.ArgumentParser(description="Inspect a saved DeePIE result without training")
@@ -279,6 +307,9 @@ def main(argv=None):
     # lr/model/seed are inherited, unless explicitly overridden on the command line.
     p.set_defaults(iters=100,eval_every=10,decay_factor=1.,scan_weight="uniform",balance="none",
                    outdir=f"results_paper/deepie_diagnostic_{mode}")
+    if mode == "pixel-known-probe":
+        # Pixel values and Fourier coefficients have different scales; explicit --lr overrides.
+        p.set_defaults(lr=1e-2)
     args=p.parse_args(["run",*argv])
     cfg,mc,tc=configurations(args)
     run_diagnostic(mode,cfg,mc,tc,args.fit_domain,source)

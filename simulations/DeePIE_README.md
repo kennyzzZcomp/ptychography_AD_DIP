@@ -165,7 +165,7 @@ $py = 'D:\miniconda\envs\flatnet\python.exe'
 
 ## 诊断“停在常数物体”的顺序
 
-新增 `simulations/DeePIE_diagnose.py`。这三个阶段不修改原训练入口。
+新增 `simulations/DeePIE_diagnose.py`。以下诊断不修改原训练入口。
 诊断测试已加入 `simulations/test_deepie.py`，当前合计 12 项测试通过。
 以下假设待查的 Colab 实验目录是截图中的 `results_paper/deepie_4`。
 同步新增诊断脚本后，在 Colab 项目根目录运行；每次换一个新的诊断输出目录。
@@ -238,6 +238,75 @@ B/C 都输出 `diagnostic.json`、`history.json`、`diagnostic_fields.npz`，
 并标记 `not_a_blind_baseline=true`。默认会根据原配置重新生成仿真，
 打印新旧指纹；如果不同，应先核查素材、参数覆盖和软件/设备差异。
 本地只完成小场景单步测试，没有自动执行以上两项 100 步实验。
+
+### D. 固定正确探针，直接优化复数物体像素
+
+当 C 的损失下降而图像指标不改善时，使用这一对照：
+
+```python
+!python /content/ptychography_AD_DIP/simulations/DeePIE_diagnose.py pixel-known-probe \
+  --from-run results_paper/deepie_7 \
+  --device cuda --lr 1e-2 --iters 100 --eval-every 10 \
+  --outdir results_paper/deepie_7_pixel_known_probe
+```
+
+D 用相同配置、种子的网络生成与 C 一致的初始复数物体，然后移除网络，
+用 Adam 直接优化每个复数像素；固定探针、数据、前向、损失、评价口径与 C 相同。
+像素 LR 默认 1e-2，不继承网络系数的 LR；显式 `--lr` 可覆盖。
+两种参数的尺度不同，此实验比较优化路径是否可行，不用于等步数速度排名。
+梯度平衡仅适用于网络，D 不使用它。仍然是使用真值探针的诊断，不是盲重建。
+
+如果 D 能明显恢复结构而 C 不行，优先检查网络参数化及优化设置；
+若 D 也不行，仍需检查优化预算/步长、测量约束及评价对齐，不能仅凭 100 步失败断言前向错误。
+新版 C/D 在 history 中保存 `relative_amplitude_mse`：
+未加权振幅残差均方除以测量振幅均方，避免把小绝对损失误认为充分拟合。
+`truth_clean_amplitude_mse` 同时打印，用于核验真值是否满足模拟的干净测量。
+本地只运行小场景单步测试，100 步实验由用户在 Colab 执行。
+
+## 可选小窗口、广域扫描：ptyinr-layout
+
+`--preset ptyinr-layout` 仅增加在 DeePIE 入口，不修改 ProPtyNet 默认配置。
+它借用官方 PtyINR 默认示例的数组和扫描布局：物体 241²、窗口 64²、步长 3、
+60×60=3600 个位置。仍使用共享场景的 USAF/siemens、圆孔纹理探针和负号 Fresnel 前向，
+不是 PtyINR 官方 X-ray 数据/探针，也不是 DeePIE 论文原始仿真。
+
+默认保留 λ=632 nm、z=0.165 m、探测器像素 15.04 µm、探针直径 800 µm。
+因此物面像素由约 13.54 µm 变成 108.34 µm，探针直径约 7.38 像素。
+窗口线性重叠 95.31%，不能当作光斑重叠（直径口径约 59.4%）。
+USAF/siemens 会重新采样到新物体尺寸；新实验同时改变视野、采样和扫描数，
+是场景敏感性实验，不是单变量消融，也不能直接排名原场景 PSNR/速度。
+网络配置、位置编码和训练默认参数不会随该 preset 自动改变。
+
+Colab 项目根目录运行（先同步 DeePIE.py）：
+
+```python
+!python simulations/DeePIE.py check --preset ptyinr-layout --device cuda
+
+!python simulations/DeePIE_diagnose.py known-probe \
+  --from-run results_paper/deepie_7 --preset ptyinr-layout \
+  --device cuda --lr 1e-6 --scan-chunk 64 \
+  --iters 100 --eval-every 10 \
+  --outdir results_paper/deepie_small64_known
+```
+
+`--from-run` 继承旧网络/种子但重新初始化，新 preset 覆盖几何参数；
+原实验与新实验的指纹不同是预期现象。known-probe 的正确探针来自新场景，
+不加载旧探针；诊断照常关闭衰减、扫描加权、梯度平衡。
+如果旧目录不存在，删掉 `--from-run results_paper/deepie_7`，使用当前默认网络。
+
+盲重建入口同样支持该 preset，例如沿用先前 1e-6/1e-3 学习率组合：
+
+```python
+!python simulations/DeePIE.py run --preset ptyinr-layout \
+  --device cuda --lr 1e-6 --probe-lr 1e-3 --scan-chunk 64 \
+  --iters 500 --eval-every 25 --outdir results_paper/deepie_small64_blind
+```
+
+可选 `--sample-pixel-um 13.542012965425533` 保持原物面像素尺度，
+此时程序推导探测器像素约 120.32 µm，光斑恢复约 59 像素。
+这会改变探测器采样，不能继续使用旧测量；本入口会重新生成数据。
+不能同时指定 `--sample-pixel-um` 与 `--det-pixel`。manifest 会保存推导后的实际光学参数。
+两个尺度不是谁更正确：前者保留原探测器采样，后者保留原物面采样。
 
 ## 输出与连续坐标推理
 
