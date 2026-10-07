@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simulations.ProPtyNet_paper import Cfg, PRESETS
 from functions.paperrepro.scene import build_scene
 from functions.paperrepro.optics import forward_field
+from functions.paperrepro.sample import make_positions
 
 
 def main():
@@ -22,6 +23,10 @@ def main():
     p.add_argument('--preset', choices=PRESETS, default=None)
     p.add_argument('--device', default='cpu')
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--scan-shift-y', type=int, default=None,
+                   help='Row shift from centred raster (pixels); defaults to scene config or zero')
+    p.add_argument('--scan-shift-x', type=int, default=None,
+                   help='Column shift from centred raster (pixels); positive is right')
     args = p.parse_args()
     loaded = {}
     if args.scene_config:
@@ -39,7 +44,9 @@ def main():
     cfg.quad_sign = loaded.get('quad_sign', -1.)
     if args.output.exists():
         raise FileExistsError(args.output)
-    scene = build_scene(cfg, cfg.dev())
+    shift = [args.scan_shift_y if args.scan_shift_y is not None else loaded.get('scan_shift_y', 0),
+             args.scan_shift_x if args.scan_shift_x is not None else loaded.get('scan_shift_x', 0)]
+    scene = build_scene(cfg, cfg.dev(), positions=make_positions(cfg) + np.asarray(shift))
     # The simulator divides all intensities by ONE global maximum.
     # Store the corresponding probe scale for diagnostic truth checks only.
     with torch.no_grad():
@@ -56,7 +63,8 @@ def main():
     with h5py.File(args.output, 'x') as f:
         f.attrs['schema'] = 'proptynet-ptyinr-v1'
         f.attrs['scene_fingerprint'] = scene.fp
-        f.attrs['scene_config_json'] = json.dumps({**asdict(cfg),'quad_sign':cfg.quad_sign})
+        f.attrs['scene_config_json'] = json.dumps({**asdict(cfg),'quad_sign':cfg.quad_sign,
+                                                  'scan_shift_y':int(shift[0]),'scan_shift_x':int(shift[1])})
         f.attrs['position_convention'] = 'integer [row,column] patch top-left; no transpose'
         f.attrs['fft_convention'] = 'ifftshift -> fft2(norm=ortho) -> fftshift'
         f.attrs['diffraction_scale'] = 1.
