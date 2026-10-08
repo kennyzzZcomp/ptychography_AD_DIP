@@ -25,13 +25,18 @@ if TYPE_CHECKING:
     from ProPtyNet_paper import Cfg
 
 
-def build_scene(cfg: Cfg, device, verbose=True):
+def build_scene(cfg: Cfg, device, verbose=True, positions=None):
     """返回三种算法共用的全部输入。完全由 cfg 决定，与算法无关。"""
     from functions.paperrepro.sample import simulate     # 延迟导入，避免循环
 
     cfg.quad_sign = getattr(cfg, "quad_sign", -1.0)
     obj, probe, S1, rr = make_truth(cfg)
-    pos = make_positions(cfg)
+    pos = make_positions(cfg) if positions is None else np.asarray(positions)
+    if (pos.shape != (cfg.grid * cfg.grid, 2) or not np.isfinite(pos).all()
+            or not np.equal(pos, np.round(pos)).all()
+            or pos.min() < 0 or pos.max() + cfg.N > cfg.obj_size):
+        raise ValueError('Invalid integer scan positions or windows outside object')
+    pos = pos.astype(np.int64)
     illum_rs, illum_cs = illum_roi(cfg, probe, pos)
     rs, cs = evaluation_roi(cfg, probe, pos)
     Q = make_quad_phase(cfg, device)

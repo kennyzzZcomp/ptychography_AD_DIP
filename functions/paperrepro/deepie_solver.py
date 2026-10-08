@@ -116,7 +116,7 @@ def _source_hashes():
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 
 
-def run_deepie(cfg, mc: ModelConfig, tc: TrainingConfig):
+def run_deepie(cfg, mc: ModelConfig, tc: TrainingConfig, *, scene=None, scene_metadata=None):
     if cfg.iters < 1 or cfg.eval_every < 1:
         raise ValueError("iters and eval_every must be positive")
     if cfg.probe_mode != "pixel":
@@ -130,7 +130,8 @@ def run_deepie(cfg, mc: ModelConfig, tc: TrainingConfig):
         # FP32 reference behavior, not GPU-dependent TF32 approximation.
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-    scene = build_scene(cfg, device)
+    if scene is None:
+        scene = build_scene(cfg, device)
     torch.manual_seed(tc.network_seed)
     model = DeePIEObject(mc).to(device)
     coords = coordinate_grid(cfg.obj_size, device)
@@ -173,6 +174,8 @@ def run_deepie(cfg, mc: ModelConfig, tc: TrainingConfig):
         },
     }
     manifest_path = out / "deepie_manifest.json"
+    if scene_metadata is not None:
+        manifest['imported_scene'] = scene_metadata
     def write_manifest():
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     write_manifest()

@@ -28,6 +28,13 @@ scan-index order. Input, loss and readout all use the same new groups.
 coverage_partition.json stores exact groups, E and preprocessing times (excluded
 from the existing training-loop time). Other layouts/progressive defaults stay
 unchanged. The training adapter currently requires equal group lengths (N%4=0).
+
+--window-layout balanced-random: fixed random equal-capacity partition of ALL
+measurements; --coverage-seed controls its isolated RNG. Same initial partition
+as coverage-balanced with that seed; channels sorted by original scan index.
+--transfer-every 250: copied-state, fixed-probe cross-group one-step diagnostics
+at stage-1 updates 250,500,... and its final update. Saves cross_group_transfer.json;
+extra diagnostic blocks are timed separately and excluded from elapsed_s.
 """
 import argparse
 from dataclasses import dataclass
@@ -46,6 +53,7 @@ class WindowCfg(Cfg):
     coverage_diameter_px: float = None
     coverage_anchor_step: float = 2.0
     coverage_seed: int = 0
+    transfer_every: int = 0
     window_update: str = "sequential"
     window_loss_mode: str = "independent"
     window_consistency: float = 0.0
@@ -59,16 +67,18 @@ class WindowCfg(Cfg):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--update-mode", choices=("sequential", "joint"), default="sequential")
-    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full", "alternating", "inner", "coverage-balanced"), default="sparse",
+    p.add_argument("--window-layout", choices=("sparse", "compact-matched", "compact-full", "alternating", "inner", "coverage-balanced", "balanced-random"), default="sparse",
                    help="coverage-balanced: disk-coverage partition of ALL measurements into four equal groups; inner: fixed inner windows; alternating: corners then inner")
     p.add_argument("--window-side", type=int, choices=(3, 4, 5), default=4,
-                   help="3, 4 or 5 scan positions per axis (stride 2); ignored by coverage-balanced; omit for compact-full")
+                   help="3, 4 or 5 scan positions per axis (stride 2); ignored by coverage-balanced and balanced-random; omit for compact-full")
     p.add_argument("--coverage-diameter-px", type=float, default=None,
                    help="coverage-balanced ONLY: nominal uniform-disk diameter for grouping, not a reconstruction support. Default: configured physical diameter in pixels; use 59.1 to reproduce the demo")
     p.add_argument("--coverage-anchor-step", type=float, default=2.0,
                    help="coverage-balanced ONLY: grouping feature-grid spacing in object pixels")
     p.add_argument("--coverage-seed", type=int, default=0,
-                   help="coverage-balanced ONLY: local partition RNG seed, independent of network/scene RNG")
+                   help="coverage-balanced / balanced-random: isolated fixed partition RNG seed")
+    p.add_argument("--transfer-every", type=int, default=0,
+                   help="0 disables; stage-1 copied-state cross-group Adam diagnostic every N updates and at stage-1 end; sequential independent loss only")
     p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
                    help="stage-1 training object: individual window or current + cached peer fusion")
     p.add_argument("--consistency-weight", type=float, default=0.0)
@@ -109,6 +119,7 @@ def main():
                     window_layout=a.window_layout, window_side=a.window_side,
                     coverage_diameter_px=a.coverage_diameter_px,
                     coverage_anchor_step=a.coverage_anchor_step, coverage_seed=a.coverage_seed,
+                    transfer_every=a.transfer_every,
                     window_loss_mode=a.loss_mode,
                     window_consistency=a.consistency_weight,
                     window_switch_after=a.switch_after, window_stage2_lr_net=a.stage2_lr_net,

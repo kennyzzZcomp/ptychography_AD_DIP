@@ -209,6 +209,25 @@ class DeePIETests(unittest.TestCase):
         for a,b in zip(model.parameters(),ref.parameters()):
             torch.testing.assert_close(a.grad,b.grad,rtol=1e-8,atol=1e-10)
 
+    def test_imported_scene_is_used_without_regeneration(self):
+        cfg=Cfg(N=8,obj_size=16,grid=2,step_px=4,eval_size=8,iters=1,
+                eval_every=1,device='cpu',probe_diam_um=2000)
+        mc=ModelConfig(width=6,hidden_layers=2,high_frequencies=3,low_frequencies=2,
+                       phases=4,encoding_side=8,omega=3.,head_scale=.1)
+        tc=TrainingConfig(scan_chunk=4,coordinate_chunk=32,lr=1e-5,probe_lr=1e-5)
+        with workspace_temp() as d, contextlib.redirect_stdout(io.StringIO()):
+            cfg.outdir=d
+            scene=build_scene(cfg,'cpu')
+            with patch('functions.paperrepro.deepie_solver.build_scene',
+                       side_effect=AssertionError('Must not regenerate imported data')), \
+                 patch('functions.paperrepro.deepie_solver._save_convergence'):
+                run_deepie(cfg,mc,tc,scene=scene,scene_metadata={'scene_sha256':'test'})
+            manifest=json.loads((Path(d)/'deepie_manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(manifest['imported_scene']['scene_sha256'],'test')
+            with np.load(Path(d)/'deepie_result.npz') as saved:
+                np.testing.assert_array_equal(saved['obj_gt'],scene.obj)
+                np.testing.assert_array_equal(saved['probe_gt'],scene.probe)
+
     def test_audit_detects_constant_field_from_saved_arrays(self):
         y,x=np.mgrid[:10,:10]
         gt=((.2+x/20)*np.exp(.1j*y)).astype(np.complex64)

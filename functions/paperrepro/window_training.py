@@ -190,6 +190,12 @@ def run_windows(cfg):
     if not np.isfinite(cfg.window_consistency) or cfg.window_consistency < 0:
         raise ValueError("window_consistency must be finite and nonnegative")
     loss_mode = getattr(cfg, "window_loss_mode", "independent")
+    transfer_every = getattr(cfg, "transfer_every", 0)
+    if transfer_every < 0:
+        raise ValueError("transfer-every must be nonnegative")
+    if transfer_every and (cfg.window_update != 'sequential' or loss_mode != 'independent'
+                           or cfg.window_consistency or cfg.window_layout == 'alternating'):
+        raise ValueError("Transfer diagnostic requires four fixed groups, sequential independent loss and consistency=0")
     if loss_mode not in ("independent", "cached-fusion"):
         raise ValueError("window_loss_mode must be independent or cached-fusion")
     if loss_mode == "cached-fusion" and (cfg.window_update != "sequential" or cfg.window_consistency):
@@ -214,9 +220,10 @@ def run_windows(cfg):
     layout = getattr(cfg, "window_layout", "sparse")
     side = getattr(cfg, "window_side", 4)
     coverage_balanced = layout == "coverage-balanced"
-    if coverage_balanced and (cfg.n_pat < 4 or cfg.n_pat % 4):
-        raise ValueError("coverage-balanced training requires measurement count divisible by 4; unequal-channel groups are not supported")
-    groups = None if coverage_balanced else measurement_groups(cfg.grid, layout, side)
+    random_balanced = layout == "balanced-random"
+    if (coverage_balanced or random_balanced) and (cfg.n_pat < 4 or cfg.n_pat % 4):
+        raise ValueError("Partition training requires measurement count divisible by 4; unequal-channel groups are not supported")
+    groups = None if (coverage_balanced or random_balanced) else measurement_groups(cfg.grid, layout, side)
     alternating = layout == "alternating"
     if alternating:
         if cfg.window_update != "sequential" or loss_mode != "independent" or cfg.window_consistency:
@@ -232,6 +239,14 @@ def run_windows(cfg):
         torch.backends.cudnn.benchmark = True
     sc = build_scene(cfg, device)
     coverage_audit = None
+    if random_balanced:
+        from functions.paperrepro.coverage_balanced_batching import random_balanced_groups
+        groups = [sorted(g.tolist()) for g in random_balanced_groups(cfg.n_pat, 4, cfg.coverage_seed)]
+        (outdir / "random_partition.json").write_text(json.dumps(dict(
+            groups=groups, seed=cfg.coverage_seed, positions_yx=sc.pos.tolist(),
+            all_measurements_retained=True, fixed_during_training=True,
+            channel_order='ascending original measurement index', truth_used=False), indent=2), encoding='utf-8')
+        print(f"[windows] balanced-random: fixed partition seed={cfg.coverage_seed}; window-side ignored.", flush=True)
     if coverage_balanced:
         from functions.paperrepro.coverage_balanced_batching import disk_window_partition
         diameter = getattr(cfg, "coverage_diameter_px", None)
@@ -323,6 +338,12 @@ def run_windows(cfg):
                     stage2="fresh object-only input, full measurements" if switch else None)
     if coverage_audit is not None:
         metadata.update(coverage_partition=coverage_audit, window_side=None)
+    if random_balanced:
+        metadata.update(partition_seed=cfg.coverage_seed, window_side=None)
+    if transfer_every:
+        metadata.update(transfer_every=transfer_every,
+                        timing='elapsed_s excludes separately recorded diagnostic blocks; includes normal evaluation; excludes setup/save',
+                        transfer_note='copied-state fixed-probe Adam+TGV interventions, stage 1 only; not normal joint object/probe updates')
     if cache is not None:
         metadata.update(training_object="partition-weighted complex fusion; active prediction + detached peers",
                         training_tgv="amplitude of fused object on active window TGV domain",
@@ -336,6 +357,9 @@ def run_windows(cfg):
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     start = time.perf_counter()
+    diagnostic_seconds = 0.0
+    diagnostic_records = []
+    diagnostic_reports = []
     transition = None
     snapshot = None
     for it in range(cfg.iters):
@@ -403,7 +427,7 @@ def run_windows(cfg):
                               stage1_cache=cache.audit(switch) if cache else None,
                               lr_net=cfg.window_stage2_lr_net, lr_probe=cfg.window_stage2_lr_probe,
                               tgv_amp=cfg.window_stage2_tgv,
-                              stage1_elapsed_s=transition_start-start,
+                              stage1_elapsed_s=transition_start-start-diagnostic_seconds,
                               transition_elapsed_s=time.perf_counter()-transition_start,
                               network_parameters=sum(v.numel() for v in net.parameters()))
             print(f"[windows] update {it+1}: fresh U-Net; fixed object-only 3-channel input; "
@@ -491,7 +515,10 @@ def run_windows(cfg):
                        completed_sweeps=counts["window_visits"]//4,
                        completed_schedule_cycles=counts["window_visits"]//len(groups),
                        sweep_progress=counts["window_visits"]/4,
-                       elapsed_s=time.perf_counter()-start, **counts, **metrics)
+                       elapsed_s=time.perf_counter()-start-diagnostic_seconds, **counts, **metrics)
+            if transfer_every:
+                row.update(diagnostic_elapsed_s=diagnostic_seconds,
+                           wall_elapsed_s=time.perf_counter()-start)
             hist.append(row)
             if cache and not stage2:
                 row.update(cache.audit(it+1))
@@ -500,9 +527,60 @@ def run_windows(cfg):
                   f"amp PSNR {metrics['psnr_amp']:.2f} | object err {metrics['relerr']:.4f} | "
                   f"probe err {row['relerr_p']:.4f} | full loss {row['full_data_loss']:.4e} | "
                   f"{row['elapsed_s']:.2f}s{cache_note}", flush=True)
+        if transfer_every and not stage2 and ((it+1) % transfer_every == 0 or it+1 == (switch or cfg.iters)):
+            from functions.paperrepro.window_transfer import cross_group_transfer
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            diag_start = time.perf_counter()
+            frozen_probe = probe().detach().clone()
+
+            def diagnostic_decode(model, k):
+                a, ph = model(inputs[k])
+                return make_field(a[0], ph[:2])[crop, crop], F.softplus(a[0])[crop, crop]
+
+            def diagnostic_loss(model, k, reg_copy):
+                field, amplitude = diagnostic_decode(model, k)
+                data, _ = scaled_amplitude_loss(cabs(_fwd(cfg, field, frozen_probe,
+                    sc.post[selections[k]], sc.Q)), sc.sqrtIm[selections[k]])
+                penalty = reg_copy(amplitude)[0] if reg_copy is not None else data.new_zeros(())
+                return data + energy * cfg.tgv_amp * penalty
+
+            def diagnostic_evaluate(model):
+                rows, fields = [], []
+                rs, cs = sc.roi
+                with snapshot_readout(model):
+                    for k in range(4):
+                        field, _ = diagnostic_decode(model, k)
+                        fields.append(field)
+                        data, _ = scaled_amplitude_loss(cabs(_fwd(cfg, field, frozen_probe,
+                            sc.post[selections[k]], sc.Q)), sc.sqrtIm[selections[k]])
+                        rows.append(dict(data_loss=float(data), **evaluate(
+                            field[rs, cs].cpu().numpy(), sc.obj[rs, cs])))
+                    fused = fuse_fields(fields, masks)
+                    fm = evaluate(fused[rs, cs].cpu().numpy(), sc.obj[rs, cs])
+                return dict(groups=rows, fused=fm)
+
+            report = cross_group_transfer(net, opt, tgvs, diagnostic_loss, diagnostic_evaluate)
+            report.update(it=it+1, groups=groups,
+                          roi=[sc.roi[0].start, sc.roi[0].stop, sc.roi[1].start, sc.roi[1].stop],
+                          truth_metrics='simulation truth used only for evaluation; per-field global complex alignment',
+                          readout='train-mode BN as production snapshot; copied buffers only')
+            diagdir = outdir / 'cross_group_transfer'
+            diagdir.mkdir(exist_ok=True)
+            target = diagdir / f'step_{it+1:06d}.json'
+            target.write_text(json.dumps(report, indent=2), encoding='utf-8')
+            diagnostic_reports.append(report)
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            duration = time.perf_counter()-diag_start
+            diagnostic_seconds += duration
+            diagnostic_records.append(dict(it=it+1, seconds=duration, file=str(target.name)))
+            print(f"[transfer] update {it+1}: copied-state 4x4 diagnostic saved; extra {duration:.2f}s excluded from training time", flush=True)
+            del frozen_probe
     if device.type == "cuda":
         torch.cuda.synchronize(device)
-    elapsed = time.perf_counter()-start
+    wall_elapsed = time.perf_counter()-start
+    elapsed = wall_elapsed-diagnostic_seconds
     print(f"[windows] training-loop time {elapsed:.2f}s / {cfg.iters} updates; "
           f"training net forwards={counts['training_network_forwards']}, "
           f"training patterns={counts['training_patterns']}, cache commits={counts['cache_updates']}", flush=True)
@@ -524,6 +602,12 @@ def run_windows(cfg):
     metadata.update(transition=transition, window_fields_stage=1,
                     final_object="single stage-2 output" if switch else "four-window fusion")
     metadata.update(counts=counts, elapsed_s=elapsed)
+    if transfer_every:
+        (outdir / 'cross_group_transfer.json').write_text(
+            json.dumps(dict(reports=diagnostic_reports, timing=diagnostic_records), indent=2), encoding='utf-8')
+        metadata.update(diagnostic_elapsed_s=diagnostic_seconds, wall_elapsed_s=wall_elapsed,
+                        transfer_records=diagnostic_records,
+                        diagnostic_timing_caveat='subtracts diagnostic blocks; GPU allocator/thermal/cache effects may remain; use diagnostic-off runs for throughput claims')
     if cache is not None:
         metadata.update(final_stage1_cache=cache.audit(switch or cfg.iters))
     (outdir / "window_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
