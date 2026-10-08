@@ -35,6 +35,12 @@ as coverage-balanced with that seed; channels sorted by original scan index.
 --transfer-every 250: copied-state, fixed-probe cross-group one-step diagnostics
 at stage-1 updates 250,500,... and its final update. Saves cross_group_transfer.json;
 extra diagnostic blocks are timed separately and excluded from elapsed_s.
+
+--channel-order original/shared/independent changes ONLY stage-1 network input
+channel order. Shared uses one permutation for all four groups; independent uses
+four distinct permutations (its first matches shared). --channel-seed is isolated
+from model/scene RNG. Permutations are fixed throughout training and readout.
+Loss measurement/position pairing, fusion masks and TGV domains are unchanged.
 """
 import argparse
 from dataclasses import dataclass
@@ -54,6 +60,8 @@ class WindowCfg(Cfg):
     coverage_anchor_step: float = 2.0
     coverage_seed: int = 0
     transfer_every: int = 0
+    channel_order: str = "original"
+    channel_seed: int = 0
     window_update: str = "sequential"
     window_loss_mode: str = "independent"
     window_consistency: float = 0.0
@@ -79,6 +87,9 @@ def main():
                    help="coverage-balanced / balanced-random: isolated fixed partition RNG seed")
     p.add_argument("--transfer-every", type=int, default=0,
                    help="0 disables; stage-1 copied-state cross-group Adam diagnostic every N updates and at stage-1 end; sequential independent loss only")
+    p.add_argument("--channel-order", choices=("original", "shared", "independent"), default="original",
+                   help="stage-1 INPUT channels only: unchanged, one common fixed shuffle, or distinct fixed shuffles; physics loss order unchanged")
+    p.add_argument("--channel-seed", type=int, default=0, help="isolated RNG seed for fixed input channel permutations")
     p.add_argument("--loss-mode", choices=("independent", "cached-fusion"), default="independent",
                    help="stage-1 training object: individual window or current + cached peer fusion")
     p.add_argument("--consistency-weight", type=float, default=0.0)
@@ -120,6 +131,7 @@ def main():
                     coverage_diameter_px=a.coverage_diameter_px,
                     coverage_anchor_step=a.coverage_anchor_step, coverage_seed=a.coverage_seed,
                     transfer_every=a.transfer_every,
+                    channel_order=a.channel_order, channel_seed=a.channel_seed,
                     window_loss_mode=a.loss_mode,
                     window_consistency=a.consistency_weight,
                     window_switch_after=a.switch_after, window_stage2_lr_net=a.stage2_lr_net,

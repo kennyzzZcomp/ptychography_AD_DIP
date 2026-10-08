@@ -179,6 +179,32 @@ def initialize_residual_heads(net):
             head.bias.zero_()
 
 
+def channel_input_groups(groups, order="original", seed=0):
+    """Return local-slot permutations and actual input indices; never mutate groups.
+
+    A channel permutation selects new_slot -> old_slot. Loss selectors must keep
+    using the original groups. No global NumPy/Torch RNG is consumed.
+    """
+    if order not in ("original", "shared", "independent"):
+        raise ValueError("channel_order must be original, shared or independent")
+    if order != "original" and (len(groups) != 4 or len({len(g) for g in groups}) != 1
+                                 or len(groups[0]) < 3):
+        raise ValueError("Channel shuffle requires four fixed equal-length groups with at least 3 channels")
+    rng = np.random.default_rng(seed)
+    permutations = []
+    for g in groups:
+        if order == "original":
+            perm = list(range(len(g)))
+        elif order == "shared" and permutations:
+            perm = permutations[0].copy()
+        else:
+            perm = rng.permutation(len(g)).tolist()
+            while perm == list(range(len(g))) or perm in permutations:
+                perm = rng.permutation(len(g)).tolist()
+        permutations.append(perm)
+    return permutations, [[g[k] for k in perm] for g, perm in zip(groups, permutations)]
+
+
 def run_windows(cfg):
     if (cfg.network_type != "real" or cfg.probe_mode not in ("pixel", "support", "truth")
             or cfg.measurement_schedule or cfg.lr_schedule or cfg.lr_cosine
@@ -190,6 +216,14 @@ def run_windows(cfg):
     if not np.isfinite(cfg.window_consistency) or cfg.window_consistency < 0:
         raise ValueError("window_consistency must be finite and nonnegative")
     loss_mode = getattr(cfg, "window_loss_mode", "independent")
+    channel_order = getattr(cfg, "channel_order", "original")
+    channel_seed = getattr(cfg, "channel_seed", 0)
+    if channel_seed < 0:
+        raise ValueError("channel_seed must be nonnegative")
+    if channel_order not in ("original", "shared", "independent"):
+        raise ValueError("channel_order must be original, shared or independent")
+    if channel_order != "original" and getattr(cfg, "window_layout", "sparse") == "alternating":
+        raise ValueError("Channel shuffle requires four fixed groups, not alternating windows")
     transfer_every = getattr(cfg, "transfer_every", 0)
     if transfer_every < 0:
         raise ValueError("transfer-every must be nonnegative")
@@ -280,7 +314,18 @@ def run_windows(cfg):
     p = ns - m
     stack = F.pad(stack, (p//2, p-p//2, p//2, p-p//2))
     stack = stack / stack.amax((2, 3), keepdim=True).clamp_min(1e-12)
-    inputs = [stack[:, s] for s in selections]
+    channel_permutations, input_groups = channel_input_groups(groups, channel_order, channel_seed)
+    input_selections = [torch.tensor(g, device=device) for g in input_groups]
+    inputs = [stack[:, s] for s in input_selections]
+    channel_audit = dict(mode=channel_order, seed=channel_seed,
+                         permutations=channel_permutations, input_groups=input_groups,
+                         loss_groups=groups, fixed_during_training=True,
+                         permutation_convention='new input channel k uses old channel permutations[g][k]',
+                         changes='stage-1 network input only; physics measurement-position pairing, masks and TGV unchanged',
+                         initialization='same network seed; no compensating permutation of first-layer weights')
+    (outdir / 'channel_order.json').write_text(json.dumps(channel_audit, indent=2), encoding='utf-8')
+    if channel_order != 'original':
+        print(f"[windows] channel-order={channel_order}; fixed seed={channel_seed}; INPUT ONLY, loss groups unchanged", flush=True)
     crop = slice(p//2, p//2 + m)
     # Use the same four groups for input, loss and readout; alternating alone
     # retains the original four-corner readout to isolate schedule changes.
@@ -332,6 +377,7 @@ def run_windows(cfg):
                     device=str(device), gpu=torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                     network_parameters=sum(p.numel() for p in net.parameters()), scene_fingerprint=sc.fp)
     metadata.update(switch_after=switch, total_updates=cfg.iters,
+                    channel_order=channel_audit,
                     evaluation_groups=groups[:4], schedule_period_updates=len(groups),
                     window_schedule="four corners then four inner windows" if alternating else "fixed groups",
                     stage2_readout=stage2_readout if switch else None,
@@ -561,7 +607,7 @@ def run_windows(cfg):
                 return dict(groups=rows, fused=fm)
 
             report = cross_group_transfer(net, opt, tgvs, diagnostic_loss, diagnostic_evaluate)
-            report.update(it=it+1, groups=groups,
+            report.update(it=it+1, groups=groups, input_groups=input_groups, channel_order=channel_order,
                           roi=[sc.roi[0].start, sc.roi[0].stop, sc.roi[1].start, sc.roi[1].stop],
                           truth_metrics='simulation truth used only for evaluation; per-field global complex alignment',
                           readout='train-mode BN as production snapshot; copied buffers only')
@@ -588,6 +634,7 @@ def run_windows(cfg):
     np.savez_compressed(outdir / "window_fields.npz", fields=snapshot['fields'] if snapshot else final_array,
                         masks=masks.cpu().numpy(), groups=np.asarray(groups[:4]),
                         training_groups=np.asarray(groups),
+                        input_groups=np.asarray(input_groups), channel_permutations=np.asarray(channel_permutations),
                         weights=cache.weights.cpu().numpy() if cache else fusion_weights(masks).cpu().numpy())
     if cache is not None:
         np.savez_compressed(outdir / "window_cache.npz", fields=cache.fields.cpu().numpy(),
