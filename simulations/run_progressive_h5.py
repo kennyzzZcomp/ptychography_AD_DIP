@@ -1,4 +1,4 @@
-"""Independent H5 adapter for run_paper_progressive's four-inner-window mode.
+"""Independent H5 adapter for run_paper_progressive's four-window mode.
 
 Reads exported measurements verbatim; never regenerates a scene.
 No training on import. --check-only validates data and grouping without training.
@@ -28,6 +28,15 @@ def inner_groups(grid):
     a,b=range(1,grid-1,2),range(2,grid-1,2)
     return [[r*grid+c for r in rows for c in cols]
             for rows,cols in ((a,a),(a,b),(b,a),(b,b))]
+
+
+def configured_groups(grid, layout, side):
+    if layout == 'inner' and side == 4:
+        # Preserve the existing generalized inner grouping for larger rasters.
+        return inner_groups(grid)
+    if layout == 'sparse' and side in (3,4,5):
+        return solver.measurement_groups(grid,layout,side)
+    raise ValueError('Supported layouts: inner with side=4; sparse with side=3,4,5 (grid=10)')
 
 
 def load_scene(path, device):
@@ -91,13 +100,16 @@ def main():
     p.add_argument('--check-only',action='store_true')
     a=p.parse_args()
     if a.outdir.exists(): p.error('Choose a new output directory')
-    if settings.STAGE1_MODE!='windows' or settings.WINDOW_LAYOUT!='inner' or settings.WINDOW_SIDE!=4:
-        p.error('This adapter targets the supplied windows/inner4 progressive configuration')
+    if settings.STAGE1_MODE!='windows':
+        p.error('This adapter requires STAGE1_MODE="windows"')
     if settings.HALF_RES_STAGE1 or settings.RESET_TGV_AT_SWITCH or settings.STAGE2_INPUT!='object' or settings.STAGE2_NETWORK!='fresh':
         p.error('Unsupported changes to progressive settings')
     if not 0<a.switch_after<a.iters or a.switch_after%4: p.error('Require 0 < switch < iters and complete four-window sweeps')
     sc,source,relative=load_scene(a.scene,torch.device(a.device))
-    groups=inner_groups(source['grid'])
+    try:
+        groups=configured_groups(source['grid'],settings.WINDOW_LAYOUT,settings.WINDOW_SIDE)
+    except ValueError as exc:
+        p.error(str(exc))
     # Start from source geometry, but use launcher training choices explicitly.
     valid={f.name for f in fields(WindowCfg) if f.init}
     opts={k:v for k,v in source.items() if k in valid}
@@ -105,7 +117,7 @@ def main():
         outdir=str(a.outdir),seed=settings.SEED,network_seed=settings.SEED,base_ch=settings.BASE_CH,
         probe_mode='pixel',probe_init='ones',network_type='real',
         lr_net=settings.STAGE1_LR_NET,lr_probe=settings.STAGE1_LR_PROBE,tgv_amp=settings.STAGE1_TGV,
-        window_layout='inner',window_side=4,window_update=settings.WINDOW_UPDATE,
+        window_layout=settings.WINDOW_LAYOUT,window_side=settings.WINDOW_SIDE,window_update=settings.WINDOW_UPDATE,
         window_consistency=settings.WINDOW_CONSISTENCY,window_switch_after=a.switch_after,
         window_stage2_lr_net=settings.STAGE2_LR_NET,window_stage2_lr_probe=settings.STAGE2_LR_PROBE,
         window_stage2_tgv=settings.STAGE2_TGV,window_stage2_readout=settings.STAGE2_READOUT)
@@ -115,7 +127,10 @@ def main():
         patterns=list(sc.Im.shape),object_shape=list(sc.obj.shape),
         groups=groups,stage1_channels=len(groups[0]),stage1_unique_patterns=len(set(sum(groups,[]))),
         stage2_patterns=len(sc.pos),roi=[sc.roi[0].start,sc.roi[0].stop,sc.roi[1].start,sc.roi[1].stop],
-        grouping='Inner row/column indices 1..grid-2 split by parity; exact original inner4 when grid=10',
+        window_layout=settings.WINDOW_LAYOUT,window_side=settings.WINDOW_SIDE,
+        grouping=('Inner row/column indices 1..grid-2 split by parity; exact original inner4 when grid=10'
+            if settings.WINDOW_LAYOUT=='inner' else
+            'Original solver sparse groups; side=5 partitions all 10x10 positions by row/column parity'),
         evaluation='Original shared ROI and evaluator; no translation registration added',
         truth_usage='Forward validation, evaluation and output only; pixel probe starts at ones',
         training='Original window_training solver; original per-frame CNN input normalization and analytic loss scale retained',
