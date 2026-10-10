@@ -129,8 +129,7 @@ $py = 'D:\miniconda\envs\flatnet\python.exe'
 # 明确的无权振幅 L2 对照，去掉尚未确定的梯度策略
 & $py simulations/DeePIE.py run --preset paper --device cuda --scan-weight uniform --balance none --iters 500 --outdir results_paper/deepie_uniform_s0
 
-# 测试，不进行长时间重建
-& $py -m unittest discover -s simulations -p test_deepie.py -v
+# 原 test_deepie.py 已于 2026-10-11 随旧工具清理并备份。
 ```
 
 学习率 1e-4 来自正文，**但作者的 Λ 初始化、基尺度与梯度策略不明，因此不能保证此值
@@ -166,7 +165,7 @@ $py = 'D:\miniconda\envs\flatnet\python.exe'
 ## 诊断“停在常数物体”的顺序
 
 新增 `simulations/DeePIE_diagnose.py`。以下诊断不修改原训练入口。
-诊断测试已加入 `simulations/test_deepie.py`，当前合计 12 项测试通过。
+原诊断测试当时合计 12 项通过；该专用测试脚本已于 2026-10-11 随旧工具清理并备份。
 以下假设待查的 Colab 实验目录是截图中的 `results_paper/deepie_4`。
 同步新增诊断脚本后，在 Colab 项目根目录运行；每次换一个新的诊断输出目录。
 

@@ -18,6 +18,41 @@ from functions.paperrepro.lr_schedule import parse_lr_schedule, learning_rates
 
 
 class ProgressiveTests(unittest.TestCase):
+    def test_half_resolution_transition(self):
+        original_cfg = Cfg
+        original_forward = solvers_addip.AddipUNet.forward
+        sizes = []
+
+        def cfg_half(*args, **kwargs):
+            kwargs['half_res_until'] = 2
+            return original_cfg(*args, **kwargs)
+
+        def observed(net, x):
+            sizes.append(tuple(x.shape[-2:]))
+            return original_forward(net, x)
+
+        # Reuse the joint-transition checks: subset, LR, TGV and Adam retention.
+        with patch(__name__ + '.Cfg', side_effect=cfg_half), \
+             patch.object(solvers_addip.AddipUNet, 'forward', observed):
+            self.test_net_joint_transition_retains_state_and_stops_tgv()
+        self.assertEqual(sizes, [(16, 16), (16, 16), (24, 24), (24, 24)])
+
+    def test_coarse_complex_lift_and_validation(self):
+        from functions.paperrepro.coarse_object import half_input, lift_field
+        x, crop = half_input(torch.ones(1, 2, 624, 624))
+        self.assertEqual(tuple(x.shape), (1, 2, 312, 312))
+        x, crop = half_input(torch.ones(1, 2, 24, 24))
+        field = torch.ones(16, 16, dtype=torch.complex64, requires_grad=True)
+        lifted = lift_field(field, crop, (24, 24))
+        torch.testing.assert_close(lifted, torch.ones_like(lifted))
+        lifted.abs().mean().backward()
+        self.assertTrue(torch.isfinite(field.grad).all())
+        for kw in ({'half_res_until': -1}, {'half_res_until': 2000, 'iters': 2000},
+                   {'half_res_until': 2, 'probe_mode': 'shared'},
+                   {'half_res_until': 2, 'network_type': 'complex'}):
+            with self.assertRaises(ValueError):
+                Cfg(**kw)
+
     def test_lr_schedule_boundaries_validation(self):
         stages = parse_lr_schedule("1000:8e-4:2e-2", .005, .02, 4000)
         self.assertEqual(learning_rates(.005, .02, stages, 999), (.005, .02))
@@ -30,7 +65,9 @@ class ProgressiveTests(unittest.TestCase):
             Cfg(lr_schedule="1000:.0008:.02", lr_cosine=True)
 
     def test_launcher_settings(self):
-        cmd = build_command()
+        with patch.multiple('simulations.run_paper_progressive', STAGE1_MODE='subset',
+                            STAGE2_LR_NET=.0008, STAGE2_LR_PROBE=.02):
+            cmd = build_command()
         opts = dict(zip(cmd[4::2], cmd[5::2]))
         self.assertEqual(opts["--measurement-schedule"], "0:3,1000:1")
         self.assertEqual(opts["--lr-schedule"], "1000:0.0008:0.02")
