@@ -142,7 +142,7 @@ def run_check(cfg: Cfg):
           + ("   <- noise=none 时几乎为 0，Eq.5 的 γ 无事可做" if cfg.noise == "none" else ""))
     print("=" * 78)
 
-def run(cfg: Cfg):
+def run(cfg: Cfg, *, scene=None):
     device = cfg.dev()
     torch.manual_seed(cfg.seed)
     cfg.quad_sign = getattr(cfg, "quad_sign", -1.0)
@@ -151,11 +151,11 @@ def run(cfg: Cfg):
         torch.backends.cudnn.benchmark = True
     _report_device(cfg, device)
 
-    # 【三种算法共用】数据只能从 build_scene 来，见 functions/paperrepro/scene.py
-    sc = build_scene(cfg, device)
+    # Shared simulator by default; an explicit scene uses validated H5 data verbatim.
+    sc = build_scene(cfg, device) if scene is None else scene
     obj, probe, pos = sc.obj, sc.probe, sc.pos
     (rs, cs), Q = sc.roi, sc.Q
-    post, Im, Icl, S1 = sc.post, sc.Imt, sc.Iclt, sc.S1t
+    post, Im, Icl = sc.post, sc.Imt, sc.Iclt
     S2 = overexposure_mask(Im)                           # Eq.(6)
     S1 = pinhole_mask(cfg.N, cfg.s1_margin * cfg.probe_diam_px / 2,
                       device, dtype=Im.dtype)

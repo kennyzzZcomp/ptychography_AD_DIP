@@ -30,6 +30,8 @@ run 补入入口和分头前的单卷积；默认 4×4 上采样时，100 输入
     python ProPtyNet_paper.py run    --preset paper --iters 2000       # 需要 GPU
     python ProPtyNet_paper.py run    --preset paper --probe-mode truth --beta 1  # 非盲诊断
     python ProPtyNet_paper.py run    --preset paper --noise mixed --snr 30
+    python ProPtyNet_paper.py run --scene scene.h5 --outdir results_paper/paper_h5 --device cuda
+    # Add --check-only to validate H5 physics without training. Do not add --preset.
 
 资源: 默认 USAF.jpg (振幅) + 内置合成辐条靶 (相位)，对应论文 Fig.2(a)。
       换回自然图像做串扰诊断: --amp-image cameraman.bmp --phs-image westconcordorthophoto.bmp
@@ -295,7 +297,7 @@ def build_cfg(args) -> Cfg:
     kw = dict(PRESETS[args.preset or "paper"])
     kw["preset"] = args.preset or "paper"
     for k, v in vars(args).items():
-        if k in ("mode", "preset") or v is None:
+        if k in ("mode", "preset", "scene", "check_only", "quad_sign") or v is None:
             continue
         kw[k] = v
     return Cfg(**kw)
@@ -310,6 +312,8 @@ def main():
     ap.add_argument("mode", choices=["check", "run", "ad", "net"],
                     help="check=自检 | run=论文方法 ProPtyNet 复现 | ad=纯 AD | net=DIP")
     ap.add_argument("--preset", choices=list(PRESETS))
+    ap.add_argument("--scene", type=Path, help="run only: read exported H5; do not regenerate data")
+    ap.add_argument("--check-only", action="store_true", help="With run --scene: validate forward without training")
     for k, t in [("N", int), ("obj_size", int), ("z", float), ("det_pixel", float),
                  ("grid", int), ("step_px", int), ("probe_diam_um", float),
                  ("iters", int), ("lr", float), ("lr_final_frac", float),
@@ -360,7 +364,28 @@ def main():
     ap.add_argument("--reset-tgv-at-switch", action="store_true", default=None)
     a = ap.parse_args()
 
+    if a.check_only and not a.scene:
+        ap.error("--check-only requires --scene")
+    if a.scene:
+        from functions.paperrepro.paper_h5 import SCENE_FIELDS, read_config, load_scene
+        if a.mode != "run":
+            ap.error("--scene is implemented for paper mode run only")
+        if a.preset:
+            ap.error("--scene supplies geometry; omit --preset")
+        source = read_config(a.scene)
+        for key in (*SCENE_FIELDS, 'quad_sign'):
+            old, value = getattr(a, key, None), source.get(key)
+            if old is not None and value is not None and old != value:
+                ap.error(f"--{key.replace('_', '-')} conflicts with the H5 scene")
+            if value is not None:
+                setattr(a, key, value)
+        if not a.outdir:
+            ap.error("--scene requires an explicit new --outdir")
+        if Path(a.outdir).exists():
+            ap.error("Choose a new --outdir to preserve existing results")
     cfg = build_cfg(a)
+    if a.scene:
+        cfg.preset = source.get('preset', 'h5')
     if a.paper_obj_amp_activation is not None and a.mode != "run":
         ap.error("--paper-obj-amp-activation is implemented only for mode run")
     if a.paper_up_kernel is not None and a.mode != "run":
@@ -392,6 +417,20 @@ def main():
     if cfg.tgv_phase > 0 and a.mode != "net":
         ap.error("--tgv-phase is implemented only for mode net")
     cfg.quad_sign = a.quad_sign if a.quad_sign is not None else -1.0
+    if a.scene:
+        import json
+        if cfg.iters < 1 or cfg.eval_every < 1 or not 0 <= cfg.pos_batch <= cfg.n_pat:
+            ap.error("Require positive iters/eval-every and 0 <= pos-batch <= frame count")
+        sc, report = load_scene(a.scene, cfg)
+        print(f"[H5] {report['patterns']}; object={report['object_shape']}; "
+              f"probe diameter={cfg.probe_diam_px:.3f}px; ROI={report['roi']}")
+        print(f"[H5] paper forward relative intensity error={report['relative_clean_intensity_l2']:.3e}")
+        print("[H5] Loaded measurements/positions/Q verbatim; no scene regeneration")
+        Path(cfg.outdir).mkdir(parents=True, exist_ok=False)
+        (Path(cfg.outdir) / 'scene_adapter.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+        if not a.check_only:
+            run(cfg, scene=sc)
+        return
     os.makedirs(cfg.outdir, exist_ok=True)
     {"check": run_check, "run": run, "ad": run_ad, "net": run_net}[a.mode](cfg)
 
