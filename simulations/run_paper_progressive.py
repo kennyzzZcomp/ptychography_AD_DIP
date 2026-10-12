@@ -24,8 +24,8 @@ RESET_TGV_AT_SWITCH = False  # subset/object mode only; windows already creates 
 # No support mask; no cosine on top of these piecewise-constant learning rates.
 
 # Edit the block for your selected mode. All iteration totals include BOTH stages.
-WINDOW_LAYOUT = "inner"     # main configuration; "sparse" for corner/5x5 comparisons
-WINDOW_SIDE = 4             # 4 inner groups x 16 patterns; 64 unique central scan positions
+WINDOW_LAYOUT = "sparse"     # main configuration; "sparse" for corner/5x5 comparisons
+WINDOW_SIDE = 5             # 4 inner groups x 16 patterns; 64 unique central scan positions
 WINDOW_UPDATE = "sequential" # one window loss and optimizer update per iteration
 WINDOW_CONSISTENCY = 0.0
 STAGE2_READOUT = "complex-residual" # windows only: "direct" reproduces the original stage-2 readout
