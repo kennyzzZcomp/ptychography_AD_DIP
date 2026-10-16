@@ -30,20 +30,28 @@ def make_quad_phase(cfg: Cfg, device, dtype=torch.complex64):
     ph = cfg.quad_sign * k / (2 * cfg.z) * (X ** 2 + Y ** 2)
     return torch.exp(1j * ph).to(dtype)
 
-def forward_field(obj, probe, positions, Q, n, chunk=0):
+def forward_field(obj, probe, positions, Q, n, chunk=0, fft_size=0):
     """U_i = DFT{ P·S_patch·Q }  —— Eq.(2) 取模平方【之前】的复场。
 
-    obj (M,M)c ; probe (n,n)c ; positions (I,2)long ; Q (n,n)c  ->  (I,n,n) complex
+    obj (M,M)c ; probe (n,n)c ; positions (I,2)long ; Q (n,n)c.
+    Output (I,fft_size,fft_size); fft_size=0 retains legacy (I,n,n).
+    Padding acts on the centered exit wave BEFORE ifftshift; not on intensity.
 
     论文自己的损失写在强度域，用不上复场；但振幅域损失 ‖|U|-√I‖²（addip 那条线
     的数据项）需要它。两者共用同一个算子，保证"换算法不换物理"。
     """
+    size = fft_size or n
+    if size < n or (size - n) % 2:
+        raise ValueError('FFT size must be >= patch size with even symmetric padding')
     idx = torch.arange(n, device=obj.device)
 
     def _one(pos):
         rows = pos[:, 0:1] + idx[None, :]
         cols = pos[:, 1:2] + idx[None, :]
         psi = obj[rows[:, :, None], cols[:, None, :]] * probe[None] * Q[None]
+        if size != n:
+            pad = (size - n) // 2
+            psi = torch.nn.functional.pad(psi, (pad, pad, pad, pad))
         return torch.fft.fftshift(
             torch.fft.fft2(torch.fft.ifftshift(psi, dim=(-2, -1)), norm="ortho"),
             dim=(-2, -1))
@@ -53,7 +61,7 @@ def forward_field(obj, probe, positions, Q, n, chunk=0):
     return torch.cat([_one(positions[s:s + chunk])
                       for s in range(0, positions.shape[0], chunk)], 0)
 
-def forward_ptycho(obj, probe, positions, Q, n, chunk=0):
+def forward_ptycho(obj, probe, positions, Q, n, chunk=0, fft_size=0):
     """I_i = |DFT{ P·S_patch·Q }|²  —— Eq.(2)
 
     绝对不做逐张归一化：不同扫描点的相对强度本身就是信息。
@@ -61,7 +69,7 @@ def forward_ptycho(obj, probe, positions, Q, n, chunk=0):
     idx = torch.arange(n, device=obj.device)
 
     def _one(pos):
-        far = forward_field(obj, probe, pos, Q, n, chunk=0)
+        far = forward_field(obj, probe, pos, Q, n, chunk=0, fft_size=fft_size)
         return far.real ** 2 + far.imag ** 2
 
     if chunk <= 0 or chunk >= positions.shape[0]:

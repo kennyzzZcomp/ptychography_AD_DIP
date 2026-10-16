@@ -32,7 +32,7 @@ PRESETS = {**BASE_PRESETS, "ptyinr-layout": {
 # Only measurement/geometry/initial-probe/evaluation fields are inherited.
 # The other solver's network and training settings must not leak into DeePIE.
 SCENE_FIELDS = {
-    "wlength": float, "N": int, "det_pixel": float, "z": float,
+    "wlength": float, "N": int, "fft_size": int, "det_pixel": float, "z": float,
     "grid": int, "step_px": int, "probe_diam_um": float, "obj_size": int,
     "probe_amp_image": str, "probe_phase_mode": str, "probe_phase_rad": float,
     "obj_amp_floor": float, "amp_image": str, "phs_image": str, "obj_phase_rad": float,
@@ -112,7 +112,7 @@ def configurations(args):
             raise ValueError("Use either --sample-pixel-um or --det-pixel, not both")
         base=Cfg()
         kw["det_pixel"] = (kw.get("wlength",base.wlength)*kw.get("z",base.z)
-                           / (kw.get("N",base.N)*args.sample_pixel_um*1e-6))
+                           / ((kw.get("fft_size",0) or kw.get("N",base.N))*args.sample_pixel_um*1e-6))
     kw.update(device=args.device, iters=args.iters, eval_every=args.eval_every,
               outdir=args.outdir, probe_mode="pixel")
     if kw.get("noise", "none") not in ("none", "gaussian", "poisson", "mixed"):

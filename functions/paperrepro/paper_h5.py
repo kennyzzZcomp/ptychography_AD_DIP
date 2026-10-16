@@ -30,6 +30,9 @@ def read_config(path):
         if float(f.attrs.get('diffraction_scale', 1)) != 1:
             raise ValueError('Unsupported additional diffraction scaling')
         config = json.loads(f.attrs['scene_config_json'])
+        if config.get('fft_size', 0) not in (0, config['N']):
+            raise ValueError('Padded FFT H5 requires run_sampling128.py / run_deepie_h5.py; '
+                             'the original ProPtyNet paper solver does not support it')
         required = ('wlength', 'N', 'det_pixel', 'z', 'grid', 'step_px',
                     'probe_diam_um', 'obj_size', 'quad_sign')
         if any(k not in config for k in required):

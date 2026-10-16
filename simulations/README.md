@@ -4,6 +4,76 @@ This folder contains the simulation notebooks. Training results stay in memory a
 
 ## Files
 
+### 64 / 128 FFT controlled comparison (2026-10-13)
+
+Use `run_sampling128.py` as the single entrypoint. Existing 64 defaults are not
+replaced. In this mode `N=64` denotes the probe/patch size and `fft_size=128`
+denotes the physical-forward FFT and measured detector-array size. The exit wave
+is center-zero-padded BEFORE FFT; measured intensities are never resized.
+
+- Same saved 612×612 object, 64×64 probe (effective diameter 59 px), 10×10 scan,
+  step 10 px, quadratic phase, evaluation ROI and constant-one probe initialization.
+- Same object-plane pixel pitch, wavelength and propagation distance. Detector
+  pitch halves from 15.04 to 7.52 µm, retaining detector extent. Probe unknowns
+  remain 64×64, avoiding a simultaneous change in blind-reconstruction capacity.
+- Retains source wave/intensity scaling (not a new peak normalization).
+  Orthonormal FFT padding preserves each frame's total clean intensity.
+- Generates new fixed Poisson realizations at mean expected TOTAL counts/frame
+  of 1e5 and 1e4, seed 42. Four times as many detector pixels does NOT mean four
+  times as many photons. Array-energy SNR changes; do not reuse the 64-data SNR.
+- Ideal point-intensity sampling, not finite detector-pixel integration/binning.
+  This is a sampling-sensitivity experiment, not proof of an information ceiling.
+
+From the repository root, generate all three datasets once:
+
+```bash
+python simulations/run_sampling128.py prepare
+```
+
+Default clean source is the existing
+`results_paper/ptyinr_obj612_grid10_d59_s10_center/scene_obj612_grid10_d59_s10_center.h5`.
+On another machine, supply its actual uploaded location with `--source "PATH_TO_CLEAN_H5"`.
+All new data, audit metadata and results are under `results_paper/sampling128/fft128/`.
+Preparation refuses to overwrite an existing destination; already prepared data
+can be copied to another machine instead of regenerating them.
+
+```bash
+# Frozen U-Net16 -> residual U-Net32: 500 + 500 updates, internal concat kept.
+python simulations/run_sampling128.py ours --dose clean
+python simulations/run_sampling128.py ours --dose 1e4
+
+# DeePIE on precisely the same measurements, 1000 updates.
+python simulations/run_sampling128.py deepie --dose clean
+python simulations/run_sampling128.py deepie --dose 1e4
+```
+
+`--dose 1e5` is also available. `--dry-run` prints commands without training.
+`--root PATH` relocates all outputs. `--fft-size 64` prepares/runs the matching
+legacy-size control in a separate `fft64/` subdirectory; pass the same option
+at preparation and training. No old `windows_result.npz` is required.
+
+Ours: network LR 0.0005 and probe LR 0.01 in both stages; stage-1 amplitude
+loss + TGV 0.01; stage-2 clean amplitude / noisy Poisson loss + TGV 0.005;
+no NLM, same energy-scaled regularization. The 128 diffraction inputs occupy a
+128×128 area before padding to the object-network input size; the input is not
+downsampled back to 64. Thus the end-to-end comparison also changes conditioning.
+
+DeePIE: same model defaults as the supplied `deepie_1e4噪声.npz`; object LR 1e-6,
+probe LR 0.001, decay by 0.5 every 500 updates (user-requested change from 800),
+scan chunk 100. Previously completed runs retain their original 800-step setting.
+Existing weighted
+amplitude loss is retained (not silently changed to Poisson). Hardware and timing
+must still be matched for speed comparisons.
+
+Validation: 13 H5/residual tests passed, including legacy equality, centered
+padding, energy conservation, gradients, metadata/noise roundtrip and overwrite
+guard. Actual 128 data passed DeePIE check-only, a 4-update U16 smoke test and a
+full-measurement U32 Poisson+TGV backward check; no full reconstruction was run.
+The separate old progressive-launcher test expects `inner` while that launcher
+currently defaults to `sparse`; that pre-existing assertion was not changed.
+
+### Notebooks
+
 | Notebook | Purpose | Runtime |
 |---|---|---|
 | `INNM.ipynb` | Original FPM simulation kept as a legacy reference | Original TensorFlow 1 / Keras environment |

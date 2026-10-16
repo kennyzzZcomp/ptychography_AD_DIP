@@ -75,6 +75,7 @@ class Cfg:
     preset: str = "paper"
     wlength: float = 632e-9
     N: int = 512                 # 探测器像素数 M = FFT 尺寸
+    fft_size: int = 0            # 0: legacy N; padded H5 mode keeps N as probe/patch size
     det_pixel: float = 15.04e-6  # Δx2
     z: float = 0.165             # 样品 -> 探测器
     grid: int = 10               # grid×grid 个扫描点
@@ -266,7 +267,10 @@ class Cfg:
         if self.tgv_inner_steps < 1:
             raise ValueError("tgv_inner_steps must be >= 1")
         # 采样关系 Eq.(2) 下面那条: Δx1·Δx2 = λz/M
-        self.dx1 = self.wlength * self.z / (self.N * self.det_pixel)
+        if self.fft_size < 0 or (self.fft_size and
+                (self.fft_size < self.N or (self.fft_size-self.N) % 2)):
+            raise ValueError('fft_size must be 0 or >= N with even symmetric padding')
+        self.dx1 = self.wlength * self.z / ((self.fft_size or self.N) * self.det_pixel)
         self.probe_diam_px = self.probe_diam_um * 1e-6 / self.dx1
         self.scan_span = self.N + (self.grid - 1) * self.step_px
         if self.grid < 1 or self.step_px < 0:

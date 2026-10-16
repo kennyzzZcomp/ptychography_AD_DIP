@@ -80,7 +80,8 @@ class ShallowEncoderDecoder(nn.Module):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--reference', type=Path, required=True)
+    p.add_argument('--reference', type=Path,
+                   help='Optional historical NPZ config; omitted: fixed paper U16→U32 settings, H5 geometry')
     p.add_argument('--scene', type=Path, required=True)
     p.add_argument('--outdir', type=Path, required=True)
     p.add_argument('--candidates', nargs='+', choices=CANDIDATES, default=CANDIDATES)
@@ -95,17 +96,28 @@ def main():
     if a.outdir.exists(): p.error('Choose a new output directory, never overwrite results')
     if a.updates <= 0 or a.updates % 4 or a.stage2_updates <= 0 or a.eval_every <= 0:
         p.error('Positive budgets required, stage1 budget must be a multiple of 4')
-    with np.load(a.reference, allow_pickle=False) as z:
-        source = json.loads(z['cfg'].item()); gt = z['obj_gt'].copy(); pos = z['positions'].copy()
+    device = torch.device('cuda')
+    sc, scene_cfg, forward_error = load_scene(a.scene, device)
+    if a.reference:
+        with np.load(a.reference, allow_pickle=False) as z:
+            source = json.loads(z['cfg'].item()); gt = z['obj_gt'].copy(); pos = z['positions'].copy()
+        assert np.array_equal(gt, sc.obj) and np.array_equal(pos, sc.pos)
+        for key in ('N','grid','step_px','obj_size','wlength','det_pixel','z'):
+            assert source[key] == scene_cfg[key], key
+        assert source.get('fft_size', 0) == scene_cfg.get('fft_size', 0)
+    else:
+        source = dict(scene_cfg)
+        source.update(base_ch=32, lr_net=.0005, lr_probe=.01, tgv_amp=.01,
+            obj_init_alpha=0., skip_mode='concat', window_consistency=0.,
+            window_loss_mode='independent', probe_mode='pixel', weight_decay=0.,
+            window_layout='sparse', window_side=5, window_update='sequential',
+            window_stage2_readout='complex-residual', window_stage2_lr_net=.0005,
+            window_stage2_lr_probe=.01, window_stage2_tgv=.005)
     cfg = WindowCfg(**{k: v for k, v in source.items() if k in {f.name for f in fields(WindowCfg) if f.init}})
     assert cfg.base_ch == 32 and cfg.lr_net == .0005 and cfg.lr_probe == .01 and cfg.tgv_amp == .01
     assert cfg.obj_init_alpha == 0 and cfg.skip_mode == 'concat' and cfg.window_consistency == 0
     assert cfg.window_loss_mode == 'independent' and cfg.probe_mode == 'pixel'
     cfg.device = 'cuda'; device = torch.device('cuda')
-    sc, scene_cfg, forward_error = load_scene(a.scene, device)
-    assert np.array_equal(gt, sc.obj) and np.array_equal(pos, sc.pos)
-    for key in ('N','grid','step_px','obj_size','wlength','det_pixel','z'):
-        assert source[key] == scene_cfg[key], key
     for key in ('noise','snr_db','noise_seed'): setattr(cfg, key, scene_cfg[key])
     cfg.quad_sign = scene_cfg.get('quad_sign', -1.)
     counts = None; alpha = None
@@ -118,7 +130,7 @@ def main():
     assert sorted(sum(groups, [])) == list(range(100)) and all(len(g) == 25 for g in groups)
     selections = [torch.tensor(g, device=device) for g in groups]
     m, ns = cfg.obj_size, cfg.net_size
-    d, pad = m-cfg.N, ns-m; crop = slice(pad//2, pad//2+m)
+    d, pad = m-sc.Imt.shape[-1], ns-m; crop = slice(pad//2, pad//2+m)
     stack = F.pad(sc.Imt[None], (d//2, d-d//2, d//2, d-d//2))
     stack = F.pad(stack, (pad//2, pad-pad//2, pad//2, pad-pad//2))
     stack = stack/stack.amax((2,3), keepdim=True).clamp_min(1e-12)
@@ -127,8 +139,8 @@ def main():
     energy = sc.sqrtIm.square().mean().detach()
     a.outdir.mkdir(parents=True)
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest = dict(reference=str(a.reference.resolve()), scene=str(a.scene.resolve()),
-        reference_sha256=digest(a.reference), scene_sha256=digest(a.scene), cfg=asdict(cfg),
+    manifest = dict(reference=str(a.reference.resolve()) if a.reference else None, scene=str(a.scene.resolve()),
+        reference_sha256=digest(a.reference) if a.reference else None, scene_sha256=digest(a.scene), cfg=asdict(cfg),
         scene_cfg=scene_cfg, forward_relative_error=forward_error, seed=a.seed,
         candidates=a.candidates, stage1_updates=a.updates, stage2_updates=a.stage2_updates,
         early_switch=a.early_switch, groups=groups, gpu=torch.cuda.get_device_name(), torch_version=torch.__version__,

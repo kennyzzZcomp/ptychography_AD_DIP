@@ -206,7 +206,7 @@ def simulate(cfg: Cfg, obj, probe, positions, Q, device):
         I = forward_ptycho(torch.from_numpy(obj).to(device),
                            torch.from_numpy(probe).to(device),
                            torch.from_numpy(positions).to(device),
-                           Q, cfg.N, chunk=16).cpu().numpy()
+                           Q, cfg.N, chunk=16, fft_size=getattr(cfg, 'fft_size', 0)).cpu().numpy()
     I = I / I.max()                                   # 全局归一化（Table 1 第 3 步）
     I_clean = np.clip(I, 0.0, 1.0).astype(np.float32)
     if cfg.noise == "none":

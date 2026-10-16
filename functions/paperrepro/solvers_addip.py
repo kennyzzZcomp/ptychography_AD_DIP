@@ -56,7 +56,8 @@ def _log(tag, it, loss, real, m, rp):
 
 
 def _fwd(cfg, O, P, post, Q):
-    return forward_field(O, P, post, Q, cfg.N, chunk=cfg.fwd_chunk)
+    return forward_field(O, P, post, Q, cfg.N, chunk=cfg.fwd_chunk,
+                         fft_size=getattr(cfg, 'fft_size', 0))
 
 
 def _probe_setup(cfg, sc, probe, device, tag):

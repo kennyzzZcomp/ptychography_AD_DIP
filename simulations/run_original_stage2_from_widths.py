@@ -95,6 +95,7 @@ def main():
     assert scene_cfg['noise'] == cfg.noise
     for key in ('N','grid','step_px','obj_size','wlength','det_pixel','z'):
         assert getattr(cfg,key) == scene_cfg[key]
+    assert cfg.fft_size == scene_cfg.get('fft_size', 0)
     names = list(dict.fromkeys(a.stage1_names))
     loss_kind = ('amplitude' if cfg.noise == 'none' else 'poisson') if a.data_loss == 'auto' else a.data_loss
     counts = None; alpha = None

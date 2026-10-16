@@ -59,7 +59,8 @@ def measurement_loss(obj, probe, positions, q, measured, weights, chunk, backwar
     total = measured.new_zeros(())
     for start in range(0, len(positions), chunk):
         stop = start + chunk
-        predicted = forward_field(obj, probe, positions[start:stop], q, probe.shape[-1]).abs()
+        predicted = forward_field(obj, probe, positions[start:stop], q, probe.shape[-1],
+                                  fft_size=measured.shape[-1]).abs()
         per_scan = (predicted - measured[start:stop]).square().mean((-2, -1))
         loss = (per_scan * weights[start:stop]).sum() / len(positions)
         if backward:
@@ -72,7 +73,8 @@ def measurement_loss(obj, probe, positions, q, measured, weights, chunk, backwar
 def initial_probe_scale(obj, probe, positions, q, measured, chunk):
     predicted_energy = measured.new_zeros(())
     for start in range(0, len(positions), chunk):
-        value = forward_field(obj, probe, positions[start:start + chunk], q, probe.shape[-1])
+        value = forward_field(obj, probe, positions[start:start + chunk], q, probe.shape[-1],
+                              fft_size=measured.shape[-1])
         predicted_energy += value.abs().square().sum()
     if predicted_energy <= 0 or measured.square().sum() <= 0:
         raise ValueError("cannot calibrate zero-energy data or initialization")

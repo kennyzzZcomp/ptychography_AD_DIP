@@ -309,7 +309,7 @@ def run_windows(cfg):
     selections = [torch.tensor(g, device=device) for g in groups]
     # Match the existing full-canvas diffraction padding, including odd dimensions.
     m, ns = cfg.obj_size, cfg.net_size
-    d = m - cfg.N
+    d = m - sc.Imt.shape[-1]
     stack = F.pad(sc.Imt[None], (d//2, d-d//2, d//2, d-d//2))
     p = ns - m
     stack = F.pad(stack, (p//2, p-p//2, p//2, p-p//2))

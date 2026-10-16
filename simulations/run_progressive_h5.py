@@ -58,7 +58,8 @@ def load_scene(path, device):
     if np.any(amp<0) or not np.allclose(amp**2,intensity,rtol=2e-5,atol=1e-7):
         raise ValueError('Inconsistent measured amplitudes/intensities')
     g=int(config['grid']); n=int(config['N']); m=int(config['obj_size'])
-    if amp.shape!=(g*g,n,n) or obj.shape!=(m,m) or probe.shape!=(n,n) or q.shape!=(n,n) or p0.shape!=(n,n):
+    nf = int(config.get('fft_size', 0) or n)
+    if amp.shape!=(g*g,nf,nf) or obj.shape!=(m,m) or probe.shape!=(n,n) or q.shape!=(n,n) or p0.shape!=(n,n):
         raise ValueError('Scene dimensions disagree with configuration')
     if not np.allclose(p0,1):
         raise ValueError('This adapter preserves progressive ones initialization; scene probe_init must be ones')
@@ -81,7 +82,7 @@ def load_scene(path, device):
     with torch.no_grad():
         ot,pt=tensor(obj),tensor(probe)
         for start in range(0,len(pos),16):
-            pred=forward_field(ot,pt,sc.post[start:start+16],sc.Q,n).abs()
+            pred=forward_field(ot,pt,sc.post[start:start+16],sc.Q,n,fft_size=nf).abs()
             truth=sc.Iclt[start:start+16].clamp_min(0).sqrt()
             error+=(pred-truth).square().sum().item(); den+=truth.square().sum().item()
     relative=(error/max(den,1e-30))**.5
