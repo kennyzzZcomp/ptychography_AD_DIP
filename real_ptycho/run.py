@@ -49,7 +49,7 @@ def arguments(argv=None):
     p = argparse.ArgumentParser(description='Real ptydata_33: U16+TGV -> residual U32+NLM (no stage-2 TGV).')
     p.add_argument('--data', type=Path)
     p.add_argument('--out', type=Path)
-    p.add_argument('--num-frames', type=int, choices=[100, 200], default=200, help='200 nearest-center frames (default); 100 restores central 10x10')
+    p.add_argument('--num-frames', type=int, choices=[100, 200, 225], default=225, help='225 full 15x15 (default); 200 nearest center; 100 central 10x10')
     p.add_argument('--prepare-only', action='store_true', help='Select/cache requested frames and inspect geometry; no training')
     p.add_argument('--smoke', action='store_true', help='Explicit diagnostic: center crop 256, 4+2 updates; NOT final reconstruction')
     p.add_argument('--detector-crop', type=int, default=0, help='0 retains all 2000 pixels; positive value is an explicit center crop, NOT resize/binning')
@@ -116,7 +116,7 @@ def prepare(a):
             raise ValueError(f'Expected (225,2000,2000) intensities, got {frames.shape}')
         # ids, coords, groups, selection = select_center_grid(f['positionx'][()])
         # 原始坐标单位 cm → 内部统一为 mm
-        positions_mm = f['positionx'][()].astype(np.float64) * 10.0
+        positions_mm = f['positionx'][()].astype(np.float64) 
         ids, coords, groups, selection = select_center_grid(positions_mm, a.num_frames)
         n = a.detector_crop or frames.shape[-1]
         if n < 32 or n > frames.shape[-1] or n % 2:

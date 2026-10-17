@@ -77,7 +77,7 @@ class UNet(nn.Module):
         return torch.complex(amp*p[0]/den, amp*p[1]/den)
 
 
-def select_center_grid(positions_mm, num_frames=100):
+def select_center_grid(positions_mm, num_frames=225):
     """Infer rows from slow stored coordinate; retain measured jitter and frame IDs."""
     p = np.asarray(positions_mm, dtype=np.float64).T
     if p.shape != (225, 2) or not np.isfinite(p).all():
@@ -92,8 +92,8 @@ def select_center_grid(positions_mm, num_frames=100):
         raise ValueError('Coordinates do not form the expected separated 15x15 rows')
     if np.max(np.abs(rp[:, :, 1]-col_centers[None, :])) > .4*sx:
         raise ValueError('Column alignment is not a regular 15x15 raster')
-    if num_frames not in (100, 200):
-        raise ValueError('Supported selections: 100 (central 10x10) or 200 (nearest center)')
+    if num_frames not in (100, 200, 225):
+        raise ValueError('Supported selections: 100 (central 10x10), 200 (nearest center), 225 (full 15x15)')
     center = (p.min(0)+p.max(0))/2
     if num_frames == 100:
         # Preserve the original selection and group/channel ordering.
@@ -102,6 +102,11 @@ def select_center_grid(positions_mm, num_frames=100):
         rr, cc = np.meshgrid(np.arange(r0, r0+10), np.arange(c0, c0+10), indexing='ij')
         rr, cc = rr.ravel(), cc.ravel()
         group_row, group_col = rr-r0, cc-c0
+    elif num_frames == 225:
+        rr, cc = np.indices((15, 15))
+        rr, cc = rr.ravel(), cc.ravel()
+        r0, c0 = 0, 0
+        group_row, group_col = rr, cc
     else:
         # Exactly 200 real frames, nearest physical center; deterministic raster ordering.
         distance2 = np.square(rp-center).sum(axis=-1).ravel()
@@ -115,7 +120,8 @@ def select_center_grid(positions_mm, num_frames=100):
     return ids, p[ids], groups, {'row_start_zero_based': r0, 'col_start_zero_based': c0,
                                'grid_rows_zero_based': rr.tolist(), 'grid_cols_zero_based': cc.tolist(),
                                'num_frames': num_frames, 'group_sizes': [len(g) for g in groups],
-                               'selection_rule': 'central_10x10' if num_frames == 100 else 'nearest_200_to_physical_center',
+                               'selection_rule': {100: 'central_10x10', 200: 'nearest_200_to_physical_center',
+                                                  225: 'full_15x15'}[num_frames],
                                'row_step_mm': float(sy), 'col_step_mm': float(sx)}
 
 

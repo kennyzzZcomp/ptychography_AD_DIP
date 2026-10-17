@@ -20,8 +20,10 @@ class LearningRateTests(unittest.TestCase):
 
     def test_defaults_and_legacy(self):
         a = self.parse()
-        self.assertEqual(a.num_frames, 200)
+        self.assertEqual(a.num_frames, 225)
         self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
+        self.assertEqual(self.parse('--num-frames','200').num_frames, 200)
+        self.assertEqual(self.parse('--num-frames','225').num_frames, 225)
         self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0005))
         self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.01,.01))
         a = self.parse('--lr-net','.002','--lr-probe','.003')
@@ -80,7 +82,7 @@ class CoreTests(unittest.TestCase):
         for y in range(15):
             for x in (range(15) if y%2 == 0 else reversed(range(15))):
                 positions.append([y*.03, x*.03])
-        ids, coords, groups, meta = select_center_grid(np.array(positions).T)
+        ids, coords, groups, meta = select_center_grid(np.array(positions).T, 100)
         self.assertEqual(len(set(ids)), 100)
         self.assertEqual(sorted(np.concatenate(groups).tolist()), list(range(100)))
         self.assertTrue(all(len(g)==25 for g in groups))
@@ -130,6 +132,29 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(torch.all(x[0,:len(g),8:24,8:24] == 1))
             self.assertEqual(float(x[0,len(g):].abs().sum()),0.)
             self.assertEqual(float(x[:,:,:8].abs().sum()),0.)
+            out = net(x)
+            torch.testing.assert_close(out,torch.ones_like(out))
+
+    def test_full_225_default_selection_and_inputs(self):
+        positions = np.array([[y*.03,x*.03] for y in range(15)
+                              for x in (range(15) if y%2 == 0 else reversed(range(15)))])
+        ids, coords, groups, meta = select_center_grid(positions.T)
+        self.assertEqual(sorted(ids.tolist()),list(range(225)))
+        self.assertEqual([len(g) for g in groups],[64,56,56,49])
+        self.assertEqual(sorted(np.concatenate(groups).tolist()),list(range(225)))
+        self.assertEqual(meta['selection_rule'],'full_15x15')
+        np.testing.assert_array_equal(coords,positions[ids])
+        rr, cc = np.indices((15,15))
+        np.testing.assert_array_equal(meta['grid_rows_zero_based'],rr.ravel())
+        np.testing.assert_array_equal(meta['grid_cols_zero_based'],cc.ravel())
+        for k,g in enumerate(groups):
+            self.assertTrue(np.all(2*(rr.ravel()[g]%2)+cc.ravel()[g]%2 == k))
+        net = UNet(64,2,checkpoint_blocks=False)
+        for g in groups:
+            frames = np.ones((len(g),16,16),dtype=np.float32)
+            x = network_input(frames,32,64,'cpu')
+            self.assertEqual(tuple(x.shape),(1,64,32,32))
+            self.assertEqual(float(x[:,len(g):].abs().sum()),0.)
             out = net(x)
             torch.testing.assert_close(out,torch.ones_like(out))
 
