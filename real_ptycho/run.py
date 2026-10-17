@@ -4,6 +4,7 @@ from datetime import datetime
 import gc
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
@@ -28,7 +29,13 @@ def sync(device):
         torch.cuda.synchronize(device)
 
 
-def arguments():
+def set_optimizer_lr(optimizer, lr):
+    """Change the step size without resetting Adam moments or step counts."""
+    for group in optimizer.param_groups:
+        group['lr'] = lr
+
+
+def arguments(argv=None):
     p = argparse.ArgumentParser(description='Real ptydata_33: U16+TGV -> residual U32+NLM (no stage-2 TGV).')
     p.add_argument('--data', type=Path)
     p.add_argument('--out', type=Path)
@@ -43,8 +50,12 @@ def arguments():
     p.add_argument('--flip-x', action='store_true')
     p.add_argument('--stage1-steps', type=int, default=500)
     p.add_argument('--stage2-steps', type=int, default=500)
-    p.add_argument('--lr-net', type=float, default=.0005)
-    p.add_argument('--lr-probe', type=float, default=.01)
+    p.add_argument('--lr-net', type=float, default=.0005, help='Legacy fallback for BOTH stages; stage-specific options override it')
+    p.add_argument('--lr-probe', type=float, default=.01, help='Legacy fallback for BOTH stages; stage-specific options override it')
+    p.add_argument('--stage1-lr-net', type=float, default=None, help='Stage-1 network LR (default: --lr-net, 0.0005)')
+    p.add_argument('--stage1-lr-probe', type=float, default=None, help='Stage-1 probe LR (default: --lr-probe, 0.01)')
+    p.add_argument('--stage2-lr-net', type=float, default=None, help='Stage-2 network LR (default: --lr-net, 0.0005)')
+    p.add_argument('--stage2-lr-probe', type=float, default=None, help='Stage-2 probe LR (default: --lr-probe, 0.01); retains probe Adam state')
     p.add_argument('--tgv', type=float, default=.01, help='Stage 1 ONLY; stage 2 has NO TGV')
     p.add_argument('--nlm-ratio', type=float, default=.5, help='Initial prior/data gradient-norm ratio, NOT literal penalty coefficient')
     p.add_argument('--nlm-refresh', type=int, default=25)
@@ -53,7 +64,15 @@ def arguments():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--device', default='cuda')
     p.add_argument('--no-checkpoint', action='store_true', help='Disable activation checkpointing; increases GPU memory')
-    a = p.parse_args()
+    a = p.parse_args(argv)
+    for stage in (1, 2):
+        for kind in ('net', 'probe'):
+            key = f'stage{stage}_lr_{kind}'
+            if getattr(a, key) is None:
+                setattr(a, key, getattr(a, f'lr_{kind}'))
+    for key in ('lr_net', 'lr_probe', 'stage1_lr_net', 'stage1_lr_probe', 'stage2_lr_net', 'stage2_lr_probe'):
+        if not math.isfinite(getattr(a, key)) or getattr(a, key) <= 0:
+            p.error(f'--{key.replace("_", "-")} must be finite and positive')
     if a.data is None:
         candidates = [HERE/'data/ptydata_33.h5', HERE.parent/'experiment/ptydata_33.h5']
         a.data = next((x for x in candidates if x.is_file()), candidates[0])
@@ -213,10 +232,11 @@ def train(a, data, positions, side, groups, config):
     initial_probe = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(spectrum), norm='ortho'))
     initial_probe /= initial_probe.abs().square().mean().sqrt().clamp_min(1e-12)
     pr, pi = nn.Parameter(initial_probe.real.clone()), nn.Parameter(initial_probe.imag.clone())
-    optp = torch.optim.Adam([pr, pi], lr=a.lr_probe)
+    optp = torch.optim.Adam([pr, pi], lr=a.stage1_lr_probe)
     del initial_probe, spectrum
     net = UNet(25, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
-    opt = torch.optim.Adam(net.parameters(), lr=a.lr_net)
+    opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
+    print(f'[S1 LR] network={a.stage1_lr_net:g}, probe={a.stage1_lr_probe:g}', flush=True)
     tgvs = [TGV(m) for m in masks] if a.tgv else None
     pad = side-n
 
@@ -287,7 +307,9 @@ def train(a, data, positions, side, groups, config):
     del amp
     torch.manual_seed(a.seed)
     net = UNet(3, 32, residual=True, checkpoint_blocks=not a.no_checkpoint).to(device)
-    opt = torch.optim.Adam(net.parameters(), lr=a.lr_net)
+    opt = torch.optim.Adam(net.parameters(), lr=a.stage2_lr_net)
+    set_optimizer_lr(optp, a.stage2_lr_probe)
+    print(f'[S2 LR] network={a.stage2_lr_net:g}, probe={a.stage2_lr_probe:g}; probe Adam state retained', flush=True)
     coverage = prop.coverage(torch.complex(pr,pi).detach(), side)
     prior = NLMPrior(base, union, coverage) if a.nlm_ratio else None
     coefficient, sigma = 0., None

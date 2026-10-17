@@ -1,9 +1,55 @@
 """Small CPU tests, no experimental reconstruction. python -m unittest discover -s real_ptycho"""
 import copy
+import contextlib
+import io
+from pathlib import Path
+import uuid
 import unittest
 import numpy as np
 import torch
 from core import UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms
+from run import arguments, set_optimizer_lr
+
+
+class LearningRateTests(unittest.TestCase):
+    def parse(self, *options):
+        # Parsing only: generate a nonexistent path without creating/deleting directories.
+        out = Path(__file__).resolve().parent/'results'/f'argument_test_{uuid.uuid4().hex}'
+        return arguments(['--data', str(Path(__file__).resolve()), '--prepare-only',
+                          '--out', str(out), *options])
+
+    def test_defaults_and_legacy(self):
+        a = self.parse()
+        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0005))
+        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.01,.01))
+        a = self.parse('--lr-net','.002','--lr-probe','.003')
+        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.002,.002))
+        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.003,.003))
+
+    def test_independent_and_override(self):
+        a = self.parse('--stage1-lr-net','.001','--stage1-lr-probe','.02',
+                       '--stage2-lr-net','.0002','--stage2-lr-probe','.004', '--lr-net','.1')
+        self.assertEqual((a.stage1_lr_net,a.stage1_lr_probe,a.stage2_lr_net,a.stage2_lr_probe),
+                         (.001,.02,.0002,.004))
+        a = self.parse('--stage2-lr-net','.0002','--lr-net','.001')
+        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.001,.0002))
+
+    def test_invalid_learning_rates(self):
+        for value in ('0','-1','nan','inf'):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.parse('--stage2-lr-probe',value)
+
+    def test_probe_lr_switch_preserves_adam_state(self):
+        param = torch.nn.Parameter(torch.tensor([1.]))
+        opt = torch.optim.Adam([param],lr=.01)
+        param.square().sum().backward(); opt.step()
+        state = opt.state[param]
+        before = {key:value.clone() for key,value in state.items()}
+        set_optimizer_lr(opt,.003)
+        self.assertEqual(opt.param_groups[0]['lr'],.003)
+        self.assertIs(opt.state[param],state)
+        for key,value in state.items():
+            torch.testing.assert_close(value,before[key])
 
 
 class CoreTests(unittest.TestCase):
