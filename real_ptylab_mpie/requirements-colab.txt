@@ -1,0 +1,3 @@
+# Official CUDA 12 GPU extra; run in a Colab GPU runtime.
+ptylab[gpu]==0.3.1
+
