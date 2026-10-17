@@ -136,6 +136,24 @@ def geometry(positions_mm, n, wavelength_nm, distance_mm, pixel_um, order='yx', 
     return pos, side, dx_m
 
 
+def center_crop_field(field, size):
+    """Same-pitch crop, also the adjoint of center_pad_probe for gradients."""
+    n = field.shape[-1]
+    if field.shape[-2] != n or size < 1 or size > n or (n-size)%2:
+        raise ValueError('Centered crop requires square arrays and an even size difference')
+    low = (n-size)//2
+    return field[..., low:low+size, low:low+size]
+
+
+def center_pad_probe(probe, size):
+    """Embed a compact complex probe without resampling or changing pixel pitch."""
+    n = probe.shape[-1]
+    if probe.shape[-2] != n or size < n or (size-n)%2:
+        raise ValueError('Centered padding requires square arrays and an even size difference')
+    pad = (size-n)//2
+    return F.pad(probe, (pad,pad,pad,pad))
+
+
 class Propagator:
     def __init__(self, positions_px, n):
         self.n = n

@@ -15,7 +15,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from core import (UNet, TGV, NLMPrior, Propagator, chunked_data, geometry,
-                  preserve_buffers, select_center_grid)
+                  preserve_buffers, select_center_grid, center_crop_field, center_pad_probe)
 
 HERE = Path(__file__).resolve().parent
 
@@ -51,8 +51,9 @@ def arguments(argv=None):
     p.add_argument('--out', type=Path)
     p.add_argument('--num-frames', type=int, choices=[100, 200, 225], default=225, help='225 full 15x15 (default); 200 nearest center; 100 central 10x10')
     p.add_argument('--prepare-only', action='store_true', help='Select/cache requested frames and inspect geometry; no training')
-    p.add_argument('--smoke', action='store_true', help='Explicit diagnostic: center crop 256, 4+2 updates; NOT final reconstruction')
+    p.add_argument('--smoke', action='store_true', help='Explicit diagnostic: crop max(256, probe-size), 4+2 updates; NOT final reconstruction')
     p.add_argument('--detector-crop', type=int, default=0, help='0 retains all 2000 pixels; positive value is an explicit center crop, NOT resize/binning')
+    p.add_argument('--probe-size', type=int, default=512, help='Optimized central probe side, zero-padded to detector size; 0 restores full-size probe')
     p.add_argument('--wavelength-nm', type=float, default=632.8)
     p.add_argument('--distance-mm', type=float, default=6.)
     p.add_argument('--pixel-um', type=float, default=3.76)
@@ -90,7 +91,7 @@ def arguments(argv=None):
     if not a.data.is_file():
         p.error(f'Data missing: {a.data}\nPut ptydata_33.h5 in {HERE / "data"}, or pass --data PATH.')
     if a.smoke:
-        a.detector_crop = a.detector_crop or 256
+        a.detector_crop = a.detector_crop or max(256, a.probe_size)
         a.stage1_steps, a.stage2_steps, a.eval_every = 4, 2, 1
     if a.stage1_steps < 4 or a.stage1_steps % 4 or a.stage2_steps < 1:
         p.error('Stage 1 must be a positive multiple of 4; stage 2 must be positive')
@@ -100,6 +101,8 @@ def arguments(argv=None):
         p.error('Physical scales and learning rates must be positive')
     if a.detector_crop < 0:
         p.error('--detector-crop must be zero or positive')
+    if a.probe_size < 0 or a.probe_size % 2 or a.probe_size > (a.detector_crop or 2000):
+        p.error('--probe-size must be 0 (full size) or a positive even size no larger than the detector')
     a.out = a.out or HERE/'results'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     if a.out.exists():
         p.error('Output already exists; choose a fresh --out (no overwriting)')
@@ -114,9 +117,8 @@ def prepare(a):
         frames = f['ptychogramx']
         if frames.shape != (225, 2000, 2000):
             raise ValueError(f'Expected (225,2000,2000) intensities, got {frames.shape}')
-        # ids, coords, groups, selection = select_center_grid(f['positionx'][()])
-        # 原始坐标单位 cm → 内部统一为 mm
-        positions_mm = f['positionx'][()].astype(np.float64) 
+        # 原始坐标单位就是 mm；不乘10，也不改写原H5。
+        positions_mm = f['positionx'][()].astype(np.float64)
         ids, coords, groups, selection = select_center_grid(positions_mm, a.num_frames)
         n = a.detector_crop or frames.shape[-1]
         if n < 32 or n > frames.shape[-1] or n % 2:
@@ -146,12 +148,13 @@ def prepare(a):
     config.update(selection=selection, selected_frame_ids_zero_based=ids.tolist(),
                   positions_mm=coords.tolist(), positions_object_pixels=pos.tolist(),
                   groups=[g.tolist() for g in groups], stage1_input_channels=max(map(len, groups)),
-                  detector_size=n, object_size=side,
+                  detector_size=n, object_size=side, position_input_unit='mm', position_scale_to_mm=1.0,
+                  probe_parameter_size=a.probe_size or n, probe_padding_each_side=(n-(a.probe_size or n))//2,
                   object_pixel_um=dx*1e6, original_intensity_mean=scale, original_intensity_max=maximum,
                   selected_input_sha256=source_hash.hexdigest(), torch_version=torch.__version__,
                   stage1='Shared U-Net16, sequential ABCD (one group/update), amplitude TGV',
                   stage2=f'U-Net32 complex additive residual, all {len(ids)} frames/update, NLM only, TGV=0',
-                  probe='Free complex pixels; initialized from inverse FFT of sqrt(mean intensity); Adam state continued',
+                  probe='Central complex pixels only; same-pitch zero pad before multiplication/FFT; normalized full inverse-FFT initialization then center crop; Adam state continued',
                   loss=f'Global gain-profiled amplitude MSE per group (S1) / all {len(ids)} (S2)',
                   propagation='Centered unitary Fraunhofer FFT, bilinear object sampling at measured subpixel coordinates',
                   regularizer_domain='Union of computational probe footprints, NOT a known illuminated support',
@@ -171,6 +174,8 @@ def prepare(a):
             group = next(k for k, g in enumerate(groups) if j in g)
             out.write(f'{j},{original},{r},{c},{"ABCD"[group]},{coords[j,0]:.9f},{coords[j,1]:.9f}\n')
     print(f'[data] selected {len(ids)} frames, each {n}x{n}; object {side}x{side}; dx={dx*1e6:.6f} um', flush=True)
+    print(f'[probe] optimize {config["probe_parameter_size"]}x{config["probe_parameter_size"]}; '
+          f'zero-pad {config["probe_padding_each_side"]} pixels each side to {n}x{n}; coordinates read as mm', flush=True)
     print(f'[selection] rule={selection["selection_rule"]}; ABCD sizes={selection["group_sizes"]}; '
           f'network input channels={config["stage1_input_channels"]} (zero-pad missing channels only)', flush=True)
     print('[warning] Fraunhofer and coordinate-axis assumptions require experimental validation.', flush=True)
@@ -247,9 +252,17 @@ def train(a, data, positions, side, groups, config):
     spectrum = torch.from_numpy(np.sqrt(mean).astype(np.float32)).to(device)
     initial_probe = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(spectrum), norm='ortho'))
     initial_probe /= initial_probe.abs().square().mean().sqrt().clamp_min(1e-12)
+    # Preserve the previous initialization values inside the retained region.
+    # Do not renormalize using the smaller window (which would change its scale).
+    probe_size = a.probe_size or n
+    initial_probe = center_crop_field(initial_probe, probe_size)
     pr, pi = nn.Parameter(initial_probe.real.clone()), nn.Parameter(initial_probe.imag.clone())
     optp = torch.optim.Adam([pr, pi], lr=a.stage1_lr_probe)
     del initial_probe, spectrum
+
+    def full_probe():
+        return center_pad_probe(torch.complex(pr, pi), n)
+
     input_channels = max(map(len, groups))
     net = UNet(input_channels, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
@@ -272,7 +285,7 @@ def train(a, data, positions, side, groups, config):
     stage_seconds = {1: 0., 2: 0.}
 
     def evaluate(obj, stage, step):
-        _, _, stats = chunked_data(obj, torch.complex(pr,pi), all_ids, data, prop, a.chunk, False)
+        _, _, stats = chunked_data(obj, full_probe(), all_ids, data, prop, a.chunk, False)
         item = dict(stage=stage, stage_update=step, total_update=step+(a.stage1_steps if stage==2 else 0),
                     stage_training_seconds=stage_seconds[stage], **stats)
         history.append(item); write_json(a.out/'history.json', history)
@@ -285,7 +298,9 @@ def train(a, data, positions, side, groups, config):
         if not torch.isfinite(go).all():
             raise FloatingPointError('Non-finite regularized object gradient')
         obj.backward(go)
-        pr.grad, pi.grad = gp.real.contiguous(), gp.imag.contiguous()
+        # chunked_data differentiates a detached full-size probe: apply pad's adjoint.
+        compact_gp = center_crop_field(gp, probe_size)
+        pr.grad, pi.grad = compact_gp.real.contiguous(), compact_gp.imag.contiguous()
         opt.step(); optp.step()
 
     initial = read_stage1()
@@ -295,7 +310,7 @@ def train(a, data, positions, side, groups, config):
         sync(device); start = time.perf_counter()
         opt.zero_grad(set_to_none=True); optp.zero_grad(set_to_none=True)
         obj = net(input_group(k))
-        go, gp, _ = chunked_data(obj, torch.complex(pr,pi), groups[k], data, prop, a.chunk)
+        go, gp, _ = chunked_data(obj, full_probe(), groups[k], data, prop, a.chunk)
         reg = a.tgv*tgvs[k](obj) if tgvs else None  # Dataset intensity mean was normalized to one.
         update(obj, go, gp, reg)
         del obj, go, gp, reg
@@ -304,7 +319,8 @@ def train(a, data, positions, side, groups, config):
             evaluate(read_stage1(), 1, step)
     base = read_stage1().detach()
     s1_cpu = base.cpu().numpy().copy()
-    np.savez(a.out/'stage1.npz', obj_rec=s1_cpu, probe_rec=torch.complex(pr,pi).detach().cpu().numpy(),
+    np.savez(a.out/'stage1.npz', obj_rec=s1_cpu, probe_rec=full_probe().detach().cpu().numpy(),
+             probe_compact=torch.complex(pr,pi).detach().cpu().numpy(),
              positions_px=positions, original_frame_ids=config['selected_frame_ids_zero_based'])
     torch.save(dict(network=net.state_dict(), probe_real=pr.detach(), probe_imag=pi.detach(),
                     probe_optimizer=optp.state_dict(), config=config), a.out/'stage1_weights.pt')
@@ -323,12 +339,12 @@ def train(a, data, positions, side, groups, config):
     opt = torch.optim.Adam(net.parameters(), lr=a.stage2_lr_net)
     set_optimizer_lr(optp, a.stage2_lr_probe)
     print(f'[S2 LR] network={a.stage2_lr_net:g}, probe={a.stage2_lr_probe:g}; probe Adam state retained', flush=True)
-    coverage = prop.coverage(torch.complex(pr,pi).detach(), side)
+    coverage = prop.coverage(full_probe().detach(), side)
     prior = NLMPrior(base, union, coverage) if a.nlm_ratio else None
     coefficient, sigma = 0., None
     if prior:
         trial = base.detach().requires_grad_(True)
-        gd, _, _ = chunked_data(trial, torch.complex(pr,pi), all_ids, data, prop, a.chunk)
+        gd, _, _ = chunked_data(trial, full_probe(), all_ids, data, prop, a.chunk)
         gr = torch.autograd.grad(prior(trial), trial)[0]
         dn, pn = gd[union].norm().item(), gr[union].norm().item()
         coefficient = a.nlm_ratio*dn/pn if pn > 1e-12 else 0.
@@ -348,7 +364,7 @@ def train(a, data, positions, side, groups, config):
         obj = base+net(conditioning)
         if prior and step > 1 and (step-1) % a.nlm_refresh == 0:
             prior.refresh(obj)
-        go, gp, _ = chunked_data(obj, torch.complex(pr,pi), all_ids, data, prop, a.chunk)
+        go, gp, _ = chunked_data(obj, full_probe(), all_ids, data, prop, a.chunk)
         reg = coefficient*prior(obj) if prior else None
         update(obj, go, gp, reg)
         del obj, go, gp, reg
@@ -358,8 +374,9 @@ def train(a, data, positions, side, groups, config):
                 evaluate(base+net(conditioning), 2, step)
     with preserve_buffers(net), torch.no_grad():
         final = (base+net(conditioning)).cpu().numpy()
-    probe = torch.complex(pr,pi).detach().cpu().numpy()
+    probe = full_probe().detach().cpu().numpy()
     np.savez(a.out/'reconstruction.npz', obj_rec=final, obj_stage1=s1_cpu, probe_rec=probe,
+             probe_compact=torch.complex(pr,pi).detach().cpu().numpy(),
              positions_px=positions, original_frame_ids=config['selected_frame_ids_zero_based'],
              object_pixel_um=config['object_pixel_um'], config=json.dumps(config))
     torch.save(dict(network=net.state_dict(), probe_real=pr.detach(), probe_imag=pi.detach(),

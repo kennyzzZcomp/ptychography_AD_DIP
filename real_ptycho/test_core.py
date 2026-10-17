@@ -5,10 +5,13 @@ import io
 from pathlib import Path
 import uuid
 import unittest
+import tempfile
+from unittest.mock import patch
 import numpy as np
 import torch
-from core import UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms
-from run import arguments, network_input, set_optimizer_lr
+from core import (UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms,
+                  center_crop_field, center_pad_probe)
+from run import arguments, network_input, set_optimizer_lr, train
 
 
 class LearningRateTests(unittest.TestCase):
@@ -21,6 +24,7 @@ class LearningRateTests(unittest.TestCase):
     def test_defaults_and_legacy(self):
         a = self.parse()
         self.assertEqual(a.num_frames, 225)
+        self.assertEqual(a.probe_size, 512)
         self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
         self.assertEqual(self.parse('--num-frames','200').num_frames, 200)
         self.assertEqual(self.parse('--num-frames','225').num_frames, 225)
@@ -55,11 +59,72 @@ class LearningRateTests(unittest.TestCase):
         for key,value in state.items():
             torch.testing.assert_close(value,before[key])
 
+    def test_probe_size_arguments(self):
+        self.assertEqual(self.parse('--probe-size','0').probe_size,0)
+        self.assertEqual(self.parse('--smoke').detector_crop,512)
+        self.assertEqual(self.parse('--smoke','--probe-size','64').detector_crop,256)
+        for size in ('-1','511','2002'):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.parse('--probe-size',size)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parse('--detector-crop','256')
+
 
 class CoreTests(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(2)
         torch.manual_seed(8)
+
+    def test_probe_padding_native_and_gradient_adjoint(self):
+        p = torch.randn(512,512,dtype=torch.complex64)
+        full = center_pad_probe(p,2000)
+        torch.testing.assert_close(full[744:1256,744:1256],p)
+        self.assertEqual(float(full[:744].abs().sum()+full[1256:].abs().sum()),0.)
+        self.assertEqual(float(full[:,:744].abs().sum()+full[:,1256:].abs().sum()),0.)
+        torch.testing.assert_close(center_crop_field(full,512),p)
+        prop = Propagator(np.array([[1.2,2.7],[2.1,1.4]]),8)
+        obj = torch.randn(16,16,dtype=torch.complex64,requires_grad=True)
+        compact = torch.randn(4,4,dtype=torch.complex64,requires_grad=True)
+        data = np.random.default_rng(7).uniform(.1,2,(2,8,8)).astype('float32')
+        a = prop.amplitude(obj,center_pad_probe(compact,8),[0,1])
+        b = torch.from_numpy(data).sqrt()
+        gain = (a*b).sum()/a.square().sum()
+        direct_go,direct_gp = torch.autograd.grad((gain*a-b).square().mean(),(obj,compact))
+        go,gp,_ = chunked_data(obj,center_pad_probe(compact,8),[0,1],data,prop,chunk=1)
+        torch.testing.assert_close(go,direct_go,rtol=3e-5,atol=2e-7)
+        torch.testing.assert_close(center_crop_field(gp,4),direct_gp,rtol=3e-5,atol=2e-7)
+
+    def test_compact_probe_two_stage_synthetic_updates(self):
+        # Tiny synthetic 4+2 updates only, not reconstruction of the experimental data.
+        with tempfile.TemporaryDirectory(prefix='real_ptycho_test_', dir=Path(__file__).resolve().parent) as temp:
+            dest = Path(temp)/'result'
+            a = arguments(['--data',str(Path(__file__).resolve()),'--out',str(dest),
+                           '--device','cpu','--probe-size','8','--stage1-steps','4',
+                           '--stage2-steps','2','--eval-every','2','--chunk','25',
+                           '--nlm-refresh','1','--num-frames','100'])
+            dest.mkdir()
+            data = np.random.default_rng(3).uniform(.1,2,(100,16,16)).astype('float32')
+            pos = np.array([[2+.1*(j//10),2+.1*(j%10)] for j in range(100)])
+            groups = [np.arange(k,100,4) for k in range(4)]
+            config = {'selected_frame_ids_zero_based':list(range(100)), 'object_pixel_um':1.}
+            with patch('run.plot_results'), contextlib.redirect_stdout(io.StringIO()):
+                train(a,data,pos,32,groups,config)
+            for name in ('stage1.npz','reconstruction.npz'):
+                with np.load(dest/name) as result:
+                    self.assertEqual(result['probe_compact'].shape,(8,8))
+                    self.assertEqual(result['probe_rec'].shape,(16,16))
+                    full = result['probe_rec'].copy()
+                    np.testing.assert_array_equal(full[4:12,4:12],result['probe_compact'])
+                    full[4:12,4:12] = 0
+                    self.assertEqual(float(np.abs(full).sum()),0.)
+                    self.assertTrue(np.isfinite(result['obj_rec']).all())
+            for stage in (1,2):
+                saved = torch.load(dest/f'stage{stage}_weights.pt',weights_only=False)
+                self.assertEqual(tuple(saved['probe_real'].shape),(8,8))
+                self.assertEqual(tuple(saved['probe_imag'].shape),(8,8))
+                for state in saved['probe_optimizer']['state'].values():
+                    self.assertEqual(tuple(state['exp_avg'].shape),(8,8))
+                    self.assertEqual(int(state['step']),4 if stage == 1 else 6)
 
     def test_chunked_gradient_equals_monolithic(self):
         rng = np.random.default_rng(10)
