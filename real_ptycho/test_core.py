@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import torch
 from core import UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms
-from run import arguments, set_optimizer_lr
+from run import arguments, network_input, set_optimizer_lr
 
 
 class LearningRateTests(unittest.TestCase):
@@ -20,6 +20,8 @@ class LearningRateTests(unittest.TestCase):
 
     def test_defaults_and_legacy(self):
         a = self.parse()
+        self.assertEqual(a.num_frames, 200)
+        self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
         self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0005))
         self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.01,.01))
         a = self.parse('--lr-net','.002','--lr-probe','.003')
@@ -95,6 +97,41 @@ class CoreTests(unittest.TestCase):
         obj = torch.complex(yy+2*xx, torch.zeros_like(xx))
         patch = sum(w*obj[y:y+8,x:x+8] for y,x,w in prop.samples[0])
         self.assertAlmostEqual(float(patch[0,0].real), 6.25)
+
+    def test_200_selection_mapping_parity_and_distance(self):
+        rng = np.random.default_rng(9)
+        positions = np.array([[y*.03, x*.03] for y in range(15)
+                              for x in (range(15) if y%2 == 0 else reversed(range(15)))])
+        positions += rng.uniform(-1e-5, 1e-5, positions.shape)
+        ids, coords, groups, meta = select_center_grid(positions.T, 200)
+        self.assertEqual(len(set(ids)), 200)
+        np.testing.assert_array_equal(coords, positions[ids])
+        self.assertEqual(sorted(np.concatenate(groups).tolist()), list(range(200)))
+        rr, cc = np.array(meta['grid_rows_zero_based']), np.array(meta['grid_cols_zero_based'])
+        self.assertTrue(np.all(np.diff(15*rr+cc)>0))
+        for k, g in enumerate(groups):
+            self.assertTrue(np.all(2*(rr[g]%2)+cc[g]%2 == k))
+        distance = np.linalg.norm(positions-(positions.min(0)+positions.max(0))/2, axis=1)
+        excluded = np.setdiff1d(np.arange(225), ids)
+        self.assertLessEqual(distance[ids].max(), distance[excluded].min())
+        np.testing.assert_array_equal(ids, select_center_grid(positions.T, 200)[0])
+        with self.assertRaises(ValueError):
+            select_center_grid(positions.T, 201)
+
+    def test_unequal_groups_network_channel_padding(self):
+        positions = np.array([[y*.03,x*.03] for y in range(15) for x in range(15)]).T
+        _, _, groups, _ = select_center_grid(positions, 200)
+        channels = max(map(len, groups))
+        net = UNet(channels, 2, checkpoint_blocks=False)
+        for g in groups:
+            frames = np.ones((len(g),16,16), dtype=np.float32)*2
+            x = network_input(frames,32,channels,'cpu')
+            self.assertEqual(tuple(x.shape),(1,channels,32,32))
+            self.assertTrue(torch.all(x[0,:len(g),8:24,8:24] == 1))
+            self.assertEqual(float(x[0,len(g):].abs().sum()),0.)
+            self.assertEqual(float(x[:,:,:8].abs().sum()),0.)
+            out = net(x)
+            torch.testing.assert_close(out,torch.ones_like(out))
 
     def test_checkpoint_bn_and_gradients(self):
         net = UNet(3,2, residual=True, checkpoint_blocks=False)

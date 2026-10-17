@@ -35,11 +35,22 @@ def set_optimizer_lr(optimizer, lr):
         group['lr'] = lr
 
 
+def network_input(frames, side, channels, device):
+    """Pad conditioning channels only; these are never synthetic measurements."""
+    x = torch.from_numpy(np.array(frames, copy=True)).to(device)[None]
+    x = x/x.amax((-2,-1), keepdim=True).clamp_min(1e-12)
+    pad = side-x.shape[-1]
+    if pad < 0 or channels < x.shape[1]:
+        raise ValueError('Network canvas/channel count is smaller than the input')
+    return F.pad(x, (pad//2, pad-pad//2, pad//2, pad-pad//2, 0, channels-x.shape[1]))
+
+
 def arguments(argv=None):
     p = argparse.ArgumentParser(description='Real ptydata_33: U16+TGV -> residual U32+NLM (no stage-2 TGV).')
     p.add_argument('--data', type=Path)
     p.add_argument('--out', type=Path)
-    p.add_argument('--prepare-only', action='store_true', help='Select/cache 100 frames and inspect geometry; no training')
+    p.add_argument('--num-frames', type=int, choices=[100, 200], default=200, help='200 nearest-center frames (default); 100 restores central 10x10')
+    p.add_argument('--prepare-only', action='store_true', help='Select/cache requested frames and inspect geometry; no training')
     p.add_argument('--smoke', action='store_true', help='Explicit diagnostic: center crop 256, 4+2 updates; NOT final reconstruction')
     p.add_argument('--detector-crop', type=int, default=0, help='0 retains all 2000 pixels; positive value is an explicit center crop, NOT resize/binning')
     p.add_argument('--wavelength-nm', type=float, default=632.8)
@@ -60,7 +71,7 @@ def arguments(argv=None):
     p.add_argument('--nlm-ratio', type=float, default=.5, help='Initial prior/data gradient-norm ratio, NOT literal penalty coefficient')
     p.add_argument('--nlm-refresh', type=int, default=25)
     p.add_argument('--eval-every', type=int, default=50)
-    p.add_argument('--chunk', type=int, default=1, help='Frames per FFT; full stage-2 gradient still uses ALL 100')
+    p.add_argument('--chunk', type=int, default=1, help='Frames per FFT; full stage-2 gradient still uses ALL selected frames')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--device', default='cuda')
     p.add_argument('--no-checkpoint', action='store_true', help='Disable activation checkpointing; increases GPU memory')
@@ -106,12 +117,12 @@ def prepare(a):
         # ids, coords, groups, selection = select_center_grid(f['positionx'][()])
         # 原始坐标单位 cm → 内部统一为 mm
         positions_mm = f['positionx'][()].astype(np.float64) * 10.0
-        ids, coords, groups, selection = select_center_grid(positions_mm)
+        ids, coords, groups, selection = select_center_grid(positions_mm, a.num_frames)
         n = a.detector_crop or frames.shape[-1]
         if n < 32 or n > frames.shape[-1] or n % 2:
             raise ValueError('Detector crop must be even, between 32 and 2000')
         low = (frames.shape[-1]-n)//2
-        cache = np.lib.format.open_memmap(a.out/'intensity_cache.npy', mode='w+', dtype=np.float32, shape=(100,n,n))
+        cache = np.lib.format.open_memmap(a.out/'intensity_cache.npy', mode='w+', dtype=np.float32, shape=(len(ids),n,n))
         source_hash = hashlib.sha256()
         source_hash.update(coords.tobytes()); source_hash.update(ids.tobytes())
         total, maximum = 0., 0.
@@ -126,7 +137,7 @@ def prepare(a):
             total += data.sum(dtype=np.float64)
             maximum = max(maximum, float(data.max()))
         scale = total/cache.size
-        for j in range(100):
+        for j in range(len(ids)):
             cache[j] /= scale  # ONE common intensity scale, never individual exposure normalization.
         cache.flush()
     pos, side, dx = geometry(coords, n, a.wavelength_nm, a.distance_mm, a.pixel_um,
@@ -134,13 +145,14 @@ def prepare(a):
     config = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(a).items()}
     config.update(selection=selection, selected_frame_ids_zero_based=ids.tolist(),
                   positions_mm=coords.tolist(), positions_object_pixels=pos.tolist(),
-                  groups=[g.tolist() for g in groups], detector_size=n, object_size=side,
+                  groups=[g.tolist() for g in groups], stage1_input_channels=max(map(len, groups)),
+                  detector_size=n, object_size=side,
                   object_pixel_um=dx*1e6, original_intensity_mean=scale, original_intensity_max=maximum,
                   selected_input_sha256=source_hash.hexdigest(), torch_version=torch.__version__,
                   stage1='Shared U-Net16, sequential ABCD (one group/update), amplitude TGV',
-                  stage2='U-Net32 complex additive residual, all 100 frames/update, NLM only, TGV=0',
+                  stage2=f'U-Net32 complex additive residual, all {len(ids)} frames/update, NLM only, TGV=0',
                   probe='Free complex pixels; initialized from inverse FFT of sqrt(mean intensity); Adam state continued',
-                  loss='Global gain-profiled amplitude MSE per group (S1) / all 100 (S2)',
+                  loss=f'Global gain-profiled amplitude MSE per group (S1) / all {len(ids)} (S2)',
                   propagation='Centered unitary Fraunhofer FFT, bilinear object sampling at measured subpixel coordinates',
                   regularizer_domain='Union of computational probe footprints, NOT a known illuminated support',
                   caveats=['Requested Fraunhofer model; physical validity at 6 mm has NOT been established.',
@@ -155,11 +167,12 @@ def prepare(a):
     with (a.out/'selected_frames.csv').open('w', encoding='utf-8') as out:
         out.write('selected_index,original_frame_zero_based,row,col,group,coordinate0_mm,coordinate1_mm\n')
         for j, original in enumerate(ids):
-            r, c = divmod(j, 10)
-            out.write(f'{j},{original},{r},{c},{"ABCD"[2*(r%2)+c%2]},{coords[j,0]:.9f},{coords[j,1]:.9f}\n')
-    print(f'[data] selected central 100 frames, each {n}x{n}; object {side}x{side}; dx={dx*1e6:.6f} um', flush=True)
-    print(f'[selection] rows {selection["row_start_zero_based"]+1}..{selection["row_start_zero_based"]+10}, '
-          f'columns {selection["col_start_zero_based"]+1}..{selection["col_start_zero_based"]+10} (1-based)', flush=True)
+            r, c = selection['grid_rows_zero_based'][j], selection['grid_cols_zero_based'][j]
+            group = next(k for k, g in enumerate(groups) if j in g)
+            out.write(f'{j},{original},{r},{c},{"ABCD"[group]},{coords[j,0]:.9f},{coords[j,1]:.9f}\n')
+    print(f'[data] selected {len(ids)} frames, each {n}x{n}; object {side}x{side}; dx={dx*1e6:.6f} um', flush=True)
+    print(f'[selection] rule={selection["selection_rule"]}; ABCD sizes={selection["group_sizes"]}; '
+          f'network input channels={config["stage1_input_channels"]} (zero-pad missing channels only)', flush=True)
     print('[warning] Fraunhofer and coordinate-axis assumptions require experimental validation.', flush=True)
     if a.smoke:
         print('[SMOKE ONLY] Cropped detector and 4+2 updates: pipeline check, NOT reconstruction quality.', flush=True)
@@ -182,7 +195,7 @@ def plot_setup(dest, data, coords, groups):
     colors = ['#0072B2', '#E69F00', '#009E73', '#CC79A7']
     for k, group in enumerate(groups):
         axs[0].scatter(coords[group,1], coords[group,0], s=25, c=colors[k], label='ABCD'[k])
-    axs[0].set(xlabel='Stored coordinate 1 (mm)', ylabel='Stored coordinate 0 (mm)', title='Selected central 10 x 10')
+    axs[0].set(xlabel='Stored coordinate 1 (mm)', ylabel='Stored coordinate 0 (mm)', title=f'Selected {len(coords)} scan positions')
     axs[0].set_aspect('equal'); axs[0].legend(ncol=4, fontsize=8, loc='upper center', bbox_to_anchor=(.5,-.18), frameon=False)
     mean = np.zeros(data.shape[1:], dtype=np.float64)
     for frame in data:
@@ -230,23 +243,20 @@ def train(a, data, positions, side, groups, config):
     union = count > 0
     mean = np.zeros((n,n), dtype=np.float64)
     for frame in data:
-        mean += frame/100
+        mean += frame/len(data)
     spectrum = torch.from_numpy(np.sqrt(mean).astype(np.float32)).to(device)
     initial_probe = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(spectrum), norm='ortho'))
     initial_probe /= initial_probe.abs().square().mean().sqrt().clamp_min(1e-12)
     pr, pi = nn.Parameter(initial_probe.real.clone()), nn.Parameter(initial_probe.imag.clone())
     optp = torch.optim.Adam([pr, pi], lr=a.stage1_lr_probe)
     del initial_probe, spectrum
-    net = UNet(25, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
+    input_channels = max(map(len, groups))
+    net = UNet(input_channels, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
     print(f'[S1 LR] network={a.stage1_lr_net:g}, probe={a.stage1_lr_probe:g}', flush=True)
     tgvs = [TGV(m) for m in masks] if a.tgv else None
-    pad = side-n
-
     def input_group(k):
-        x = torch.from_numpy(np.array(data[groups[k]], copy=True)).to(device)[None]
-        x = x/x.amax((-2,-1), keepdim=True).clamp_min(1e-12)
-        return F.pad(x, (pad//2, pad-pad//2, pad//2, pad-pad//2))
+        return network_input(data[groups[k]], side, input_channels, device)
 
     def read_stage1():
         with preserve_buffers(net), torch.no_grad():
@@ -256,7 +266,7 @@ def train(a, data, positions, side, groups, config):
             return torch.where(union, total/count.clamp_min(1), torch.ones_like(total))
 
     history = []
-    all_ids = np.arange(100)
+    all_ids = np.arange(len(data))
     config['hardware'] = torch.cuda.get_device_name(device) if device.type=='cuda' else 'CPU'
     write_json(a.out/'config.json', config)
     stage_seconds = {1: 0., 2: 0.}

@@ -77,7 +77,7 @@ class UNet(nn.Module):
         return torch.complex(amp*p[0]/den, amp*p[1]/den)
 
 
-def select_center_grid(positions_mm):
+def select_center_grid(positions_mm, num_frames=100):
     """Infer rows from slow stored coordinate; retain measured jitter and frame IDs."""
     p = np.asarray(positions_mm, dtype=np.float64).T
     if p.shape != (225, 2) or not np.isfinite(p).all():
@@ -92,14 +92,30 @@ def select_center_grid(positions_mm):
         raise ValueError('Coordinates do not form the expected separated 15x15 rows')
     if np.max(np.abs(rp[:, :, 1]-col_centers[None, :])) > .4*sx:
         raise ValueError('Column alignment is not a regular 15x15 raster')
-    # 15 -> 10 has a half-cell tie; choose the physically nearest of four central blocks.
+    if num_frames not in (100, 200):
+        raise ValueError('Supported selections: 100 (central 10x10) or 200 (nearest center)')
     center = (p.min(0)+p.max(0))/2
-    _, r0, c0 = min((float(np.linalg.norm(p[grid[r:r+10, c:c+10]].mean((0, 1))-center)), r, c)
-                    for r in (2, 3) for c in (2, 3))
-    ids = grid[r0:r0+10, c0:c0+10].ravel()
-    groups = [np.array([10*r+c for r in range(a, 10, 2) for c in range(b, 10, 2)])
+    if num_frames == 100:
+        # Preserve the original selection and group/channel ordering.
+        _, r0, c0 = min((float(np.linalg.norm(p[grid[r:r+10, c:c+10]].mean((0, 1))-center)), r, c)
+                        for r in (2, 3) for c in (2, 3))
+        rr, cc = np.meshgrid(np.arange(r0, r0+10), np.arange(c0, c0+10), indexing='ij')
+        rr, cc = rr.ravel(), cc.ravel()
+        group_row, group_col = rr-r0, cc-c0
+    else:
+        # Exactly 200 real frames, nearest physical center; deterministic raster ordering.
+        distance2 = np.square(rp-center).sum(axis=-1).ravel()
+        chosen = np.sort(np.argsort(distance2, kind='stable')[:num_frames])
+        rr, cc = np.divmod(chosen, 15)
+        r0, c0 = int(rr.min()), int(cc.min())
+        group_row, group_col = rr, cc
+    ids = grid[rr, cc]
+    groups = [np.flatnonzero((group_row%2 == a) & (group_col%2 == b))
               for a, b in ((0, 0), (0, 1), (1, 0), (1, 1))]
     return ids, p[ids], groups, {'row_start_zero_based': r0, 'col_start_zero_based': c0,
+                               'grid_rows_zero_based': rr.tolist(), 'grid_cols_zero_based': cc.tolist(),
+                               'num_frames': num_frames, 'group_sizes': [len(g) for g in groups],
+                               'selection_rule': 'central_10x10' if num_frames == 100 else 'nearest_200_to_physical_center',
                                'row_step_mm': float(sy), 'col_step_mm': float(sx)}
 
 
