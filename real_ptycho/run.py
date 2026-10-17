@@ -103,7 +103,10 @@ def prepare(a):
         frames = f['ptychogramx']
         if frames.shape != (225, 2000, 2000):
             raise ValueError(f'Expected (225,2000,2000) intensities, got {frames.shape}')
-        ids, coords, groups, selection = select_center_grid(f['positionx'][()])
+        # ids, coords, groups, selection = select_center_grid(f['positionx'][()])
+        # 原始坐标单位 cm → 内部统一为 mm
+        positions_mm = f['positionx'][()].astype(np.float64) * 10.0
+        ids, coords, groups, selection = select_center_grid(positions_mm)
         n = a.detector_crop or frames.shape[-1]
         if n < 32 or n > frames.shape[-1] or n % 2:
             raise ValueError('Detector crop must be even, between 32 and 2000')
