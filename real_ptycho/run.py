@@ -14,7 +14,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from core import (UNet, TGV, NLMPrior, Propagator, chunked_data, geometry,
+from core import (UNet, TGV, NLMPrior, Propagator, chunked_data, geometry, mpie_geometry,
                   preserve_buffers, select_center_grid, center_crop_field, center_pad_probe)
 from initialization import initial_fields
 
@@ -63,6 +63,8 @@ def arguments(argv=None):
     p.add_argument('--position-order', choices=['yx', 'xy'], default='yx', help='Assumed mapping of the two stored position coordinates to detector axes')
     p.add_argument('--flip-y', action='store_true')
     p.add_argument('--flip-x', action='store_true')
+    p.add_argument('--object-sampling', choices=['mpie-integer', 'bilinear'], default='mpie-integer',
+                   help='mPIE centered/rounded integer slices (default); bilinear replays the previous sampler')
     p.add_argument('--stage1-steps', type=int, default=500)
     p.add_argument('--stage2-steps', type=int, default=500)
     p.add_argument('--lr-net', type=float, default=.0005, help='Legacy fallback for BOTH stages; stage-specific options override it')
@@ -149,6 +151,12 @@ def prepare(a):
         cache.flush()
     pos, side, dx = geometry(coords, n, a.wavelength_nm, a.distance_mm, a.pixel_um,
                              a.position_order, a.flip_y, a.flip_x)
+    initialization_positions = pos.copy()
+    sampling_alignment = None
+    if a.object_sampling == 'mpie-integer':
+        pos, side, dx, initialization_positions, sampling_alignment = mpie_geometry(
+            coords, n, a.wavelength_nm, a.distance_mm, a.pixel_um,
+            a.position_order, a.flip_y, a.flip_x)
     config = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(a).items()}
     config.update(selection=selection, selected_frame_ids_zero_based=ids.tolist(),
                   positions_mm=coords.tolist(), positions_object_pixels=pos.tolist(),
@@ -162,7 +170,9 @@ def prepare(a):
                   probe=f'Initialization={a.initialization}; optimized side={a.probe_size or n}; Adam state continued; no persistent circular mask',
                   loss=f'Fixed-gain amplitude MSE (g=1) per group (S1) / all {len(ids)} (S2)',
                   amplitude_gain=1.0, amplitude_gain_mode='fixed',
-                  propagation='Centered unitary Fraunhofer FFT, bilinear object sampling at measured subpixel coordinates',
+                   propagation=f'Centered unitary Fraunhofer FFT; object sampling={a.object_sampling}',
+                   initialization_positions_px=initialization_positions.tolist(),
+                   sampling_alignment=sampling_alignment,
                   regularizer_domain='Union of computational probe footprints, NOT a known illuminated support',
                   caveats=['Requested Fraunhofer model; physical validity at 6 mm has NOT been established.',
                            'Position-axis mapping yx is an assumption unless independently verified.',
@@ -185,6 +195,11 @@ def prepare(a):
     print(f'[selection] rule={selection["selection_rule"]}; ABCD sizes={selection["group_sizes"]}; '
           f'network input channels={config["stage1_input_channels"]} (zero-pad missing channels only)', flush=True)
     print('[warning] Fraunhofer and coordinate-axis assumptions require experimental validation.', flush=True)
+    if sampling_alignment is not None:
+        print(f'[sampling] mpie-integer; center meters -> divide dx -> round -> reference offset; '
+              f'reference canvas={sampling_alignment["reference_object_side"]}; '
+              f'network origin in reference={sampling_alignment["network_origin_in_reference_yx"]}; '
+              'initial arrays and network canvas unchanged', flush=True)
     if a.smoke:
         print('[SMOKE ONLY] Cropped detector and 4+2 updates: pipeline check, NOT reconstruction quality.', flush=True)
     plot_setup(a.out, cache, coords, groups)
@@ -248,7 +263,7 @@ def train(a, data, positions, side, groups, config):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     n = data.shape[-1]
-    prop = Propagator(positions, n)
+    prop = Propagator(positions, n, sampling=a.object_sampling)
     masks = [prop.mask(g, side, device) for g in groups]
     count = sum(m.float() for m in masks)
     union = count > 0
@@ -263,8 +278,15 @@ def train(a, data, positions, side, groups, config):
         init_metadata = {'rule': 'Explicit legacy inverse-FFT and RMS normalization'}
         del spectrum
     else:
-        o0, p0, init_metadata = initial_fields(a.initialization, n, side, positions,
+        o0, p0, init_metadata = initial_fields(a.initialization, n, side,
+                                            np.asarray(config.get('initialization_positions_px', positions)),
                                             config['object_pixel_um'], a.seed)
+        if a.initialization == 'mpie' and config.get('sampling_alignment') is not None:
+            alignment = config['sampling_alignment']
+            if (init_metadata['reference_object_side'] != alignment['reference_object_side'] or
+                    init_metadata['reference_object_crop_yx'] != alignment['network_origin_in_reference_yx']):
+                raise ValueError('mPIE sampling and unchanged initialization crop disagree')
+            init_metadata['object_alignment'] = 'Unchanged initial array; integer slices exactly map into reference canvas'
         object0, initial_probe = torch.from_numpy(o0).to(device), torch.from_numpy(p0).to(device)
         del o0, p0
     probe_size = a.probe_size or n

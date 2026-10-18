@@ -147,6 +147,44 @@ def geometry(positions_mm, n, wavelength_nm, distance_mm, pixel_um, order='yx', 
     return pos, side, dx_m
 
 
+def mpie_geometry(positions_mm, n, wavelength_nm, distance_mm, pixel_um,
+                  order='yx', flip_y=False, flip_x=False):
+    """PtyLab CPM integer slices, expressed in the UNCHANGED network canvas.
+
+    Keep legacy fractional positions solely to replay exactly the same initial
+    arrays/RNG stream. Integer reference coordinates are computed independently:
+    center meters -> divide by dx -> np.round -> add reference canvas offset.
+    Subtract the existing initialization crop origin only AFTER rounding.
+    """
+    legacy, side, dx = geometry(positions_mm, n, wavelength_nm, distance_mm,
+                                pixel_um, order, flip_y, flip_x)
+    encoder = np.asarray(positions_mm, np.float64)[:, [0, 1] if order == 'yx' else [1, 0]].copy()*1e-3
+    encoder[:, 0] *= -1 if flip_y else 1
+    encoder[:, 1] *= -1 if flip_x else 1
+    origin = encoder.mean(axis=0)
+    centered_px = (encoder-origin)/dx
+    rounded = np.round(centered_px).astype(np.int64)
+    reference_side = int(np.ptp(rounded, axis=0).max()) + 2*n
+    reference_side += reference_side % 2
+    reference_positions = rounded + reference_side//2 - n//2
+    # This is exactly the old initial_fields() crop; do not recenter O0 anew.
+    crop = np.round(reference_side/2-n/2-legacy.mean(axis=0)).astype(np.int64)
+    positions = reference_positions-crop
+    if np.any(crop < 0) or np.any(crop+side > reference_side):
+        raise ValueError('Unchanged initialization canvas does not fit mPIE reference')
+    if np.any(positions < 0) or np.any(positions+n > side):
+        raise ValueError('mPIE slices do not fit unchanged network canvas')
+    metadata = dict(
+        reference_object_side=reference_side,
+        encoder_origin_m=origin.tolist(),
+        reference_positions_px=reference_positions.tolist(),
+        network_origin_in_reference_yx=crop.tolist(),
+        rounding='np.round((encoder_m-mean(encoder_m))/dx); then add No//2-Np//2',
+        canvas_mapping='reference_position = network_position + network_origin_in_reference_yx',
+        max_rounding_displacement_px=float(np.abs(rounded-centered_px).max()))
+    return positions, side, dx, legacy, metadata
+
+
 def center_crop_field(field, size):
     """Same-pitch crop, also the adjoint of center_pad_probe for gradients."""
     n = field.shape[-1]
@@ -166,8 +204,17 @@ def center_pad_probe(probe, size):
 
 
 class Propagator:
-    def __init__(self, positions_px, n):
+    def __init__(self, positions_px, n, sampling='bilinear'):
         self.n = n
+        if sampling not in ('bilinear', 'mpie-integer'):
+            raise ValueError('Unknown object sampling mode')
+        self.sampling = sampling
+        positions_px = np.asarray(positions_px)
+        if sampling == 'mpie-integer':
+            if not np.isfinite(positions_px).all() or np.any(positions_px != np.round(positions_px)):
+                raise ValueError('mPIE slicing requires pre-aligned integer positions')
+            self.samples = [[(int(y), int(x), 1.)] for y, x in positions_px]
+            return
         self.samples = []
         for y, x in positions_px:
             iy, ix = int(math.floor(y)), int(math.floor(x))
@@ -177,7 +224,10 @@ class Propagator:
 
     def amplitude(self, obj, probe, ids):
         n = self.n
-        patches = [sum(w*obj[y:y+n, x:x+n] for y, x, w in self.samples[int(i)]) for i in ids]
+        if self.sampling == 'mpie-integer':
+            patches = [obj[y:y+n, x:x+n] for i in ids for y, x, _ in self.samples[int(i)]]
+        else:
+            patches = [sum(w*obj[y:y+n, x:x+n] for y, x, w in self.samples[int(i)]) for i in ids]
         exit_wave = torch.stack(patches)*probe
         field = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(exit_wave, dim=(-2,-1)),
                                                norm='ortho'), dim=(-2,-1))

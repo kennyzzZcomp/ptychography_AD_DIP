@@ -44,3 +44,13 @@
 - 删除只为拟合增益而执行的第一遍 FFT；仍逐块累积梯度后执行一次 optimizer 更新。
 - `D:/miniconda/envs/flatnet/python.exe -B -m unittest discover -s real_ptycho -v`：19 项通过（4.632 秒测试体），包括直接振幅 MSE 与分块梯度一致性、探针乘 10 后 loss 不再尺度不变、两种初始化的 4+2 小尺寸更新及两个阶段日志的 g=1 检查。
 - NLM ratio 和校准规则不变，但实际 lambda 随新的数据梯度重新计算；新旧 rRMSE 不属于同一评估定义。没有进行正式实验数据训练，不能据此声明重建改善。
+
+# 2026-10-18：mPIE 整数局部切片对照（无完整实验训练）
+
+- 新默认 `object-sampling=mpie-integer`；保留旧 `bilinear` 作为显式对照。其他 argparse 默认值、固定g=1损失、FFT、归一化、初始化模块和两个阶段优化规则均不变。
+- 读取本机 PtyLab `Reconstruction.py` 的 `calculate_pixel_positions` 实际函数并在 NumPy 中调用（不启动重建）：先居中米坐标、除dx、`np.round`、再加 `No//2-Np//2`。参考边长2454，网络边长仍1440，网络原点对应参考(510,510)，整数切片左上角范围(2,2)到(408,408)。
+- 对原H5全部225个坐标，新的网络位置加(510,510)，逐元素等于官方函数结果，也逐元素等于用户成功结果 `reconstruction_mpie_100ITER.npz` 按原始帧ID重新排列后的 `positions_px`。最大单轴舍入位移0.49511234058905984像素。
+- 使用原初值路径和种子0生成字段：物体逐元素等于上传的 `initialization.npz` 的 `obj_requested`，探针逐元素等于其 `probe_rec`。所有225个初始局部块逐元素等于参考2454²初始画布按mPIE位置的切片。没有读取重建结果来初始化训练。
+- `D:/miniconda/envs/flatnet/python.exe -m unittest discover -s real_ptycho -v`：21项通过（4.660秒测试体）。新增随机参考画布切片对应、轴变换、初值保持、整数FFT与直接实现一致、分块梯度一致、覆盖/掩膜以及拒绝未对齐小数坐标测试；已有mpie/ones的16²合成4+2更新仍通过。
+- README的复跑命令显式保持用户最近上传版本的500+200、TGV=0、NLM=0、网络LR=0.0005和probe LR=0.005；没有修复旧通用LR参数覆盖问题，也没有把仓库其他默认值改成该次用户配置。
+- 原仿真和 `real_ptylab_mpie/` 未修改。未进行完整实验训练，效果和Colab耗时待用户运行。

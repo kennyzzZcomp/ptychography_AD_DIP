@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from core import (UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms,
-                  center_crop_field, center_pad_probe)
+                  center_crop_field, center_pad_probe, mpie_geometry)
 from run import arguments, network_input, set_optimizer_lr, train
 from initialization import initial_fields
 
@@ -29,6 +29,8 @@ class LearningRateTests(unittest.TestCase):
         self.assertEqual(a.probe_size, 0)
         self.assertEqual(a.detector_crop, 1024)
         self.assertEqual(a.initialization, 'mpie')
+        self.assertEqual(a.object_sampling, 'mpie-integer')
+        self.assertEqual(self.parse('--object-sampling','bilinear').object_sampling, 'bilinear')
         self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
         self.assertEqual(self.parse('--num-frames','200').num_frames, 200)
         self.assertEqual(self.parse('--num-frames','225').num_frames, 225)
@@ -156,6 +158,7 @@ class CoreTests(unittest.TestCase):
             a = arguments(['--data',str(Path(__file__).resolve()),'--out',str(dest),
                            '--device','cpu','--probe-size','8','--stage1-steps','4',
                            '--initialization','legacy-ifft',
+                           '--object-sampling','bilinear',
                            '--stage2-steps','2','--eval-every','2','--chunk','25',
                            '--nlm-refresh','1','--num-frames','100'])
             dest.mkdir()
@@ -232,6 +235,59 @@ class CoreTests(unittest.TestCase):
         obj = torch.complex(yy+2*xx, torch.zeros_like(xx))
         patch = sum(w*obj[y:y+8,x:x+8] for y,x,w in prop.samples[0])
         self.assertAlmostEqual(float(patch[0,0].real), 6.25)
+
+    def test_mpie_geometry_center_round_then_offset_and_initialization(self):
+        coords = np.array([[7.551,7.701],[7.553,7.709],[7.559,7.702],[7.561,7.711]])
+        for order, fy, fx in [('yx',False,False),('xy',True,False),('yx',False,True)]:
+            pos, side, dx, old, meta = mpie_geometry(coords,32,632.8,6,3.76,order,fy,fx)
+            legacy, old_side, _ = geometry(coords,32,632.8,6,3.76,order,fy,fx)
+            np.testing.assert_array_equal(old,legacy)
+            self.assertEqual(side,old_side)
+            enc = coords[:,[0,1] if order=='yx' else [1,0]].copy()*1e-3
+            enc *= np.array([-1 if fy else 1, -1 if fx else 1])
+            enc -= enc.mean(0)
+            rounded = np.round(enc/dx).astype(int)
+            no = int(np.ptp(rounded,axis=0).max())+64
+            no += no%2
+            reference = rounded+no//2-16
+            np.testing.assert_array_equal(meta['reference_positions_px'],reference)
+            np.testing.assert_array_equal(pos+meta['network_origin_in_reference_yx'],reference)
+            before_o,before_p,initial_meta = initial_fields('mpie',32,side,legacy,dx*1e6,0)
+            after_o,after_p,_ = initial_fields('mpie',32,side,old,dx*1e6,0)
+            np.testing.assert_array_equal(before_o,after_o)
+            np.testing.assert_array_equal(before_p,after_p)
+            self.assertEqual(initial_meta['reference_object_crop_yx'],meta['network_origin_in_reference_yx'])
+            # A random reference field, not a smooth/constant one, detects off-by-one errors.
+            full = np.random.default_rng(12).normal(size=(no,no))
+            cy,cx = meta['network_origin_in_reference_yx']
+            cropped = full[cy:cy+side,cx:cx+side]
+            for (y,x),(ry,rx) in zip(pos,reference):
+                np.testing.assert_array_equal(cropped[y:y+32,x:x+32],full[ry:ry+32,rx:rx+32])
+
+    def test_integer_slice_fft_gradients_and_coverage(self):
+        pos = np.array([[1,2],[3,4],[2,3]])
+        prop = Propagator(pos,8,sampling='mpie-integer')
+        o = torch.randn(16,16,dtype=torch.complex64,requires_grad=True)
+        p = torch.randn(8,8,dtype=torch.complex64,requires_grad=True)
+        patches = torch.stack([o[y:y+8,x:x+8] for y,x in pos])
+        expected = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(patches*p,dim=(-2,-1)),
+                                                   norm='ortho'),dim=(-2,-1)).abs()
+        torch.testing.assert_close(prop.amplitude(o,p,range(3)),expected,rtol=0,atol=0)
+        data = np.random.default_rng(4).uniform(.1,2,(3,8,8)).astype('float32')
+        loss = (expected-torch.from_numpy(data).sqrt()).square().mean()
+        go,gp = torch.autograd.grad(loss,(o,p))
+        for chunk in (1,2,3):
+            co,cp,stats = chunked_data(o,p,range(3),data,prop,chunk)
+            torch.testing.assert_close(co,go,rtol=3e-5,atol=2e-7)
+            torch.testing.assert_close(cp,gp,rtol=3e-5,atol=2e-7)
+            self.assertEqual(stats['profile_gain'],1.)
+        cover = torch.zeros(16,16)
+        for y,x in pos:
+            cover[y:y+8,x:x+8] += p.detach().abs().square()
+        torch.testing.assert_close(prop.coverage(p.detach(),16),cover/cover.max())
+        torch.testing.assert_close(prop.mask(range(3),16,'cpu'),cover>0)
+        with self.assertRaises(ValueError):
+            Propagator(pos+.25,8,sampling='mpie-integer')
 
     def test_200_selection_mapping_parity_and_distance(self):
         rng = np.random.default_rng(9)
