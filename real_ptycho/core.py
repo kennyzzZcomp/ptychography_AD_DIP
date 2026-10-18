@@ -47,12 +47,23 @@ class UNet(nn.Module):
         self.head_amp = nn.Conv2d(b, 1, 3, padding=1)
         self.head_phs = nn.Conv2d(b, 1 if residual else 2, 3, padding=1)
         self.residual, self.checkpoint_blocks = residual, checkpoint_blocks
+        self.register_buffer('initial_amp_offset', None)
         with torch.no_grad():
             self.head_amp.weight.zero_(); self.head_phs.weight.zero_()
             self.head_amp.bias.fill_(0 if residual else math.log(math.expm1(1)))
             self.head_phs.bias.zero_()
             if not residual:
                 self.head_phs.bias[0] = 1
+
+    def set_initial_object(self, field):
+        """Fixed logit offset realizes a positive, zero-phase O0 with zero heads.
+
+        No extra trainable parameters or changes to the residual stage.
+        """
+        if self.residual or field.ndim != 2 or not torch.all(field.real > 0) or torch.any(field.imag != 0):
+            raise ValueError('Initial object must be positive real and stage 1 only')
+        self.initial_amp_offset = (torch.log(torch.expm1(field.real))
+                                   - self.head_amp.bias.detach()[0]).detach()
 
     def block(self, module, *args):
         if self.checkpoint_blocks and torch.is_grad_enabled():
@@ -72,7 +83,7 @@ class UNet(nn.Module):
         r, p = self.head_amp(z)[0, 0], self.head_phs(z)[0]
         if self.residual:
             return torch.complex(r, p[0])
-        amp = F.softplus(r)
+        amp = F.softplus(r if self.initial_amp_offset is None else r+self.initial_amp_offset)
         den = torch.sqrt(p[0].square()+p[1].square()+1e-8)
         return torch.complex(amp*p[0]/den, amp*p[1]/den)
 
@@ -190,11 +201,10 @@ class Propagator:
 
 
 def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=True):
-    """Global profiled amplitude MSE. Two passes, bounded FFT graph memory.
+    """Amplitude MSE with gain fixed to 1; bounded FFT graph memory.
 
-    The optimum positive amplitude gain is shared across ALL selected frames.
-    Envelope theorem: fixing this optimum in the second pass gives the same
-    object/probe gradient as differentiating the profiled objective directly.
+    Sum chunk gradients before a single optimizer update. No gain fitting in
+    training, evaluation, or NLM gradient-ratio calibration.
     """
     ids = list(ids)
     if not ids or chunk < 1:
@@ -203,16 +213,8 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
     p = probe.detach().requires_grad_(gradient)
     def target(part):
         return torch.from_numpy(np.array(measurements[part], copy=True)).to(o.device).sqrt()
-    num = o.real.new_zeros((), dtype=torch.float64)
-    den = num.clone(); energy = num.clone()
-    with torch.no_grad():
-        for start in range(0, len(ids), chunk):
-            part = ids[start:start+chunk]
-            a, b = propagator.amplitude(o, p, part), target(part)
-            num += (a*b).sum(dtype=torch.float64)
-            den += a.square().sum(dtype=torch.float64)
-            energy += b.square().sum(dtype=torch.float64)
-        gain = (num/den.clamp_min(1e-30)).to(o.real.dtype)
+    gain = 1.0
+    energy = o.real.new_zeros((), dtype=torch.float64)
     total = o.real.new_zeros(())
     go = torch.zeros_like(o) if gradient else None
     gp = torch.zeros_like(p) if gradient else None
@@ -220,6 +222,7 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
         for start in range(0, len(ids), chunk):
             part = ids[start:start+chunk]
             a, b = propagator.amplitude(o, p, part), target(part)
+            energy += b.square().sum(dtype=torch.float64)
             loss = (gain*a-b).square().sum()/(len(ids)*propagator.n**2)
             if gradient:
                 do, dp = torch.autograd.grad(loss, (o, p))
@@ -227,7 +230,7 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
             total += loss.detach()
     mean_energy = float(energy)/(len(ids)*propagator.n**2)
     stats = {'amplitude_mse': float(total), 'relative_amplitude_rmse': math.sqrt(float(total)/max(mean_energy, 1e-30)),
-             'profile_gain': float(gain)}
+             'profile_gain': gain, 'gain_mode': 'fixed'}  # Keep old numeric key for log readers.
     if not math.isfinite(stats['amplitude_mse']) or (gradient and not (torch.isfinite(go).all() and torch.isfinite(gp).all())):
         raise FloatingPointError('Non-finite physical loss/gradient')
     return go, gp, stats

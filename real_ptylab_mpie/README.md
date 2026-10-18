@@ -4,13 +4,21 @@
 
 ## Colab：安装与运行
 
-**需要安装。电脑上的 PtyLab 不会自动出现在 Colab 中。** 先在 Colab 选择 GPU 运行时，再在已经克隆本项目的环境里运行：
+**需要安装。电脑上的 PtyLab 不会自动出现在 Colab 中。必须使用独立虚拟环境，不要再用 `%pip install -r ...` 装进 Colab 主环境。** 实测用户安装日志表明主环境预装 CuPy/CUDA 13，直接安装本文件会混装两套 CuPy、改变 IPython 和 CUDA 依赖，导致 `libcufft.so.11` 加载失败。重启无法解决包冲突。
 
-```python
-%pip install -r /content/ptychography_AD_DIP/real_ptylab_mpie/requirements-colab.txt
+先选择 GPU 运行时，在已克隆本项目的 Colab 中执行这个安装单元格；任何一步失败都会停止：
+
+```bash
+%%bash
+set -e
+python -m venv --without-pip /content/ptylab_mpie_env
+python -m pip --isolated --python /content/ptylab_mpie_env/bin/python install -r /content/ptychography_AD_DIP/real_ptylab_mpie/requirements-colab.txt
+python -m pip --isolated --python /content/ptylab_mpie_env/bin/python check
 ```
 
-这里使用官方 `ptylab[gpu]==0.3.1`，包含 CUDA 12 的 CuPy 依赖。新的 Colab 运行时需要重新安装；无需再单独 git clone PtyLab。不要同时安装多个不同版本的 CuPy。
+这里使用官方 `ptylab[gpu]==0.3.1`，将 CUDA 12 的 CuPy 和 CUDA 组件装到隔离环境，不继承主环境的 site-packages，也不卸载或升级主环境的软件包。`--without-pip` 避免 Colab 缺少 ensurepip 的问题；由主环境 pip 的 `--python` 选项管理目标环境，要求 pip >=22.3。新分配的 Colab 虚拟机需要重新安装；无需手动 clone PtyLab。不要添加 `--system-site-packages`，不要把两种 CuPy 安装到同一环境。
+
+这不会修复此前已经改动的主环境，只让 mPIE 使用另一套独立 Python 依赖。如果当前会话能执行命令，可以直接使用；如果 Colab 因 IPython 冲突反复崩溃，先把 `/content` 中要保留的文件保存到 Drive，再断开并删除运行时、重新克隆项目和挂载 Drive，然后按本节安装。
 
 挂载 Drive（已经挂载就跳过）：
 
@@ -22,7 +30,7 @@ drive.mount('/content/drive')
 数据可保持在 `/content/drive/MyDrive/ptyco_data/ptydata_33.h5`，直接运行：
 
 ```python
-!python -u /content/ptychography_AD_DIP/real_ptylab_mpie/run.py --data "/content/drive/MyDrive/ptyco_data/ptydata_33.h5"
+!/content/ptylab_mpie_env/bin/python -I -u /content/ptychography_AD_DIP/real_ptylab_mpie/run.py --data "/content/drive/MyDrive/ptyco_data/ptydata_33.h5"
 ```
 
 默认就是 **225 点、中心裁剪 1024、毫米坐标、远场、GPU、50 次完整扫描**。需要改变迭代数时加 `--iters 100`。不需要手动生成另一份 H5。
@@ -30,10 +38,14 @@ drive.mount('/content/drive')
 默认结果保存在 `real_ptylab_mpie/results/日期时间/`，Colab 断开后可能丢失。要直接保存到 Drive，可追加一个尚不存在的目录，例如：
 
 ```python
-!python -u /content/ptychography_AD_DIP/real_ptylab_mpie/run.py --data "/content/drive/MyDrive/ptyco_data/ptydata_33.h5" --out "/content/drive/MyDrive/ptyco_results/mpie_1024_run01"
+!/content/ptylab_mpie_env/bin/python -I -u /content/ptychography_AD_DIP/real_ptylab_mpie/run.py --data "/content/drive/MyDrive/ptyco_data/ptydata_33.h5" --out "/content/drive/MyDrive/ptyco_results/mpie_1024_run01"
 ```
 
 输出目录禁止覆盖；再次运行换一个目录名。若 GPU/CuPy 不可用，会明确报错，不悄悄改为 CPU。
+
+**后续必须使用 `/content/ptylab_mpie_env/bin/python`，不要换回 `!python`。** `-I` 额外忽略用户 site-packages 与 PYTHONPATH，避免重新引入主环境的包。脚本在读取实验数据之前会执行小尺寸 GPU FFT 检查；通过后才开始处理数据。不需要在 Notebook 内核里 import PtyLab。
+
+依据：[pip 管理独立解释器（包括未安装 pip 的 venv）](https://pip.pypa.io/en/stable/topics/python-option/)、[CuPy 安装说明与多包冲突警告](https://docs.cupy.dev/en/stable/install.html)。隔离安装流程尚未在用户 Colab GPU 上实测，安装完成不等于重建效果已验证。
 
 ## 固定设置与可比性
 

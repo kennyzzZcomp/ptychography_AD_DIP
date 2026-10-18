@@ -1,3 +1,5 @@
-# Official CUDA 12 GPU extra; run in a Colab GPU runtime.
+# Install ONLY in the isolated environment described in README.md.
+# Do not install into Colab's main Python: it may already contain CUDA 13 CuPy.
+# Official CUDA 12 GPU extra, including CUDA component wheels.
 ptylab[gpu]==0.3.1
 

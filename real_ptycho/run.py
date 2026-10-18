@@ -16,6 +16,7 @@ from torch.nn import functional as F
 
 from core import (UNet, TGV, NLMPrior, Propagator, chunked_data, geometry,
                   preserve_buffers, select_center_grid, center_crop_field, center_pad_probe)
+from initialization import initial_fields
 
 HERE = Path(__file__).resolve().parent
 
@@ -52,8 +53,10 @@ def arguments(argv=None):
     p.add_argument('--num-frames', type=int, choices=[100, 200, 225], default=225, help='225 full 15x15 (default); 200 nearest center; 100 central 10x10')
     p.add_argument('--prepare-only', action='store_true', help='Select/cache requested frames and inspect geometry; no training')
     p.add_argument('--smoke', action='store_true', help='Explicit diagnostic: crop max(256, probe-size), 4+2 updates; NOT final reconstruction')
-    p.add_argument('--detector-crop', type=int, default=0, help='0 retains all 2000 pixels; positive value is an explicit center crop, NOT resize/binning')
-    p.add_argument('--probe-size', type=int, default=512, help='Optimized central probe side, zero-padded to detector size; 0 restores full-size probe')
+    p.add_argument('--detector-crop', type=int, default=1024, help='1024 center crop by default; 0 retains all 2000 pixels; NOT resize/binning')
+    p.add_argument('--probe-size', type=int, default=0, help='0 optimizes FULL detector-sized probe (default); compact support only allowed with legacy-ifft')
+    p.add_argument('--initialization', choices=['mpie', 'ones', 'legacy-ifft'], default='mpie',
+                   help='mpie: replay reference initial fields; ones: strict simulation baseline; legacy-ifft: explicit old diagnostic only')
     p.add_argument('--wavelength-nm', type=float, default=632.8)
     p.add_argument('--distance-mm', type=float, default=6.)
     p.add_argument('--pixel-um', type=float, default=3.76)
@@ -91,7 +94,7 @@ def arguments(argv=None):
     if not a.data.is_file():
         p.error(f'Data missing: {a.data}\nPut ptydata_33.h5 in {HERE / "data"}, or pass --data PATH.')
     if a.smoke:
-        a.detector_crop = a.detector_crop or max(256, a.probe_size)
+        a.detector_crop = min(a.detector_crop or 2000, max(256, a.probe_size))
         a.stage1_steps, a.stage2_steps, a.eval_every = 4, 2, 1
     if a.stage1_steps < 4 or a.stage1_steps % 4 or a.stage2_steps < 1:
         p.error('Stage 1 must be a positive multiple of 4; stage 2 must be positive')
@@ -103,6 +106,8 @@ def arguments(argv=None):
         p.error('--detector-crop must be zero or positive')
     if a.probe_size < 0 or a.probe_size % 2 or a.probe_size > (a.detector_crop or 2000):
         p.error('--probe-size must be 0 (full size) or a positive even size no larger than the detector')
+    if a.initialization != 'legacy-ifft' and a.probe_size not in (0, a.detector_crop or 2000):
+        p.error('mpie/ones comparisons require a full-size probe: use --probe-size 0')
     a.out = a.out or HERE/'results'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     if a.out.exists():
         p.error('Output already exists; choose a fresh --out (no overwriting)')
@@ -154,8 +159,9 @@ def prepare(a):
                   selected_input_sha256=source_hash.hexdigest(), torch_version=torch.__version__,
                   stage1='Shared U-Net16, sequential ABCD (one group/update), amplitude TGV',
                   stage2=f'U-Net32 complex additive residual, all {len(ids)} frames/update, NLM only, TGV=0',
-                  probe='Central complex pixels only; same-pitch zero pad before multiplication/FFT; normalized full inverse-FFT initialization then center crop; Adam state continued',
-                  loss=f'Global gain-profiled amplitude MSE per group (S1) / all {len(ids)} (S2)',
+                  probe=f'Initialization={a.initialization}; optimized side={a.probe_size or n}; Adam state continued; no persistent circular mask',
+                  loss=f'Fixed-gain amplitude MSE (g=1) per group (S1) / all {len(ids)} (S2)',
+                  amplitude_gain=1.0, amplitude_gain_mode='fixed',
                   propagation='Centered unitary Fraunhofer FFT, bilinear object sampling at measured subpixel coordinates',
                   regularizer_domain='Union of computational probe footprints, NOT a known illuminated support',
                   caveats=['Requested Fraunhofer model; physical validity at 6 mm has NOT been established.',
@@ -163,9 +169,9 @@ def prepare(a):
                            '3.76 um pitch assumes center crop only, without binning or resize.',
                            'No ground truth, no PSNR; lower data loss does not establish better reconstruction.',
                            'NLM is an exploratory prior transferred from simulation, not validated for this dataset.',
-                           'Training timing includes two-pass chunking, input transfers and NLM refresh; excludes evaluation/setup/save.'])
+                           'Training timing includes chunked propagation, input transfers and NLM refresh; excludes evaluation/setup/save.'])
     config['source_sha256'] = {name: hashlib.sha256((HERE/name).read_bytes()).hexdigest()
-                               for name in ('run.py', 'core.py')}
+                               for name in ('run.py', 'core.py', 'initialization.py')}
     write_json(a.out/'config.json', config)
     with (a.out/'selected_frames.csv').open('w', encoding='utf-8') as out:
         out.write('selected_index,original_frame_zero_based,row,col,group,coordinate0_mm,coordinate1_mm\n')
@@ -246,27 +252,39 @@ def train(a, data, positions, side, groups, config):
     masks = [prop.mask(g, side, device) for g in groups]
     count = sum(m.float() for m in masks)
     union = count > 0
-    mean = np.zeros((n,n), dtype=np.float64)
-    for frame in data:
-        mean += frame/len(data)
-    spectrum = torch.from_numpy(np.sqrt(mean).astype(np.float32)).to(device)
-    initial_probe = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(spectrum), norm='ortho'))
-    initial_probe /= initial_probe.abs().square().mean().sqrt().clamp_min(1e-12)
-    # Preserve the previous initialization values inside the retained region.
-    # Do not renormalize using the smaller window (which would change its scale).
+    if a.initialization == 'legacy-ifft':
+        mean = np.zeros((n,n), dtype=np.float64)
+        for frame in data:
+            mean += frame/len(data)
+        spectrum = torch.from_numpy(np.sqrt(mean).astype(np.float32)).to(device)
+        initial_probe = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(spectrum), norm='ortho'))
+        initial_probe /= initial_probe.abs().square().mean().sqrt().clamp_min(1e-12)
+        object0 = torch.ones((side,side), dtype=torch.complex64, device=device)
+        init_metadata = {'rule': 'Explicit legacy inverse-FFT and RMS normalization'}
+        del spectrum
+    else:
+        o0, p0, init_metadata = initial_fields(a.initialization, n, side, positions,
+                                            config['object_pixel_um'], a.seed)
+        object0, initial_probe = torch.from_numpy(o0).to(device), torch.from_numpy(p0).to(device)
+        del o0, p0
     probe_size = a.probe_size or n
+    if a.initialization != 'legacy-ifft' and probe_size != n:
+        raise ValueError('mpie/ones initialization requires full-size probe')
     initial_probe = center_crop_field(initial_probe, probe_size)
     pr, pi = nn.Parameter(initial_probe.real.clone()), nn.Parameter(initial_probe.imag.clone())
     optp = torch.optim.Adam([pr, pi], lr=a.stage1_lr_probe)
-    del initial_probe, spectrum
+    del initial_probe
 
     def full_probe():
         return center_pad_probe(torch.complex(pr, pi), n)
 
     input_channels = max(map(len, groups))
     net = UNet(input_channels, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
+    if a.initialization == 'mpie':
+        net.set_initial_object(object0)
     opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
     print(f'[S1 LR] network={a.stage1_lr_net:g}, probe={a.stage1_lr_probe:g}', flush=True)
+    print('[loss] amplitude MSE; g=1 FIXED in both stages, evaluation and NLM calibration', flush=True)
     tgvs = [TGV(m) for m in masks] if a.tgv else None
     def input_group(k):
         return network_input(data[groups[k]], side, input_channels, device)
@@ -276,11 +294,16 @@ def train(a, data, positions, side, groups, config):
             total = torch.zeros((side,side), dtype=torch.complex64, device=device)
             for k in range(4):
                 total += net(input_group(k))*masks[k]
-            return torch.where(union, total/count.clamp_min(1), torch.ones_like(total))
+            return torch.where(union, total/count.clamp_min(1), object0)
 
     history = []
     all_ids = np.arange(len(data))
     config['hardware'] = torch.cuda.get_device_name(device) if device.type=='cuda' else 'CPU'
+    config['initial_fields'] = init_metadata
+    config['initial_fields']['mode'] = a.initialization
+    print(f'[initialization] {a.initialization}; {init_metadata["rule"]}; full probe={probe_size == n}', flush=True)
+    if a.initialization == 'ones':
+        print('[initialization] STRICT ones baseline: no added noise; a degenerate Fourier spectrum is possible and will not be silently perturbed.', flush=True)
     write_json(a.out/'config.json', config)
     stage_seconds = {1: 0., 2: 0.}
 
@@ -304,6 +327,12 @@ def train(a, data, positions, side, groups, config):
         opt.step(); optp.step()
 
     initial = read_stage1()
+    config['initial_fields']['network_initial_max_abs_error'] = float((initial-object0).abs().max())
+    np.savez(a.out/'initialization.npz', obj_rec=initial.cpu().numpy(),
+             obj_requested=object0.cpu().numpy(), probe_rec=full_probe().detach().cpu().numpy(),
+             positions_px=positions, object_pixel_um=config['object_pixel_um'],
+             config=json.dumps(config))
+    write_json(a.out/'config.json', config)
     evaluate(initial, 1, 0); del initial
     for step in range(1, a.stage1_steps+1):
         k = (step-1)%4
@@ -324,7 +353,7 @@ def train(a, data, positions, side, groups, config):
              positions_px=positions, original_frame_ids=config['selected_frame_ids_zero_based'])
     torch.save(dict(network=net.state_dict(), probe_real=pr.detach(), probe_imag=pi.detach(),
                     probe_optimizer=optp.state_dict(), config=config), a.out/'stage1_weights.pt')
-    del tgvs, opt, net
+    del tgvs, opt, net, object0
     gc.collect()
     if device.type=='cuda':
         torch.cuda.empty_cache()

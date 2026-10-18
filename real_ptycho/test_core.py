@@ -2,6 +2,7 @@
 import copy
 import contextlib
 import io
+import json
 from pathlib import Path
 import uuid
 import unittest
@@ -12,6 +13,7 @@ import torch
 from core import (UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms,
                   center_crop_field, center_pad_probe)
 from run import arguments, network_input, set_optimizer_lr, train
+from initialization import initial_fields
 
 
 class LearningRateTests(unittest.TestCase):
@@ -24,15 +26,18 @@ class LearningRateTests(unittest.TestCase):
     def test_defaults_and_legacy(self):
         a = self.parse()
         self.assertEqual(a.num_frames, 225)
-        self.assertEqual(a.probe_size, 512)
+        self.assertEqual(a.probe_size, 0)
+        self.assertEqual(a.detector_crop, 1024)
+        self.assertEqual(a.initialization, 'mpie')
         self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
         self.assertEqual(self.parse('--num-frames','200').num_frames, 200)
         self.assertEqual(self.parse('--num-frames','225').num_frames, 225)
         self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0005))
-        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.01,.01))
+        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.005,.005))
+        # Preserve existing effective defaults; do NOT fix legacy fallback in this ablation.
         a = self.parse('--lr-net','.002','--lr-probe','.003')
-        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.002,.002))
-        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.003,.003))
+        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0005))
+        self.assertEqual((a.stage1_lr_probe,a.stage2_lr_probe),(.005,.005))
 
     def test_independent_and_override(self):
         a = self.parse('--stage1-lr-net','.001','--stage1-lr-probe','.02',
@@ -40,7 +45,7 @@ class LearningRateTests(unittest.TestCase):
         self.assertEqual((a.stage1_lr_net,a.stage1_lr_probe,a.stage2_lr_net,a.stage2_lr_probe),
                          (.001,.02,.0002,.004))
         a = self.parse('--stage2-lr-net','.0002','--lr-net','.001')
-        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.001,.0002))
+        self.assertEqual((a.stage1_lr_net,a.stage2_lr_net),(.0005,.0002))
 
     def test_invalid_learning_rates(self):
         for value in ('0','-1','nan','inf'):
@@ -61,19 +66,70 @@ class LearningRateTests(unittest.TestCase):
 
     def test_probe_size_arguments(self):
         self.assertEqual(self.parse('--probe-size','0').probe_size,0)
-        self.assertEqual(self.parse('--smoke').detector_crop,512)
-        self.assertEqual(self.parse('--smoke','--probe-size','64').detector_crop,256)
+        self.assertEqual(self.parse('--smoke').detector_crop,256)
+        self.assertEqual(self.parse('--smoke','--probe-size','64','--initialization','legacy-ifft').detector_crop,256)
         for size in ('-1','511','2002'):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.parse('--probe-size',size)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.parse('--detector-crop','256')
+            self.parse('--detector-crop','1024','--probe-size','512')
 
 
 class CoreTests(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(2)
         torch.manual_seed(8)
+
+    def test_initialization_modes_and_reference_rng(self):
+        pos = np.array([[2.,2.],[10.,10.]])
+        obj, probe, meta = initial_fields('mpie',16,32,pos,1.,0)
+        rng = np.random.RandomState(0)
+        reference = (1+.001*rng.rand(40,40)).astype(np.complex64)
+        y,x = meta['reference_object_crop_yx']
+        np.testing.assert_array_equal(obj,reference[y:y+32,x:x+32])
+        axis = np.linspace(-8,8,16)
+        xx,yy = np.meshgrid(axis,axis)
+        expected = ((np.ones((16,16),np.complex64)+.001*rng.rand(16,16))
+                    *(xx**2+yy**2 < (16/6)**2)).astype(np.complex64)
+        np.testing.assert_array_equal(probe,expected)
+        net = UNet(2,2,checkpoint_blocks=False)
+        net.set_initial_object(torch.from_numpy(obj))
+        out = net(torch.randn(1,2,32,32))
+        torch.testing.assert_close(out,torch.from_numpy(obj),rtol=0,atol=2e-7)
+        out.abs().mean().backward()
+        self.assertTrue(torch.isfinite(net.head_amp.weight.grad).all())
+        self.assertIsNone(net.initial_amp_offset.grad)
+        ones_o,ones_p,_ = initial_fields('ones',16,32,pos,1.,0)
+        np.testing.assert_array_equal(ones_o,np.ones((32,32),np.complex64))
+        np.testing.assert_array_equal(ones_p,np.ones((16,16),np.complex64))
+
+    def test_mpie_and_ones_short_full_probe_pipeline(self):
+        # Only 4+2 updates on 16x16 synthetic frames, no experimental training.
+        for mode in ('mpie','ones'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as temp:
+                dest = Path(temp)/'result'
+                a = arguments(['--data',str(Path(__file__).resolve()),'--out',str(dest),
+                               '--device','cpu','--initialization',mode,'--probe-size','0',
+                               '--stage1-steps','4','--stage2-steps','2','--eval-every','2',
+                               '--nlm-refresh','1','--chunk','4'])
+                dest.mkdir()
+                data = np.random.default_rng(3).uniform(.1,2,(4,16,16)).astype('float32')
+                pos = np.array([[2.,2.],[2.,10.],[10.,2.],[10.,10.]])
+                groups = [np.array([k]) for k in range(4)]
+                config = {'selected_frame_ids_zero_based':list(range(4)), 'object_pixel_um':1.}
+                with patch('run.plot_results'), contextlib.redirect_stdout(io.StringIO()):
+                    train(a,data,pos,32,groups,config)
+                with np.load(dest/'initialization.npz') as initial:
+                    expected_o,expected_p,_ = initial_fields(mode,16,32,pos,1.,a.seed)
+                    np.testing.assert_array_equal(initial['probe_rec'],expected_p)
+                    np.testing.assert_allclose(initial['obj_rec'],expected_o,rtol=0,atol=2e-7)
+                with np.load(dest/'reconstruction.npz') as result:
+                    self.assertEqual(result['probe_compact'].shape,(16,16))
+                    np.testing.assert_array_equal(result['probe_compact'],result['probe_rec'])
+                    self.assertTrue(np.isfinite(result['obj_rec']).all())
+                history = json.loads((dest/'history.json').read_text())
+                self.assertEqual({h['stage'] for h in history},{1,2})
+                self.assertTrue(all(h['profile_gain']==1.0 and h['gain_mode']=='fixed' for h in history))
 
     def test_probe_padding_native_and_gradient_adjoint(self):
         p = torch.randn(512,512,dtype=torch.complex64)
@@ -88,8 +144,7 @@ class CoreTests(unittest.TestCase):
         data = np.random.default_rng(7).uniform(.1,2,(2,8,8)).astype('float32')
         a = prop.amplitude(obj,center_pad_probe(compact,8),[0,1])
         b = torch.from_numpy(data).sqrt()
-        gain = (a*b).sum()/a.square().sum()
-        direct_go,direct_gp = torch.autograd.grad((gain*a-b).square().mean(),(obj,compact))
+        direct_go,direct_gp = torch.autograd.grad((a-b).square().mean(),(obj,compact))
         go,gp,_ = chunked_data(obj,center_pad_probe(compact,8),[0,1],data,prop,chunk=1)
         torch.testing.assert_close(go,direct_go,rtol=3e-5,atol=2e-7)
         torch.testing.assert_close(center_crop_field(gp,4),direct_gp,rtol=3e-5,atol=2e-7)
@@ -100,6 +155,7 @@ class CoreTests(unittest.TestCase):
             dest = Path(temp)/'result'
             a = arguments(['--data',str(Path(__file__).resolve()),'--out',str(dest),
                            '--device','cpu','--probe-size','8','--stage1-steps','4',
+                           '--initialization','legacy-ifft',
                            '--stage2-steps','2','--eval-every','2','--chunk','25',
                            '--nlm-refresh','1','--num-frames','100'])
             dest.mkdir()
@@ -133,14 +189,26 @@ class CoreTests(unittest.TestCase):
         p = torch.randn((8,8), dtype=torch.complex64, requires_grad=True)
         data = rng.uniform(.1, 2, (3,8,8)).astype('float32')
         a, b = prop.amplitude(o,p,[0,1,2]), torch.from_numpy(data).sqrt()
-        q = (a*b).sum()/a.square().sum()
-        loss = (q*a-b).square().mean()
+        loss = (a-b).square().mean()
         go, gp = torch.autograd.grad(loss, (o,p))
         for chunk in (1,2,3):
             co, cp, stats = chunked_data(o,p,[0,1,2],data,prop,chunk)
             torch.testing.assert_close(co, go, rtol=3e-5, atol=2e-7)
             torch.testing.assert_close(cp, gp, rtol=3e-5, atol=2e-7)
             self.assertAlmostEqual(stats['amplitude_mse'], float(loss), places=6)
+            self.assertEqual(stats['profile_gain'],1.0)
+            self.assertEqual(stats['gain_mode'],'fixed')
+
+    def test_fixed_gain_evaluation_is_sensitive_to_probe_scale(self):
+        prop = Propagator(np.array([[1.2,2.7],[2.1,1.4]]),8)
+        obj = torch.randn(16,16,dtype=torch.complex64)
+        probe = torch.randn(8,8,dtype=torch.complex64)
+        data = prop.amplitude(obj,probe,[0,1]).square().numpy()
+        for factor in (1.,10.):
+            _,_,stats = chunked_data(obj,probe*factor,[0,1],data,prop,chunk=1,gradient=False)
+            self.assertEqual(stats['profile_gain'],1.0)
+            # B equals the initial prediction: relative RMSE must be |factor-1|.
+            self.assertAlmostEqual(stats['relative_amplitude_rmse'],abs(factor-1),places=5)
 
     def test_center_selection_snake_and_groups(self):
         positions = []
