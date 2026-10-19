@@ -170,8 +170,9 @@ def prepare(a):
                   stage1='Shared U-Net16, sequential ABCD (one group/update), amplitude TGV',
                   stage2=f'U-Net32 complex additive residual, all {len(ids)} frames/update, NLM only, TGV=0',
                   probe=f'Initialization={a.initialization}; optimized side={a.probe_size or n}; Adam state continued; no persistent circular mask',
-                  loss=f'Fixed-gain amplitude MSE (g=1) per group (S1) / all {len(ids)} (S2)',
-                  amplitude_gain=1.0, amplitude_gain_mode='fixed',
+                  loss=f'Profiled-gain amplitude MSE per group (S1) / all {len(ids)} (S2)',
+                  amplitude_gain=None, amplitude_gain_mode='profiled',
+                  amplitude_gain_formula='sum(A*B)/sum(A**2); B=sqrt(I_normalized)',
                    propagation=f'Centered unitary Fraunhofer FFT; object sampling={a.object_sampling}',
                    initialization_positions_px=initialization_positions.tolist(),
                    sampling_alignment=sampling_alignment,
@@ -312,9 +313,13 @@ def train(a, data, positions, side, groups, config):
         net.set_initial_object(object0)
     opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
     print(f'[S1 LR] network={a.stage1_lr_net:g}, probe={a.stage1_lr_probe:g}', flush=True)
-    config.update(stage1_feature_norm=a.stage1_feature_norm, stage2_feature_norm='none')
+    config.update(stage1_feature_norm=a.stage1_feature_norm, stage2_feature_norm='none',
+                  loss=f'Profiled-gain amplitude MSE per group (S1) / all {len(data)} (S2)',
+                  amplitude_gain=None, amplitude_gain_mode='profiled',
+                  amplitude_gain_formula='sum(A*B)/sum(A**2); B=sqrt(I_normalized)')
     print(f'[feature norm] S1={a.stage1_feature_norm}; S2=none', flush=True)
-    print('[loss] amplitude MSE; g=1 FIXED in both stages, evaluation and NLM calibration', flush=True)
+    print('[loss] amplitude MSE; adaptive g=sum(A*B)/sum(A^2); '
+          'shared per S1 group / full S2 batch, evaluation and NLM calibration', flush=True)
     tgvs = [TGV(m) for m in masks] if a.tgv else None
     def input_group(k):
         return network_input(data[groups[k]], side, input_channels, device)
@@ -343,7 +348,7 @@ def train(a, data, positions, side, groups, config):
                     stage_training_seconds=stage_seconds[stage], **stats)
         history.append(item); write_json(a.out/'history.json', history)
         print(f'S{stage} {step}: full amplitude rRMSE={stats["relative_amplitude_rmse"]:.6f}, '
-              f'train={stage_seconds[stage]:.2f}s', flush=True)
+              f'g={stats["profile_gain"]:.6g}, train={stage_seconds[stage]:.2f}s', flush=True)
 
     def update(obj, go, gp, prior):
         if prior is not None:

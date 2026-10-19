@@ -265,10 +265,11 @@ class Propagator:
 
 
 def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=True):
-    """Amplitude MSE with gain fixed to 1; bounded FFT graph memory.
+    """Global profiled amplitude MSE. Two passes, bounded FFT graph memory.
 
-    Sum chunk gradients before a single optimizer update. No gain fitting in
-    training, evaluation, or NLM gradient-ratio calibration.
+    The optimum amplitude gain is shared across ALL selected frames, not fitted
+    separately per chunk or frame. Holding this optimum fixed in the second
+    pass gives the profiled objective's object/probe gradients.
     """
     ids = list(ids)
     if not ids or chunk < 1:
@@ -277,8 +278,16 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
     p = probe.detach().requires_grad_(gradient)
     def target(part):
         return torch.from_numpy(np.array(measurements[part], copy=True)).to(o.device).sqrt()
-    gain = 1.0
-    energy = o.real.new_zeros((), dtype=torch.float64)
+    num = o.real.new_zeros((), dtype=torch.float64)
+    den = num.clone(); energy = num.clone()
+    with torch.no_grad():
+        for start in range(0, len(ids), chunk):
+            part = ids[start:start+chunk]
+            a, b = propagator.amplitude(o, p, part), target(part)
+            num += (a*b).sum(dtype=torch.float64)
+            den += a.square().sum(dtype=torch.float64)
+            energy += b.square().sum(dtype=torch.float64)
+        gain = (num/den.clamp_min(1e-30)).to(o.real.dtype)
     total = o.real.new_zeros(())
     go = torch.zeros_like(o) if gradient else None
     gp = torch.zeros_like(p) if gradient else None
@@ -286,7 +295,6 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
         for start in range(0, len(ids), chunk):
             part = ids[start:start+chunk]
             a, b = propagator.amplitude(o, p, part), target(part)
-            energy += b.square().sum(dtype=torch.float64)
             loss = (gain*a-b).square().sum()/(len(ids)*propagator.n**2)
             if gradient:
                 do, dp = torch.autograd.grad(loss, (o, p))
@@ -294,7 +302,7 @@ def chunked_data(obj, probe, ids, measurements, propagator, chunk=1, gradient=Tr
             total += loss.detach()
     mean_energy = float(energy)/(len(ids)*propagator.n**2)
     stats = {'amplitude_mse': float(total), 'relative_amplitude_rmse': math.sqrt(float(total)/max(mean_energy, 1e-30)),
-             'profile_gain': gain, 'gain_mode': 'fixed'}  # Keep old numeric key for log readers.
+             'profile_gain': float(gain), 'gain_mode': 'profiled'}
     if not math.isfinite(stats['amplitude_mse']) or (gradient and not (torch.isfinite(go).all() and torch.isfinite(gp).all())):
         raise FloatingPointError('Non-finite physical loss/gradient')
     return go, gp, stats

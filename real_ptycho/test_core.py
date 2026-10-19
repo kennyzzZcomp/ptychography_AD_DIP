@@ -16,6 +16,13 @@ from run import arguments, network_input, set_optimizer_lr, train
 from initialization import initial_fields
 
 
+def profiled_amplitude_loss(predicted, measured):
+    """Independent full-batch expression, including differentiation through g."""
+    gain = ((predicted*measured).sum(dtype=torch.float64)
+            /predicted.square().sum(dtype=torch.float64).clamp_min(1e-30)).to(predicted.dtype)
+    return (gain*predicted-measured).square().mean(), gain
+
+
 class LearningRateTests(unittest.TestCase):
     def parse(self, *options):
         # Parsing only: generate a nonexistent path without creating/deleting directories.
@@ -167,9 +174,13 @@ class CoreTests(unittest.TestCase):
                     saved_config=json.loads(str(result['config']))
                     self.assertEqual(saved_config['stage1_feature_norm'],'pixel-rms')
                     self.assertEqual(saved_config['stage2_feature_norm'],'none')
+                    self.assertEqual(saved_config['amplitude_gain_mode'],'profiled')
+                    self.assertIsNone(saved_config['amplitude_gain'])
                 history = json.loads((dest/'history.json').read_text())
                 self.assertEqual({h['stage'] for h in history},{1,2})
-                self.assertTrue(all(h['profile_gain']==1.0 and h['gain_mode']=='fixed' for h in history))
+                self.assertTrue(all(np.isfinite(h['profile_gain']) and h['gain_mode']=='profiled'
+                                    for h in history))
+                self.assertTrue(any(abs(h['profile_gain']-1.0)>1e-4 for h in history))
 
     def test_probe_padding_native_and_gradient_adjoint(self):
         p = torch.randn(512,512,dtype=torch.complex64)
@@ -184,7 +195,8 @@ class CoreTests(unittest.TestCase):
         data = np.random.default_rng(7).uniform(.1,2,(2,8,8)).astype('float32')
         a = prop.amplitude(obj,center_pad_probe(compact,8),[0,1])
         b = torch.from_numpy(data).sqrt()
-        direct_go,direct_gp = torch.autograd.grad((a-b).square().mean(),(obj,compact))
+        loss, _ = profiled_amplitude_loss(a,b)
+        direct_go,direct_gp = torch.autograd.grad(loss,(obj,compact))
         go,gp,_ = chunked_data(obj,center_pad_probe(compact,8),[0,1],data,prop,chunk=1)
         torch.testing.assert_close(go,direct_go,rtol=3e-5,atol=2e-7)
         torch.testing.assert_close(center_crop_field(gp,4),direct_gp,rtol=3e-5,atol=2e-7)
@@ -230,26 +242,48 @@ class CoreTests(unittest.TestCase):
         p = torch.randn((8,8), dtype=torch.complex64, requires_grad=True)
         data = rng.uniform(.1, 2, (3,8,8)).astype('float32')
         a, b = prop.amplitude(o,p,[0,1,2]), torch.from_numpy(data).sqrt()
-        loss = (a-b).square().mean()
+        loss, gain = profiled_amplitude_loss(a,b)
         go, gp = torch.autograd.grad(loss, (o,p))
         for chunk in (1,2,3):
             co, cp, stats = chunked_data(o,p,[0,1,2],data,prop,chunk)
             torch.testing.assert_close(co, go, rtol=3e-5, atol=2e-7)
             torch.testing.assert_close(cp, gp, rtol=3e-5, atol=2e-7)
             self.assertAlmostEqual(stats['amplitude_mse'], float(loss), places=6)
-            self.assertEqual(stats['profile_gain'],1.0)
-            self.assertEqual(stats['gain_mode'],'fixed')
+            self.assertAlmostEqual(stats['profile_gain'],float(gain),places=6)
+            self.assertEqual(stats['gain_mode'],'profiled')
 
-    def test_fixed_gain_evaluation_is_sensitive_to_probe_scale(self):
+    def test_profiled_gain_evaluation_compensates_probe_scale(self):
         prop = Propagator(np.array([[1.2,2.7],[2.1,1.4]]),8)
         obj = torch.randn(16,16,dtype=torch.complex64)
         probe = torch.randn(8,8,dtype=torch.complex64)
         data = prop.amplitude(obj,probe,[0,1]).square().numpy()
         for factor in (1.,10.):
             _,_,stats = chunked_data(obj,probe*factor,[0,1],data,prop,chunk=1,gradient=False)
-            self.assertEqual(stats['profile_gain'],1.0)
-            # B equals the initial prediction: relative RMSE must be |factor-1|.
-            self.assertAlmostEqual(stats['relative_amplitude_rmse'],abs(factor-1),places=5)
+            self.assertAlmostEqual(stats['profile_gain'],1/factor,places=6)
+            self.assertLess(stats['relative_amplitude_rmse'],2e-7)
+
+    def test_profiled_gain_scale_invariance_with_nonzero_residual_and_gradients(self):
+        prop = Propagator(np.array([[1,2],[2,3],[3,1]]),8,sampling='mpie-integer')
+        obj = torch.randn(16,16,dtype=torch.complex64)
+        probe = torch.randn(8,8,dtype=torch.complex64)
+        data = np.random.default_rng(25).uniform(.1,2,(3,8,8)).astype('float32')
+        go,gp,stats = chunked_data(obj,probe,[0,1,2],data,prop,chunk=2)
+        self.assertGreater(stats['amplitude_mse'],.01)
+        scaled_go,scaled_gp,scaled = chunked_data(obj,probe*10,[0,1,2],data,prop,chunk=1)
+        self.assertAlmostEqual(scaled['amplitude_mse'],stats['amplitude_mse'],places=6)
+        self.assertAlmostEqual(scaled['profile_gain']*10,stats['profile_gain'],places=6)
+        torch.testing.assert_close(scaled_go,go,rtol=5e-5,atol=3e-7)
+        torch.testing.assert_close(scaled_gp*10,gp,rtol=5e-5,atol=3e-7)
+
+    def test_profiled_gain_zero_prediction_is_finite(self):
+        prop = Propagator(np.array([[1,2],[2,1]]),8,sampling='mpie-integer')
+        obj = torch.ones(16,16,dtype=torch.complex64)
+        probe = torch.zeros(8,8,dtype=torch.complex64)
+        data = np.ones((2,8,8),dtype='float32')
+        go,gp,stats = chunked_data(obj,probe,[0,1],data,prop,chunk=1)
+        self.assertEqual(stats['profile_gain'],0.)
+        self.assertEqual(stats['amplitude_mse'],1.)
+        self.assertTrue(torch.isfinite(go).all() and torch.isfinite(gp).all())
 
     def test_center_selection_snake_and_groups(self):
         positions = []
@@ -312,13 +346,13 @@ class CoreTests(unittest.TestCase):
                                                    norm='ortho'),dim=(-2,-1)).abs()
         torch.testing.assert_close(prop.amplitude(o,p,range(3)),expected,rtol=0,atol=0)
         data = np.random.default_rng(4).uniform(.1,2,(3,8,8)).astype('float32')
-        loss = (expected-torch.from_numpy(data).sqrt()).square().mean()
+        loss, gain = profiled_amplitude_loss(expected,torch.from_numpy(data).sqrt())
         go,gp = torch.autograd.grad(loss,(o,p))
         for chunk in (1,2,3):
             co,cp,stats = chunked_data(o,p,range(3),data,prop,chunk)
             torch.testing.assert_close(co,go,rtol=3e-5,atol=2e-7)
             torch.testing.assert_close(cp,gp,rtol=3e-5,atol=2e-7)
-            self.assertEqual(stats['profile_gain'],1.)
+            self.assertAlmostEqual(stats['profile_gain'],float(gain),places=6)
         cover = torch.zeros(16,16)
         for y,x in pos:
             cover[y:y+8,x:x+8] += p.detach().abs().square()
