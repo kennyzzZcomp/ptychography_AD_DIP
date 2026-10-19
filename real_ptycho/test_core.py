@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from core import (UNet, NLMPrior, Propagator, chunked_data, geometry, select_center_grid, tgv_terms,
-                  center_crop_field, center_pad_probe, mpie_geometry)
+                  center_crop_field, center_pad_probe, mpie_geometry, pixel_rms_normalize)
 from run import arguments, network_input, set_optimizer_lr, train
 from initialization import initial_fields
 
@@ -30,6 +30,8 @@ class LearningRateTests(unittest.TestCase):
         self.assertEqual(a.detector_crop, 1024)
         self.assertEqual(a.initialization, 'mpie')
         self.assertEqual(a.object_sampling, 'mpie-integer')
+        self.assertEqual(a.stage1_feature_norm, 'none')
+        self.assertEqual(self.parse('--stage1-feature-norm','pixel-rms').stage1_feature_norm, 'pixel-rms')
         self.assertEqual(self.parse('--object-sampling','bilinear').object_sampling, 'bilinear')
         self.assertEqual(self.parse('--num-frames','100').num_frames, 100)
         self.assertEqual(self.parse('--num-frames','200').num_frames, 200)
@@ -82,6 +84,38 @@ class CoreTests(unittest.TestCase):
         torch.set_num_threads(2)
         torch.manual_seed(8)
 
+    def test_feature_norm_matches_diagnostic_values_gradients_and_initial_field(self):
+        diagnostic = UNet(4,2,checkpoint_blocks=True)
+        integrated = copy.deepcopy(diagnostic)
+        integrated.feature_norm = 'pixel-rms'
+        # Initially both models must produce the same requested object.
+        initial = torch.complex(1+.001*torch.rand(32,32),torch.zeros(32,32))
+        diagnostic.set_initial_object(initial); integrated.set_initial_object(initial)
+        x = torch.randn(1,4,32,32)
+        torch.testing.assert_close(integrated(x),initial,rtol=0,atol=2e-7)
+        # Nonzero heads exercise the backbone and normalization backward paths.
+        with torch.no_grad():
+            diagnostic.head_amp.weight.normal_(std=.02)
+            diagnostic.head_phs.weight.normal_(std=.02)
+        integrated.load_state_dict(diagnostic.state_dict())
+        hook=diagnostic.d1.register_forward_hook(
+            lambda mod,inp,out:out/out.square().mean(1,keepdim=True).sqrt().clamp_min(1e-6))
+        try:
+            y,z=diagnostic(x),integrated(x)
+            torch.testing.assert_close(y,z,rtol=0,atol=0)
+            y.abs().square().mean().backward(); z.abs().square().mean().backward()
+        finally:
+            hook.remove()
+        for p,q in zip(diagnostic.parameters(),integrated.parameters()):
+            torch.testing.assert_close(p.grad,q.grad,rtol=3e-5,atol=2e-7)
+
+    def test_feature_norm_zero_vector_has_finite_gradient(self):
+        x=torch.zeros(1,4,2,2,requires_grad=True)
+        out=pixel_rms_normalize(x)
+        out.sum().backward()
+        self.assertTrue(torch.isfinite(x.grad).all())
+        self.assertEqual(float(out.abs().max()),0.)
+
     def test_initialization_modes_and_reference_rng(self):
         pos = np.array([[2.,2.],[10.,10.]])
         obj, probe, meta = initial_fields('mpie',16,32,pos,1.,0)
@@ -113,7 +147,8 @@ class CoreTests(unittest.TestCase):
                 a = arguments(['--data',str(Path(__file__).resolve()),'--out',str(dest),
                                '--device','cpu','--initialization',mode,'--probe-size','0',
                                '--stage1-steps','4','--stage2-steps','2','--eval-every','2',
-                               '--nlm-refresh','1','--chunk','4'])
+                               '--nlm-refresh','1','--chunk','4',
+                               '--stage1-feature-norm','pixel-rms'])
                 dest.mkdir()
                 data = np.random.default_rng(3).uniform(.1,2,(4,16,16)).astype('float32')
                 pos = np.array([[2.,2.],[2.,10.],[10.,2.],[10.,10.]])
@@ -129,6 +164,9 @@ class CoreTests(unittest.TestCase):
                     self.assertEqual(result['probe_compact'].shape,(16,16))
                     np.testing.assert_array_equal(result['probe_compact'],result['probe_rec'])
                     self.assertTrue(np.isfinite(result['obj_rec']).all())
+                    saved_config=json.loads(str(result['config']))
+                    self.assertEqual(saved_config['stage1_feature_norm'],'pixel-rms')
+                    self.assertEqual(saved_config['stage2_feature_norm'],'none')
                 history = json.loads((dest/'history.json').read_text())
                 self.assertEqual({h['stage'] for h in history},{1,2})
                 self.assertTrue(all(h['profile_gain']==1.0 and h['gain_mode']=='fixed' for h in history))

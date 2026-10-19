@@ -2,6 +2,28 @@
 
 独立实验入口，不调用或修改原仿真脚本。**第一阶段 U-Net16＋TGV；第二阶段 U-Net32 复数加法残差＋覆盖加权 NLM，不加 TGV。** 前向采用指定的夫琅禾费模型，两个阶段均使用振幅损失。
 
+## 可选消融：第一阶段内部特征归一化（2026-10-19）
+
+新增 `--stage1-feature-norm none|pixel-rms`，默认`none`保留既有行为。显式选`pixel-rms`，只在S1最后一个解码块之后、振幅/相位头之前，对每个位置的通道特征做RMS归一化，固定RMS下限1e-6。没有新增可训练参数；初始O/P、物理测量、g=1、FFT、坐标、学习率和正则规则不变。S2仍为原网络，不启用该归一化。
+
+先同步本目录的`run.py`和`core.py`到Colab，保留原`initialization.py`，在原PyTorch GPU环境运行。以下保留用户最近的500+200、TGV=0、NLM=0配置，只打开此候选：
+
+```python
+!python -u /content/ptychography_AD_DIP/real_ptycho/run.py \
+  --data "/content/drive/MyDrive/ptyco_data/ptydata_33.h5" \
+  --num-frames 225 --detector-crop 1024 --probe-size 0 \
+  --initialization mpie --object-sampling mpie-integer \
+  --stage1-feature-norm pixel-rms \
+  --stage1-steps 500 --stage2-steps 200 \
+  --stage1-lr-net 0.0005 --stage1-lr-probe 0.005 \
+  --stage2-lr-net 0.0005 --stage2-lr-probe 0.005 \
+  --tgv 0 --nlm-ratio 0 --seed 0 --chunk 1 --eval-every 50
+```
+
+关闭对照只将上面的`pixel-rms`换成`none`，其他选项完全相同。每次自动新建输出目录；已有同配置的none结果可直接作为参照，不需覆盖。启动日志必须出现`[feature norm] S1=pixel-rms; S2=none`；配置/权重文件均记录模式。
+
+23项小尺寸测试通过，含候选与原诊断hook的输出/梯度一致性、初始化保持、零特征向量梯度有限，以及mpie/ones各4+2次合成更新。完整500+200重建需用户在Colab手动运行；目前只有前4步诊断中峰值受抑制的证据，且早期loss下降较慢，不能据此保证最终USAF更清晰。
+
 ## 当前消融：mPIE 整数切片，保留 g=1 和原初值（2026-10-18）
 
 默认新增 `--object-sampling mpie-integer`：毫米转米、按坐标轴选项换轴/翻转、减全部所选坐标的均值、除以物面像元，使用 `np.round` **先取整，再加** PtyLab 的 `No//2-Np//2`。物体局部场直接切片，不做双线性插值。`--object-sampling bilinear` 可明确复现上一版。

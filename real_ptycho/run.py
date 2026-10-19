@@ -65,6 +65,8 @@ def arguments(argv=None):
     p.add_argument('--flip-x', action='store_true')
     p.add_argument('--object-sampling', choices=['mpie-integer', 'bilinear'], default='mpie-integer',
                    help='mPIE centered/rounded integer slices (default); bilinear replays the previous sampler')
+    p.add_argument('--stage1-feature-norm', choices=['none', 'pixel-rms'], default='none',
+                   help='Optional S1-only per-pixel channel RMS normalization before both heads; default off, S2 unchanged')
     p.add_argument('--stage1-steps', type=int, default=500)
     p.add_argument('--stage2-steps', type=int, default=500)
     p.add_argument('--lr-net', type=float, default=.0005, help='Legacy fallback for BOTH stages; stage-specific options override it')
@@ -173,6 +175,9 @@ def prepare(a):
                    propagation=f'Centered unitary Fraunhofer FFT; object sampling={a.object_sampling}',
                    initialization_positions_px=initialization_positions.tolist(),
                    sampling_alignment=sampling_alignment,
+                  stage2_feature_norm='none',
+                  stage1_feature_norm_location='After final decoder block, before amplitude/phase heads',
+                  stage1_feature_norm_rms_floor=1e-6 if a.stage1_feature_norm == 'pixel-rms' else None,
                   regularizer_domain='Union of computational probe footprints, NOT a known illuminated support',
                   caveats=['Requested Fraunhofer model; physical validity at 6 mm has NOT been established.',
                            'Position-axis mapping yx is an assumption unless independently verified.',
@@ -301,11 +306,14 @@ def train(a, data, positions, side, groups, config):
         return center_pad_probe(torch.complex(pr, pi), n)
 
     input_channels = max(map(len, groups))
-    net = UNet(input_channels, 16, checkpoint_blocks=not a.no_checkpoint).to(device)
+    net = UNet(input_channels, 16, checkpoint_blocks=not a.no_checkpoint,
+               feature_norm=a.stage1_feature_norm).to(device)
     if a.initialization == 'mpie':
         net.set_initial_object(object0)
     opt = torch.optim.Adam(net.parameters(), lr=a.stage1_lr_net)
     print(f'[S1 LR] network={a.stage1_lr_net:g}, probe={a.stage1_lr_probe:g}', flush=True)
+    config.update(stage1_feature_norm=a.stage1_feature_norm, stage2_feature_norm='none')
+    print(f'[feature norm] S1={a.stage1_feature_norm}; S2=none', flush=True)
     print('[loss] amplitude MSE; g=1 FIXED in both stages, evaluation and NLM calibration', flush=True)
     tgvs = [TGV(m) for m in masks] if a.tgv else None
     def input_group(k):

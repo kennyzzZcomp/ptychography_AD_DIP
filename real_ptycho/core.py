@@ -30,10 +30,22 @@ class DoubleConv(nn.Module):
         return self.f(x)
 
 
+def pixel_rms_normalize(features):
+    """Normalize channels per pixel; RMS floor 1e-6, no learned parameters.
+
+    Clamp before sqrt so an all-zero feature vector has finite gradients.
+    """
+    rms = features.square().mean(1, keepdim=True).clamp_min(1e-12).sqrt()
+    return features/rms
+
+
 class UNet(nn.Module):
     """Original concatenating U-Net topology, with optional activation checkpointing."""
-    def __init__(self, cin, width, residual=False, checkpoint_blocks=True):
+    def __init__(self, cin, width, residual=False, checkpoint_blocks=True, feature_norm='none'):
         super().__init__()
+        if feature_norm not in ('none', 'pixel-rms'):
+            raise ValueError('Unknown feature normalization mode')
+        self.feature_norm = feature_norm
         b = width
         self.e1, self.e2, self.e3 = DoubleConv(cin, b), DoubleConv(b, 2*b), DoubleConv(2*b, 4*b)
         self.bot = DoubleConv(4*b, 8*b)
@@ -80,6 +92,8 @@ class UNet(nn.Module):
         z = self.block(self.d3, torch.cat((self.u3(z), c), 1))
         z = self.block(self.d2, torch.cat((self.u2(z), b), 1))
         z = self.block(self.d1, torch.cat((self.u1(z), a), 1))
+        if self.feature_norm == 'pixel-rms':
+            z = pixel_rms_normalize(z)
         r, p = self.head_amp(z)[0, 0], self.head_phs(z)[0]
         if self.residual:
             return torch.complex(r, p[0])
